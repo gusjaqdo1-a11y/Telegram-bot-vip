@@ -60,6 +60,11 @@ verify_method = {}
 video_store = {}
 video_files = {}
 
+ADS_ENABLED = False
+ADS_TEXT = ""         # Qoraalka xayeysiiska oo ku dhex jira fariinta
+ADS_BTN_TEXT = ""     # Qoraalka saaran Button-ka (e.g. FOLLOW MY TIKTOK)
+ADS_URL = "" 
+
 
 # ================= DATABASE FILES =================
 USERS_FILE = "users.json"
@@ -156,6 +161,7 @@ def admin_menu():
     kb.add("💰 UNBLOCK MONEY", "🔍 RAADI")
     kb.add("🔥 UN BAN-USER", "📌 POST CHANNEL")
     kb.add("👥 SEE LIST", "🔎 SEARCH USER")
+    kb.add("📢 ADD ADS", "🗑 DELETE ADS")
     kb.add("✅ VERIFY ON", "❌ VERIFY OFF")
     kb.add("CHANNEL POST", "📡 ADD CHANNEL")
     kb.add("🔒 LOCK BOT", "🔓 UNLOCK BOT")  
@@ -1471,6 +1477,68 @@ def unlock_bot(m):
         "🔓 Bot unlocked successfully."
     )
 
+# ================= ADD ADS HANDLER =================
+@bot.message_handler(func=lambda m: m.text == "📢 ADD ADS")
+def add_ads_start(m):
+    if not is_admin(m.from_user.id):
+        return
+
+    msg = bot.send_message(
+        m.chat.id,
+        "✍️ **Geli xayeysiiska qaabkan:**\n\n"
+        "`Button Name | Link | Qoraal yar (Optional)`\n\n"
+        "**Tusaale:**\n"
+        "`FOLLOW MY TIKTOK | https://tiktok.com/@username | Igula soco TikTok!`",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, process_add_ads)
+
+def process_add_ads(m):
+    global ADS_ENABLED, ADS_BTN_TEXT, ADS_URL, ADS_TEXT
+
+    if not is_admin(m.from_user.id):
+        return
+
+    text = (m.text or "").strip()
+    parts = [p.strip() for p in text.split("|")]
+
+    if len(parts) < 2:
+        bot.send_message(
+            m.chat.id,
+            "❌ Qaabka aad u qortay waa galad.\n"
+            "Fadlan u qor qaabkan: `Button Name | Link | Qoraal`"
+        )
+        return
+
+    ADS_BTN_TEXT = parts[0]
+    ADS_URL = parts[1]
+    ADS_TEXT = parts[2] if len(parts) > 2 else "✨ Nagala soco baraha bulshada!"
+    ADS_ENABLED = True
+
+    bot.send_message(
+        m.chat.id,
+        f"✅ **Ads-ka waa la kaydiyay lana shiday!**\n\n"
+        f"🔘 **Button:** {ADS_BTN_TEXT}\n"
+        f"🔗 **Link:** {ADS_URL}\n"
+        f"📝 **Text:** {ADS_TEXT}"
+    )
+
+# ================= DELETE ADS HANDLER =================
+@bot.message_handler(func=lambda m: m.text == "🗑 DELETE ADS")
+def delete_ads(m):
+    global ADS_ENABLED, ADS_BTN_TEXT, ADS_URL, ADS_TEXT
+
+    if not is_admin(m.from_user.id):
+        return
+
+    ADS_ENABLED = False
+    ADS_BTN_TEXT = ""
+    ADS_URL = ""
+    ADS_TEXT = ""
+
+    bot.send_message(m.chat.id, "🗑 **Ads-kii waa la tirtiray oo bot-ku ma muujin doono xayeysiis.**")
+
+
 # ================= IMPORT USERS =================
 @bot.message_handler(func=lambda m: m.text == "📥 IMPORT USERS")
 def import_users_start(m):
@@ -2409,19 +2477,35 @@ def send_user_message(m, uid):
 
         bot.send_message(m.chat.id,"❌ Failed to send message")
 
-# ================= CLEAN SEND VIDEO FUNCTION =================
+# ================= CLEAN SEND VIDEO FUNCTION WITH ADS =================
 def send_video_with_music(chat_id, file_path, platform=None):
 
     vid_id = str(uuid.uuid4())[:8]
     video_files[vid_id] = file_path
 
     kb = InlineKeyboardMarkup()
+    
+    # 1. Botoonka Convert to Music
     kb.add(
         InlineKeyboardButton(
             "🎵 Convert to Music",
             callback_data=f"music_{vid_id}"
         )
     )
+
+    # 2. Haddii ADS shaqaynayo, ku dar Botoonka Ads-ka
+    if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
+        kb.add(
+            InlineKeyboardButton(
+                ADS_BTN_TEXT,
+                url=ADS_URL
+            )
+        )
+
+    # Qoraalka la soconaya video-ga
+    caption = CAPTION_TEXT
+    if ADS_ENABLED and ADS_TEXT:
+        caption += f"\n\n📢 {ADS_TEXT}"
 
     uid = str(chat_id)
 
@@ -2431,7 +2515,6 @@ def send_video_with_music(chat_id, file_path, platform=None):
     if platform:
         if "platforms" not in videos_data:
             videos_data["platforms"] = {}
-
         videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
 
     save_videos()
@@ -2440,9 +2523,10 @@ def send_video_with_music(chat_id, file_path, platform=None):
         bot.send_video(
             chat_id,
             video,
-            caption=CAPTION_TEXT,
+            caption=caption,
             reply_markup=kb
         )
+
 
 
 # ================= MEDIA DOWNLOADER =================
