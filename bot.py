@@ -1392,6 +1392,7 @@ def verify_code_check(m):
         bot.send_message(m.chat.id, "❌ Wrong verification code")
 
 # ================= URL EXTRACTOR =================
+# ================= URL EXTRACTOR =================
 def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
@@ -1489,9 +1490,11 @@ def handle_links(message):
 
     fast_msg = "⚡ <b>VIP Priority Downloading...</b>" if is_vip(user_id) else "⏳ Downloading..."
     bot.send_message(message.chat.id, fast_msg, parse_mode="HTML")
-    download_media(message.chat.id, link, message.from_user)
+    
+    # Process download in thread to prevent blocking the bot
+    threading.Thread(target=download_media, args=(message.chat.id, link, message.from_user)).start()
 
-# ================= MEDIA DOWNLOADER ENGINE =================
+# ================= MEDIA DOWNLOADER ENGINE (SAXAN 100%) =================
 def download_media(chat_id, text, m_user=None):
     try:
         url = extract_url(text)
@@ -1499,7 +1502,7 @@ def download_media(chat_id, text, m_user=None):
             bot.send_message(chat_id, "❌ Invalid link")
             return
 
-        # ================= TIKTOK =================
+        # ================= TIKTOK (PRIMARY API FAST) =================
         if "tiktok.com" in url:
             try:
                 api = f"https://tikwm.com/api/?url={url}"
@@ -1525,11 +1528,22 @@ def download_media(chat_id, text, m_user=None):
                         with open(filename, "wb") as f:
                             f.write(video_data)
                         send_video_with_music(chat_id, filename, "tiktok", m_user)
+                        if os.path.exists(filename):
+                            os.remove(filename)
                         return
-            except Exception as e:
-                pass # fallback to yt-dlp
+            except Exception:
+                pass # Fallback to yt-dlp below
 
-        # ================= INSTAGRAM / PINTEREST / YOUTUBE / FACEBOOK / SNAPCHAT (ADVANCED YT-DLP) =================
+        # ================= PINTEREST SHORT-LINK RESOLVER =================
+        if "pin.it" in url or "pinterest.com" in url:
+            try:
+                session = requests.Session()
+                resp = session.get(url, allow_redirects=True, timeout=15)
+                url = resp.url
+            except Exception:
+                pass
+
+        # ================= PLATFORM IDENTIFIER =================
         platform = "other"
         if "instagram.com" in url:
             platform = "instagram"
@@ -1542,63 +1556,66 @@ def download_media(chat_id, text, m_user=None):
         elif "snapchat.com" in url or "snap.com" in url:
             platform = "snapchat"
 
-        # Resolve shortened links e.g., pin.it
-        if "pin.it" in url:
-            try:
-                r = requests.head(url, allow_redirects=True, timeout=10)
-                url = r.url
-            except Exception:
-                pass
+        out_template = f"dl_{platform}_{uuid.uuid4().hex[:6]}.%(ext)s"
 
-        out_template = f"dl_{platform}_%(id)s.%(ext)s"
-        
-        # Optimized quality format based on VIP priority
-        format_str = "bv*+ba/b" if is_vip(chat_id) else "best[ext=mp4]/best"
-
+        # Optimized format configuration for stability across all platforms
         ydl_opts = {
-            "format": format_str,
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "outtmpl": out_template,
             "quiet": True,
             "no_warnings": True,
             "merge_output_format": "mp4",
+            "nocheckcertificate": True,
+            "geo_bypass": True,
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
             }
         }
 
+        # Special fallback format for non-VIP or simple download
+        if not is_vip(chat_id):
+            ydl_opts["format"] = "best[ext=mp4]/best"
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            entries = info["entries"] if "entries" in info else [info]
+            entries = info["entries"] if "entries" in info and info["entries"] else [info]
 
             for entry in entries:
+                if not entry:
+                    continue
                 file_path = ydl.prepare_filename(entry)
-                
-                # Check actual filename on disk (in case extension merged to mp4)
+
+                # Check actual filename on disk (in case yt-dlp merged extension to .mp4)
                 if not os.path.exists(file_path):
                     base, _ = os.path.splitext(file_path)
                     if os.path.exists(f"{base}.mp4"):
                         file_path = f"{base}.mp4"
 
-                if file_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                    with open(file_path, "rb") as photo:
-                        prefix = get_user_caption_prefix(m_user) if m_user else ""
-                        bot.send_photo(chat_id, photo, caption=f"{prefix}{CAPTION_TEXT}")
-                else:
-                    send_video_with_music(chat_id, file_path, platform, m_user)
+                if os.path.exists(file_path):
+                    if file_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        with open(file_path, "rb") as photo:
+                            prefix = get_user_caption_prefix(m_user) if m_user else ""
+                            bot.send_photo(chat_id, photo, caption=f"{prefix}{CAPTION_TEXT}")
+                    else:
+                        send_video_with_music(chat_id, file_path, platform, m_user)
 
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except Exception:
-                    pass
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    except Exception:
+                        pass
         return
 
     except Exception as e:
+        print("DOWNLOAD ERROR:", e)
         bot.send_message(
             chat_id,
-            f"❌ Download failed or invalid link.\n\n"
-            "Please check if the link is correct and publicly available."
+            "❌ Download failed or invalid link.\n\n"
+            "Please check if the link is correct, public, and supported."
         )
+
 
 # ================= MUSIC CONVERSION =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
