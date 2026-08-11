@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIP Video Downloader</title>
+
+<style>
+:root {
+  --bg-color: #0b1220;
+  --text-color: white;
+  --input-bg: #1f2937;
+  --button-bg: #3b82f6;
+  --button-hover: #2563eb;
+  --nav-bg: #111827;
+}
+
+body.light {
+  --bg-color: #f5f5f5;
+  --text-color: #111827;
+  --input-bg: #ffffff;
+  --nav-bg: #e5e7eb;
+}
+
+body {
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-family: Arial, sans-serif;
+  margin: 0;
+  text-align: center;
+  transition: 0.3s;
+}
+
+.page { display: none; padding: 25px; }
+.active { display: block; }
+
+input {
+  width: 90%;
+  padding: 14px;
+  border-radius: 25px;
+  border: none;
+  margin-top: 10px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--text-color);
+}
+
+.main-btn {
+  margin-top: 15px;
+  padding: 14px;
+  width: 90%;
+  background: var(--button-bg);
+  border: none;
+  border-radius: 25px;
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+}
+.main-btn:hover { background: var(--button-hover); }
+
+video {
+  width: 90%;
+  margin-top: 20px;
+  border-radius: 10px;
+}
+
+.nav {
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+  background: var(--nav-bg);
+  display: flex;
+  justify-content: space-around;
+  padding: 12px 0;
+}
+
+.nav button {
+  background: none;
+  border: none;
+  color: var(--text-color);
+  font-size: 16px;
+}
+
+.icon-btn {
+  position: fixed;
+  top: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--button-bg);
+  color: white;
+}
+
+#theme-icon { right: 12px; }
+#wa-icon { left: 12px; }
+
+.footer {
+  position: fixed;
+  bottom: 55px;
+  width: 100%;
+  text-align: center;
+  color: gray;
+  font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- Icons -->
+<button id="theme-icon" class="icon-btn" onclick="toggleTheme()">☀️</button>
+<button id="wa-icon" class="icon-btn" onclick="openWhatsApp()">📞</button>
+
+<!-- Home -->
+<div id="home" class="page active">
+  <h2>Download TikTok Video</h2>
+
+  <input id="link" placeholder="Paste TikTok link">
+
+  <button class="main-btn" onclick="downloadVideo()">
+    Download Video
+  </button>
+
+  <button class="main-btn" onclick="openBot()" style="background:#22c55e">
+    Open Telegram Bot 🤖
+  </button>
+</div>
+
+<!-- Downloads -->
+<div id="downloads" class="page">
+  <h2>Your Video</h2>
+
+  <video id="player" controls></video>
+
+  <a id="downloadBtn" href="#" download>
+    <button class="main-btn">Download Video</button>
+  </a>
+</div>
+
+<!-- Bottom Nav -->
+<div class="nav">
+  <button onclick="showPage('home')">Home</button>
+  <button onclick="showPage('downloads')">Downloads</button>
+</div>
+
+<div class="footer">
+  By: ＳＣＨＯＬＥＳ🥤🥇
+</div>
+
+<script>
+
+const API_BASE = "https://your-api.com/download?url=";
+
+function showPage(page) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.getElementById(page).classList.add("active");
+}
+
+function toggleTheme() {
+  document.body.classList.toggle("light");
+  document.getElementById("theme-icon").textContent =
+    document.body.classList.contains("light") ? "🌙" : "☀️";
+}
+
+function openWhatsApp() {
+  window.open("https://wa.me/447346867994", "_blank");
+}
+
+function openBot() {
+  window.open("https://t.me/Downloadvedioytibot", "_blank");
+}
+
+/* ✅ FIXED DOWNLOAD FUNCTION */
+async function downloadVideo() {
+  let link = document.getElementById("link").value;
+
+  if (!link) {
+    alert("Paste link first");
+    return;
+  }
+
+  try {
+
+    let res = await fetch(API_BASE + encodeURIComponent(link));
+    let data = await res.json();
+
+    if (!data.video) {
+      alert(data.error || "Video lama helin");
+      return;
+    }
+
+    // show video
+    document.getElementById("player").src = data.video;
+    document.getElementById("downloadBtn").href = data.video;
+
+    showPage("downloads");
+
+  } catch (err) {
+    alert("API error dhacay");
+    console.log(err);
+  }
+}
+
+</script>
+
+</body>
+  </html>
