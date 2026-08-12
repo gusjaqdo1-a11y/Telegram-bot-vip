@@ -17,7 +17,7 @@ import smtplib
 from email.mime.text import MIMEText
 
 
-# ================= JSON FUNCTIONS (MUST BE ON TOP) =================
+# ================= JSON FUNCTIONS =================
 def load_json(path, default):
     if not os.path.exists(path):
         return default
@@ -67,9 +67,9 @@ MANAGED_CHANNELS = []
 MAX_CHANNELS = 10
 
 BOT_LOCKED = False
-LOCK_MESSAGE = "🔒 Bot-ku si ku-meel-gaarh ah ayuu u xidhan yahay."
+LOCK_MESSAGE = "🔒 Bot-ku si ku-meel-gaar ah ayuu u xidhan yahay."
 
-SETTINGS_CONTROL = True  # True = Furan yahay, False = Waa xidhan yahay
+SETTINGS_CONTROL = True  
 SETTINGS_LOCKED_MSG = "⚠️ Qeybta Settings-ka si ku-meel-gaar ah ayaa loo xidhay!"
 
 pending_post = {}
@@ -99,7 +99,6 @@ WITHDRAWS_FILE = "withdraws.json"
 VIDEOS_FILE = "videos.json"
 CONFIG_FILE = "config.json"
 
-# Load Config
 config_data = load_json(CONFIG_FILE, {
     "vip_price": 100, 
     "bot_locked": False, 
@@ -148,22 +147,20 @@ videos_data = load_json(VIDEOS_FILE, {
 def save_videos():
     save_json(VIDEOS_FILE, videos_data)
 
-# DEFAULT SETTINGS FOR USERS
 DEFAULT_USER_SETTINGS = {
-    "quality": "Best",          # Best, 1080p, 720p, 480p
-    "audio_format": "MP3",      # MP3, M4A
-    "filename": "Original",     # Original, Custom
-    "thumbnail": True,          # True, False
-    "caption": True,            # True, False
-    "source_link": True,        # True, False
-    "language": "Somali",       # Somali, English, Arabic
-    "auto_zip": False,          # True, False
-    "notifications": True,      # True, False
-    # VIP EXTRA SETTINGS
-    "vip_auto_mp3": False,      # True, False
-    "vip_custom_thumb": "",     # Path or file_id
-    "vip_custom_caption": "",   # Template
-    "vip_auto_save": False      # True, False
+    "quality": "Best",
+    "audio_format": "MP3",
+    "filename": "Original",
+    "thumbnail": True,
+    "caption": True,
+    "source_link": True,
+    "language": "Somali",
+    "auto_zip": False,
+    "notifications": True,
+    "vip_auto_mp3": False,
+    "vip_custom_thumb": "",
+    "vip_custom_caption": "",
+    "vip_auto_save": False
 }
 
 # ================= HELPER FUNCTIONS =================
@@ -257,7 +254,6 @@ def admin_menu():
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
-# ================= BACK TO MAIN MENU =================
 def back_to_main_menu(m):
     bot.send_message(
         m.chat.id,
@@ -322,14 +318,14 @@ def view_cmd(message):
         f"🤖 BOT INFO\n"
         f"Status: {badge}\n\n"
         "📌 Name: Video Downloader Bot\n"
-        "⚡ Features:\n"
-        "• TikTok download\n"
-        "• YouTube download\n"
-        "• Facebook download\n"
-        "• Instagram & Pinterest download\n"
-        "• Referral system\n"
-        "• Custom User & VIP Settings\n"
-        "• VIP Fast System"
+        "⚡ Supported Platforms:\n"
+        "• TikTok\n"
+        "• YouTube\n"
+        "• Facebook\n"
+        "• Instagram\n"
+        "• Pinterest\n"
+        "• Snapchat\n"
+        "• Direct MP3 Audio Converter"
     )
 
 @bot.message_handler(commands=['balance'])
@@ -366,8 +362,6 @@ def build_settings_keyboard(uid):
     vip = is_vip(uid)
     
     kb = InlineKeyboardMarkup(row_width=2)
-    
-    # Standard Options
     btn_q = InlineKeyboardButton(f"🎬 Quality: {st['quality']}", callback_data="st_toggle_quality")
     btn_a = InlineKeyboardButton(f"🎵 Audio: {st['audio_format']}", callback_data="st_toggle_audio")
     btn_thumb = InlineKeyboardButton(f"🖼️ Thumb: {'ON' if st['thumbnail'] else 'OFF'}", callback_data="st_toggle_thumb")
@@ -382,7 +376,6 @@ def build_settings_keyboard(uid):
     kb.add(btn_link, btn_lang)
     kb.add(btn_zip, btn_notif)
 
-    # VIP Extra Options
     if vip:
         btn_vip_mp3 = InlineKeyboardButton(f"⚡ Auto MP3: {'ON' if st.get('vip_auto_mp3') else 'OFF'}", callback_data="st_toggle_vip_mp3")
         btn_vip_save = InlineKeyboardButton(f"💾 Auto Vault: {'ON' if st.get('vip_auto_save') else 'OFF'}", callback_data="st_toggle_vip_save")
@@ -397,7 +390,6 @@ def user_settings_handler(m):
     if bot_locked_guard(m) or banned_guard(m):
         return
 
-    # Check Admin Control
     if not SETTINGS_CONTROL and not is_admin(m.from_user.id):
         bot.send_message(m.chat.id, SETTINGS_LOCKED_MSG)
         return
@@ -443,50 +435,38 @@ def settings_callback(call):
     if action == "st_close":
         bot.delete_message(call.message.chat.id, call.message.message_id)
         return
-
     elif action == "st_reset":
         users[uid_str]["settings"] = DEFAULT_USER_SETTINGS.copy()
         save_users()
         bot.answer_callback_query(call.id, "🔄 Settings-kii default-ka ahaa waa lagu celiyay!")
-
     elif action == "st_toggle_quality":
         q_list = ["Best", "1080p", "720p", "480p"]
         curr_idx = q_list.index(st["quality"]) if st["quality"] in q_list else 0
         st["quality"] = q_list[(curr_idx + 1) % len(q_list)]
-
     elif action == "st_toggle_audio":
         st["audio_format"] = "M4A" if st["audio_format"] == "MP3" else "MP3"
-
     elif action == "st_toggle_thumb":
         st["thumbnail"] = not st["thumbnail"]
-
     elif action == "st_toggle_cap":
         st["caption"] = not st["caption"]
-
     elif action == "st_toggle_link":
         st["source_link"] = not st["source_link"]
-
     elif action == "st_toggle_lang":
         langs = ["Somali", "English", "Arabic"]
         curr_idx = langs.index(st["language"]) if st["language"] in langs else 0
         st["language"] = langs[(curr_idx + 1) % len(langs)]
-
     elif action == "st_toggle_zip":
         st["auto_zip"] = not st["auto_zip"]
-
     elif action == "st_toggle_notif":
         st["notifications"] = not st["notifications"]
-
     elif action == "st_toggle_vip_mp3" and is_vip(uid):
         st["vip_auto_mp3"] = not st.get("vip_auto_mp3", False)
-
     elif action == "st_toggle_vip_save" and is_vip(uid):
         st["vip_auto_save"] = not st.get("vip_auto_save", False)
 
     users[uid_str]["settings"] = st
     save_users()
 
-    # Refresh view
     msg_text = (
         f"⚙️ <b>USER SETTINGS PANEL</b>\n"
         f"Status: <b>{get_user_badge(uid)}</b>\n\n"
@@ -526,13 +506,11 @@ def check_membership(user_id):
             badge = get_user_badge(user_id)
             bot.send_message(
                 user_id,
-                f"🎬 Welcome to Video Downloader Bot!\n"
+                f"🎬 Welcome to Universal Video & Music Downloader Bot!\n"
                 f"Badge: <b>{badge}</b>\n\n"
-                "This bot helps you easily download videos and music from popular platforms.\n\n"
-                "📥 How to use:\n"
-                "1. Send any supported link here.\n"
-                "2. The bot will automatically process it for you.\n\n"
-                "👑 VIP members get high-speed conversion & zero normal ads!",
+                "Somalida: Dhammaan Barta Bulshada Linkiyadooda Halkan ku soo dir!\n"
+                "Supports: TikTok, YouTube, Facebook, Instagram, Pinterest, Snapchat.\n\n"
+                "📥 Direct Link Send Kareey!",
                 reply_markup=user_menu(user_id)
             )
         else:
@@ -567,11 +545,10 @@ def unlock_vip_cmd(m):
     text = (
         "👑 <b>VIP PREMIUM ACCESS</b>\n\n"
         "Unlock VIP Downloader\n\n"
-        "🚀 Faster processing\n"
-        "🎬 High quality downloads\n"
-        "🎵 Unlimited MP3\n"
-        "📦 Multiple links\n"
-        "⭐ VIP badge\n\n"
+        "🚀 Ultra Fast Download\n"
+        "🎬 1080p Full HD Video\n"
+        "🎵 Auto Convert MP3\n"
+        "⭐ VIP Badge & No Normal Ads\n\n"
         f"Price: {VIP_PRICE} ⭐ Stars"
     )
     kb = InlineKeyboardMarkup()
@@ -1303,12 +1280,15 @@ def extract_url(text):
     return urls[0] if urls else None
 
 # ================= SEND VIDEO WITH MUSIC & ADS =================
-def send_video_with_music(chat_id, file_path, platform=None, m_user=None):
+def send_video_with_music(chat_id, file_path, platform=None, m_user=None, original_url=None):
     vid_id = str(uuid.uuid4())[:8]
-    video_files[vid_id] = file_path
+    video_files[vid_id] = {
+        "file_path": file_path,
+        "url": original_url
+    }
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎵 Convert to Music", callback_data=f"music_{vid_id}"))
+    kb.add(InlineKeyboardButton("🎵 Convert to Music (MP3)", callback_data=f"music_{vid_id}"))
 
     uid_str = str(chat_id)
     user_is_vip = is_vip(chat_id)
@@ -1324,7 +1304,6 @@ def send_video_with_music(chat_id, file_path, platform=None, m_user=None):
     prefix = get_user_caption_prefix(m_user) if m_user else ""
     caption = ""
     
-    # Respect user caption settings
     if st.get("caption", True):
         caption = f"{prefix}{CAPTION_TEXT}"
         if st.get("source_link", True) and platform:
@@ -1345,18 +1324,19 @@ def send_video_with_music(chat_id, file_path, platform=None, m_user=None):
     with open(file_path, "rb") as video:
         bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
 
-    # AUTO MP3 CONVERT FOR VIP
+    # AUTO MP3 CONVERT FOR VIP USERS
     if user_is_vip and st.get("vip_auto_mp3", False):
         try:
-            audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
+            audio_path = f"audio_{vid_id}.mp3"
             subprocess.run(
-                ["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "mp3", "-ab", "128k", "-ar", "44100", audio_path],
+                ["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100", audio_path],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
             )
             with open(audio_path, "rb") as audio:
-                bot.send_audio(chat_id, audio, title="Auto Converted Music", caption=f"{prefix}🎵 Auto MP3")
+                bot.send_audio(chat_id, audio, title="Auto Converted MP3", caption=f"{prefix}🎵 Auto MP3 Express")
             if os.path.exists(audio_path): os.remove(audio_path)
-        except Exception: pass
+        except Exception as e:
+            print("Auto MP3 Error:", e)
 
 # ================= LINK HANDLER =================
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
@@ -1390,22 +1370,22 @@ def handle_links(message):
         bot.send_message(message.chat.id, "🔐 Verification Required:", reply_markup=kb)
         return
 
-    fast_msg = "⚡ <b>VIP Priority Downloading...</b>" if is_vip(user_id) else "⏳ Downloading..."
+    fast_msg = "⚡ <b>VIP Processing Media...</b>" if is_vip(user_id) else "⏳ Downloading video..."
     bot.send_message(message.chat.id, fast_msg, parse_mode="HTML")
     threading.Thread(target=download_media, args=(message.chat.id, link, message.from_user)).start()
 
-# ================= MEDIA DOWNLOADER ENGINE =================
+# ================= MEDIA DOWNLOADER ENGINE (ALL PLATFORMS) =================
 def download_media(chat_id, text, m_user=None):
     try:
         url = extract_url(text)
         if not url:
-            bot.send_message(chat_id, "❌ Invalid link")
+            bot.send_message(chat_id, "❌ Invalid or unsupported link.")
             return
 
         st = get_user_settings(chat_id)
 
-        # TikTok Fast API
-        if "tiktok.com" in url:
+        # 1. TIKTOK OPTIMIZED ENGINE
+        if "tiktok.com" in url or "vt.tiktok.com" in url:
             try:
                 api = f"https://tikwm.com/api/?url={url}"
                 res = requests.get(api, timeout=20).json()
@@ -1419,18 +1399,19 @@ def download_media(chat_id, text, m_user=None):
                             with open(filename, "rb") as photo:
                                 prefix = get_user_caption_prefix(m_user) if m_user else ""
                                 bot.send_photo(chat_id, photo, caption=f"{prefix}📸 Photo {i}\n{CAPTION_TEXT}")
-                            os.remove(filename)
+                            if os.path.exists(filename): os.remove(filename)
                         return
 
                     if data.get("play"):
                         video_data = requests.get(data["play"], timeout=40).content
                         filename = f"tiktok_{uuid.uuid4().hex[:6]}.mp4"
                         with open(filename, "wb") as f: f.write(video_data)
-                        send_video_with_music(chat_id, filename, "tiktok", m_user)
-                        if os.path.exists(filename): os.remove(filename)
+                        send_video_with_music(chat_id, filename, "tiktok", m_user, original_url=url)
                         return
-            except Exception: pass
+            except Exception as e:
+                print("TikTok API Fallback:", e)
 
+        # 2. PINTEREST SHORTENED URL RESOLVER
         if "pin.it" in url or "pinterest.com" in url:
             try:
                 session = requests.Session()
@@ -1438,6 +1419,7 @@ def download_media(chat_id, text, m_user=None):
                 url = resp.url
             except Exception: pass
 
+        # IDENTIFY PLATFORM
         platform = "other"
         if "instagram.com" in url: platform = "instagram"
         elif "pinterest.com" in url or "pin.it" in url: platform = "pinterest"
@@ -1447,7 +1429,6 @@ def download_media(chat_id, text, m_user=None):
 
         out_template = f"dl_{platform}_{uuid.uuid4().hex[:6]}.%(ext)s"
 
-        # Quality Format Based on User Settings
         user_quality = st.get("quality", "Best")
         format_opt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         
@@ -1467,7 +1448,8 @@ def download_media(chat_id, text, m_user=None):
             "nocheckcertificate": True,
             "geo_bypass": True,
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
             }
         }
 
@@ -1490,49 +1472,81 @@ def download_media(chat_id, text, m_user=None):
                         with open(file_path, "rb") as photo:
                             prefix = get_user_caption_prefix(m_user) if m_user else ""
                             bot.send_photo(chat_id, photo, caption=f"{prefix}{CAPTION_TEXT}")
+                        os.remove(file_path)
                     else:
-                        send_video_with_music(chat_id, file_path, platform, m_user)
+                        send_video_with_music(chat_id, file_path, platform, m_user, original_url=url)
 
-                    try:
-                        if os.path.exists(file_path): os.remove(file_path)
-                    except Exception: pass
         return
 
     except Exception as e:
         print("DOWNLOAD ERROR:", e)
-        bot.send_message(chat_id, "❌ Download failed or invalid link.")
+        bot.send_message(chat_id, "❌ Download failed! Please make sure link is public and accurate.")
 
-# ================= MUSIC CONVERSION =================
+# ================= FIXED MUSIC CONVERSION =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
 def convert_music(call):
     vid_id = call.data.split("_")[1]
     if vid_id not in video_files:
-        bot.answer_callback_query(call.id, "File expired")
+        bot.answer_callback_query(call.id, "❌ Audio conversion expired! Please re-send the link.", show_alert=True)
         return
 
-    file_path = video_files[vid_id]
-    audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
+    vdata = video_files[vid_id]
+    file_path = vdata.get("file_path")
+    original_url = vdata.get("url")
+
+    bot.answer_callback_query(call.id, "⚡ Converting to MP3 audio...")
+
+    audio_path = f"audio_{vid_id}.mp3"
 
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "mp3", "-ab", "128k", "-ar", "44100", audio_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
-        )
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📢 BOT CHANNEL", url="https://t.me/tiktokvediodownload"))
-
-        prefix = get_user_caption_prefix(call.from_user)
-        with open(audio_path, "rb") as audio:
-            bot.send_audio(
-                call.message.chat.id, audio, title="Converted Music",
-                performer="DownloadBot", caption=f"{prefix}{CAPTION_TEXT}", reply_markup=kb
+        # Check local stored video file first
+        if file_path and os.path.exists(file_path):
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "libmp3lame", "-ab", "192k", "-ar", "44100", audio_path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
             )
+        # Fallback to direct redownload audio extraction if file was missing
+        elif original_url:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': f'audio_{vid_id}.%(ext)s',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([original_url])
+            audio_path = f"audio_{vid_id}.mp3"
 
-        if os.path.exists(audio_path): os.remove(audio_path)
-        if os.path.exists(file_path): os.remove(file_path)
-        bot.answer_callback_query(call.id, "🎵 Music converted")
+        if os.path.exists(audio_path):
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("📢 BOT CHANNEL", url="https://t.me/tiktokvediodownload"))
+
+            prefix = get_user_caption_prefix(call.from_user)
+            with open(audio_path, "rb") as audio:
+                bot.send_audio(
+                    call.message.chat.id, 
+                    audio, 
+                    title="Converted Music Audio",
+                    performer="DownloadBot", 
+                    caption=f"{prefix}🎵 Audio Converted Successfully!\n{CAPTION_TEXT}", 
+                    reply_markup=kb
+                )
+
+            os.remove(audio_path)
+            if file_path and os.path.exists(file_path):
+                try: os.remove(file_path)
+                except Exception: pass
+        else:
+            bot.send_message(call.message.chat.id, "❌ Audio extraction failed.")
+
     except Exception as e:
-        bot.send_message(call.message.chat.id, f"❌ Music conversion failed:\n{e}")
+        print("AUDIO CONVERT ERROR:", e)
+        bot.send_message(call.message.chat.id, f"❌ Failed to convert music: {str(e)}")
 
 # ================= MESSAGE USER CALLBACK =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("msguser|"))
