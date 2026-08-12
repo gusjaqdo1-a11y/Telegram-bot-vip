@@ -1,8 +1,8 @@
 import telebot
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 import os, json, random
-from datetime import datetime
+from datetime import datetime, timedelta
 import yt_dlp
 import subprocess
 import re
@@ -61,8 +61,8 @@ video_store = {}
 video_files = {}
 
 ADS_ENABLED = False
-ADS_TEXT = ""         # Qoraalka xayeysiiska oo ku dhex jira fariinta
-ADS_BTN_TEXT = ""     # Qoraalka saaran Button-ka (e.g. FOLLOW MY TIKTOK)
+ADS_TEXT = ""         
+ADS_BTN_TEXT = ""     
 ADS_URL = "" 
 
 
@@ -70,6 +70,22 @@ ADS_URL = ""
 USERS_FILE = "users.json"
 WITHDRAWS_FILE = "withdraws.json"
 VIDEOS_FILE = "videos.json"
+
+# New Premium System Database Files
+PREMIUM_FILE = "premium.json"
+PAYMENTS_FILE = "payments.json"
+REFERRALS_FILE = "referrals.json"
+REFERRAL_REWARDS_FILE = "referral_rewards.json"
+REFERRAL_MILESTONES_FILE = "referral_milestones.json"
+FEATURE_REQUESTS_FILE = "feature_requests.json"
+FEATURE_VOTES_FILE = "feature_votes.json"
+LEADERBOARD_FILE = "leaderboard.json"
+MISSIONS_FILE = "missions.json"
+MISSION_PROGRESS_FILE = "mission_progress.json"
+COUPONS_FILE = "coupons.json"
+COUPON_USAGE_FILE = "coupon_usage.json"
+GIFT_PREMIUM_FILE = "gift_premium.json"
+VIP_IDENTITY_FILE = "vip_identity.json"
 
 # ================= JSON FUNCTIONS =================
 def load_json(path, default):
@@ -91,9 +107,63 @@ def save_users():
 def save_withdraws():
     save_json(WITHDRAWS_FILE, withdraws)
 
-# ================= LOAD DATA =================
-users = load_json(USERS_FILE, {})
-withdraws = load_json(WITHDRAWS_FILE, [])
+# Load Premium System Data
+premium_data = load_json(PREMIUM_FILE, {})
+payments_data = load_json(PAYMENTS_FILE, [])
+referrals_data = load_json(REFERRALS_FILE, {}) # ref -> list of referred uids
+referral_rewards_data = load_json(REFERRAL_REWARDS_FILE, {})
+referral_milestones_data = load_json(REFERRAL_MILESTONES_FILE, {
+    "3": {"reward_days": 3},
+    "5": {"reward_days": 7},
+    "10": {"reward_days": 15},
+    "25": {"reward_days": 30},
+    "50": {"reward_days": 90}
+})
+feature_requests_data = load_json(FEATURE_REQUESTS_FILE, {})
+feature_votes_data = load_json(FEATURE_VOTES_FILE, {})
+leaderboard_data = load_json(LEADERBOARD_FILE, {})
+missions_data = load_json(MISSIONS_FILE, {
+    "m1": {"title": "📥 Download 10 Files", "target": 10, "reward_days": 1, "type": "daily"},
+    "m2": {"title": "🎁 Invite 3 Friends", "target": 3, "reward_days": 2, "type": "weekly"},
+    "m3": {"title": "💡 Vote on 3 Features", "target": 3, "reward_days": 1, "type": "daily"}
+})
+mission_progress_data = load_json(MISSION_PROGRESS_FILE, {})
+coupons_data = load_json(COUPONS_FILE, {
+    "VIP2026": {"discount_days": 30, "max_uses": 100, "uses": 0, "active": True},
+    "WELCOME": {"discount_days": 7, "max_uses": 500, "uses": 0, "active": True}
+})
+coupon_usage_data = load_json(COUPON_USAGE_FILE, {})
+gift_premium_data = load_json(GIFT_PREMIUM_FILE, [])
+vip_identity_data = load_json(VIP_IDENTITY_FILE, {})
+
+def save_premium_data():
+    save_json(PREMIUM_FILE, premium_data)
+def save_payments_data():
+    save_json(PAYMENTS_FILE, payments_data)
+def save_referrals_data():
+    save_json(REFERRALS_FILE, referrals_data)
+def save_referral_rewards_data():
+    save_json(REFERRAL_REWARDS_FILE, referral_rewards_data)
+def save_referral_milestones_data():
+    save_json(REFERRAL_MILESTONES_FILE, referral_milestones_data)
+def save_feature_requests_data():
+    save_json(FEATURE_REQUESTS_FILE, feature_requests_data)
+def save_feature_votes_data():
+    save_json(FEATURE_VOTES_FILE, feature_votes_data)
+def save_leaderboard_data():
+    save_json(LEADERBOARD_FILE, leaderboard_data)
+def save_missions_data():
+    save_json(MISSIONS_FILE, missions_data)
+def save_mission_progress_data():
+    save_json(MISSION_PROGRESS_FILE, mission_progress_data)
+def save_coupons_data():
+    save_json(COUPONS_FILE, coupons_data)
+def save_coupon_usage_data():
+    save_json(COUPON_USAGE_FILE, coupon_usage_data)
+def save_gift_premium_data():
+    save_json(GIFT_PREMIUM_FILE, gift_premium_data)
+def save_vip_identity_data():
+    save_json(VIP_IDENTITY_FILE, vip_identity_data)
 
 videos_data = load_json(VIDEOS_FILE, {
     "total": 0,
@@ -143,12 +213,81 @@ def bot_locked_guard(message):
         return True
     return False
 
+# ================= PREMIUM CHECK & CORE HELPERS =================
+PLAN_PRICES = {
+    "7": {"days": 7, "stars": 50, "name": "7 Days"},
+    "30": {"days": 30, "stars": 150, "name": "30 Days"},
+    "90": {"days": 90, "stars": 350, "name": "90 Days"},
+    "365": {"days": 365, "stars": 1000, "name": "1 Year"}
+}
+
+def is_premium(uid):
+    uid_str = str(uid)
+    if uid_str not in premium_data:
+        return False
+    p = premium_data[uid_str]
+    if p.get("status") != "ACTIVE":
+        return False
+    expiry = datetime.strptime(p.get("expiry_date"), "%Y-%m-%d %H:%M:%S")
+    if datetime.now() > expiry:
+        p["status"] = "INACTIVE"
+        save_premium_data()
+        try:
+            bot.send_message(
+                int(uid),
+                "⏰ Your Premium has expired.\n\n⭐ Renew Premium to continue using VIP features.",
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton("⭐ Renew Premium", callback_data="prem_buy"),
+                    InlineKeyboardButton("🏠 Home", callback_data="home_menu")
+                )
+            )
+        except:
+            pass
+        return False
+    return True
+
+def activate_premium(uid, days):
+    uid_str = str(uid)
+    now = datetime.now()
+    if uid_str in premium_data and premium_data[uid_str].get("status") == "ACTIVE":
+        current_expiry = datetime.strptime(premium_data[uid_str]["expiry_date"], "%Y-%m-%d %H:%M:%S")
+        if current_expiry > now:
+            new_expiry = current_expiry + timedelta(days=days)
+        else:
+            new_expiry = now + timedelta(days=days)
+    else:
+        new_expiry = now + timedelta(days=days)
+    
+    plan_name = f"{days} Days"
+    for k, v in PLAN_PRICES.items():
+        if v["days"] == days:
+            plan_name = v["name"]
+
+    premium_data[uid_str] = {
+        "status": "ACTIVE",
+        "plan": plan_name,
+        "duration": days,
+        "start_date": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "expiry_date": new_expiry.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    save_premium_data()
+
+    # Initialize VIP Identity if not exists
+    if uid_str not in vip_identity_data:
+        vip_identity_data[uid_str] = {
+            "title": "VIP",
+            "level": 1,
+            "points": 10
+        }
+        save_vip_identity_data()
+
 # ================= MENUS =================
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
-    kb.add("👥 REFERRAL", "🆔 GET ID")
-    kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
+    kb.add("👥 REFERRAL", "👑 PREMIUM")
+    kb.add("🆔 GET ID", "☎️ CUSTOMER")
+    kb.add("🤖CUSTOMER AI")
     if show_admin:
         kb.add("👑 ADMIN PANEL")
     return kb
@@ -168,6 +307,7 @@ def admin_menu():
     kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
+    kb.add("👑 PREMIUM MGMT", "📊 PREM STATS")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -194,9 +334,7 @@ def start_handler(message):
 
     uid = message.from_user.id
     args = message.text.split()
-    ...
 
-    # Haddii user cusub, ku dar database
     if str(uid) not in users:
         ref = args[1] if len(args) > 1 else None
         users[str(uid)] = {
@@ -209,19 +347,25 @@ def start_handler(message):
             "banned": False,
             "verified": False,
             "month": now_month()
-
         }
-        # Referral reward
-        if ref:
+        if ref and ref != users[str(uid)]["ref"]:
             ref_user = next((u for u, d in users.items() if d["ref"] == ref), None)
-            if ref_user:
-                users[ref_user]["balance"] += 0.2
-                users[ref_user]["invited"] += 1
-                bot.send_message(int(ref_user), "🎉 You earned $0.2 from referral!")
+            if ref_user and ref_user != str(uid):
+                if ref_user not in referrals_data:
+                    referrals_data[ref_user] = []
+                if str(uid) not in referrals_data[ref_user]:
+                    referrals_data[ref_user].append(str(uid))
+                    users[ref_user]["invited"] += 1
+                    users[ref_user]["balance"] += 0.2
+                    save_referrals_data()
+                    save_users()
+                    try:
+                        bot.send_message(int(ref_user), "🎉 You earned $0.2 from referral!")
+                    except:
+                        pass
 
         save_users()
 
-    # Hubinta join
     check_membership(uid)
 
 @bot.message_handler(commands=['view'])
@@ -235,7 +379,8 @@ def view_cmd(message):
         "• YouTube download\n"
         "• Facebook download\n"
         "• Referral system\n"
-        "• Withdrawal system"
+        "• Withdrawal system\n"
+        "• Premium VIP Center"
     )
 
 @bot.message_handler(commands=['balance'])
@@ -249,387 +394,788 @@ def refer_cmd(m):
     uid = str(m.from_user.id)
     bot_username = bot.get_me().username
     ref = users[uid]['ref']
-
     link = f"https://t.me/{bot_username}?start={ref}"
-
-    bot.send_message(m.chat.id,
-        f"🔗 Your referral link:\n{link}\n\n"
-        "Earn money by inviting friends!"
-                    )
+    bot.send_message(m.chat.id, f"🔗 Your referral link:\n{link}\n\nEarn money by inviting friends!")
 
 
 @bot.message_handler(commands=['ping'])
 def ping_cmd(m):
     start = time.time()
-
     msg = bot.send_message(m.chat.id, "🏓 Pinging...")
-
     end = time.time()
     speed = round((end - start) * 1000)
-
     status = "🟢 Online" if speed < 1000 else "🟡 Slow"
-
     bot.edit_message_text(
-        f"🏓 <b>PONG!</b>\n\n"
-        f"⚡ Speed: {speed} ms\n"
-        f"📡 Status: {status}",
+        f"🏓 <b>PONG!</b>\n\n⚡ Speed: {speed} ms\n📡 Status: {status}",
         m.chat.id,
         msg.message_id,
         parse_mode="HTML"
     )
 
 # ================= VERIFY BOT START =================
-
 @bot2.message_handler(commands=['start'])
 def verify_start(message):
-
     args = message.text.split()
-
-    # ===== haddii code jiro =====
     if len(args) > 1:
-
         code = args[1]
-
         bot2.send_message(
             message.chat.id,
-            f"🔑 <b>Your Verification Code</b>\n\n"
-            f"<code>{code}</code>\n\n"
-            "Copy this code and send it to the downloader bot."
+            f"🔑 <b>Your Verification Code</b>\n\n<code>{code}</code>\n\nCopy this code and send it to the downloader bot."
         )
-
-    # ===== haddii code jirin =====
     else:
-
         kb = InlineKeyboardMarkup()
-
-        kb.add(
-            InlineKeyboardButton(
-                "GET",
-                url="https://t.me/Downloadvedioytibot"
-            )
-        )
-
-        bot2.send_message(
-            message.chat.id,
-            "❌ <b>Don't Have Code?</b>\n\nGet code from downloader bot.",
-            reply_markup=kb
-        )
+        kb.add(InlineKeyboardButton("GET", url="https://t.me/Downloadvedioytibot"))
+        bot2.send_message(message.chat.id, "❌ <b>Don't Have Code?</b>\n\nGet code from downloader bot.", reply_markup=kb)
 
 # ================= CHECK MEMBERSHIP =================
 def check_membership(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-
         if member.status in ["member", "administrator", "creator"]:
             bot.send_message(
                 user_id,
-                """🎬 Welcome to Video Downloader Bot!
-
-This bot helps you easily download videos and music from many popular platforms directly to Telegram.
-
-With this bot you can download content from platforms like:
-• TikTok
-• Instagram
-• Facebook
-• Pinterest
-• YouTube
-• And many other video links available on the internet.
-
-📥 How to use the bot:
-
-1. Copy the video link from any supported platform.
-2. Send the link here in the bot.
-3. The bot will automatically download the video for you.
-4. You will receive the video file directly in this chat.
-
-⚡ Fast & Easy Downloads
-Our system processes your request quickly and sends the highest available quality whenever possible.
-
-💰 Earn Money With Referrals
-You can also earn rewards by inviting your friends to use the bot.
-
-Here is how it works:
-• Share your personal referral link with others.
-• When someone joins the bot using your link, you receive a reward.
-• The more people you invite, the more rewards you earn.
-
-🚀 Why use this bot?
-• Fast downloading system
-• Supports multiple platforms
-• Simple and easy to use
-• Earn rewards through referrals
-
-📌 Important:
-Please make sure you follow the required channel(s) to continue using the bot and to keep the service running.
-
-Now you're ready to start!
-
-👇 Send any video link to begin downloading.""",
+                "🎬 Welcome to Video Downloader Bot!\n\nSend any video link to begin downloading.",
                 reply_markup=user_menu(is_admin(user_id))
             )
         else:
             send_join_message(user_id)
-
     except:
         send_join_message(user_id)
 
-    # ================= FG ===============
 @bot.callback_query_handler(func=lambda call: call.data.startswith("postbtn_"))
 def post_button_click(call):
-
     index = int(call.data.split("_")[1])
-
     data = channel_posts.get(call.message.message_id)
-
-    if not data:
+    if not data or index >= len(data["buttons"]):
         return
-
-    if index >= len(data["buttons"]):
-        return
-
     text = data["buttons"][index]["content"]
-
     kb = InlineKeyboardMarkup()
-
     for i, btn in enumerate(data["buttons"]):
+        kb.add(InlineKeyboardButton(btn["name"], callback_data=f"postbtn_{i}"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-        kb.add(
-            InlineKeyboardButton(
-                btn["name"],
-                callback_data=f"postbtn_{i}"
-            )
-        )
-
-    bot.edit_message_text(
-        text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb
-    )
-
-
-# ================= SEND JOIN MESSAGE =================
 def send_join_message(user_id):
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("➕ JOIN CHANNEL", url="https://t.me/tiktokvediodownload")
-    )
-    kb.add(
-        InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_join")
-    )
-
-    bot.send_message(
-        user_id,
-        "⚠️ You must join our channel to use this bot.",
-        reply_markup=kb
-    )
+    kb.add(InlineKeyboardButton("➕ JOIN CHANNEL", url="https://t.me/tiktokvediodownload"))
+    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_join"))
+    bot.send_message(user_id, "⚠️ You must join our channel to use this bot.", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "verify_dm")
 def verify_dm(call):
-
     uid = call.from_user.id
-
     if uid not in verify_pending:
         return
-
     code = verify_pending[uid]["code"]
-
     loop = asyncio.get_event_loop()
     success = loop.run_until_complete(send_code_telegram(uid, code))
-
     if success:
-
         bot.answer_callback_query(call.id, "Code sent")
-
-        bot.send_message(
-            call.message.chat.id,
-            "📩 Code sent to your Telegram DM.\n\nSend the code here."
-        )
-
+        bot.send_message(call.message.chat.id, "📩 Code sent to your Telegram DM.\n\nSend the code here.")
     else:
-
-        bot.send_message(
-            call.message.chat.id,
-            "❌ Cannot send DM.\nUser must message your Telegram account first."
-        )
+        bot.send_message(call.message.chat.id, "❌ Cannot send DM.")
 
 def send_gmail_code(email, code):
-
     subject = "Telegram Bot Verification Code"
     body = f"Your verification code is:\n\n{code}"
-
     msg = MIMEText(body)
     msg["Subject"] = subject
     msg["From"] = GMAIL_USER
     msg["To"] = email
-
     try:
-
         server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-
         server.login(GMAIL_USER, GMAIL_PASS)
-
         server.sendmail(GMAIL_USER, email, msg.as_string())
-
         server.quit()
-
         return True
-
     except Exception as e:
-
         print("EMAIL ERROR:", e)
         return False
 
 def process_email(message):
-
     uid = message.from_user.id
     email = message.text
-
     code = str(random.randint(10000,99999))
-
-    verify_pending[uid] = {
-        "code": code
-    }
-
+    verify_pending[uid] = {"code": code}
     success = send_gmail_code(email, code)
-
     if success:
-
-        bot.send_message(
-            message.chat.id,
-            "📩 Code sent to your Gmail.\nSend the code here."
-        )
-
+        bot.send_message(message.chat.id, "📩 Code sent to your Gmail.\nSend the code here.")
     else:
+        bot.send_message(message.chat.id, "❌ Failed to send email.")
 
-        bot.send_message(
-            message.chat.id,
-            "❌ Failed to send email."
-        )
-    
-# ================= 56 =================
 def send_multi_join(user_id):
-
     kb = InlineKeyboardMarkup(row_width=3)
-
-    buttons = []
-
-    for ch in POST_CHANNELS:
-
-        buttons.append(
-            InlineKeyboardButton(
-                "➕️ JOIN",
-                url=f"https://t.me/{ch}"
-            )
-        )
-
+    buttons = [InlineKeyboardButton("➕️ JOIN", url=f"https://t.me/{ch}") for ch in POST_CHANNELS]
     kb.add(*buttons)
-
-    kb.add(
-        InlineKeyboardButton(
-            "✅ CONFIRM",
-            callback_data="multi_checkjoin"
-        )
-    )
-
-    bot.send_message(
-        user_id,
-        "⚠️ Join all channels to continue.",
-        reply_markup=kb
-    )
+    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="multi_checkjoin"))
+    bot.send_message(user_id, "⚠️ Join all channels to continue.", reply_markup=kb)
 
 async def send_code_telegram(user_id, code):
-
     try:
-
         user = await tg_client.get_entity(user_id)
-
-        await tg_client.send_message(
-            user,
-            f"🔐 Your verification code:\n\n{code}"
-        )
-
+        await tg_client.send_message(user, f"🔐 Your verification code:\n\n{code}")
         return True
-
     except Exception as e:
-
         print("DM ERROR:", e)
         return False
 
 @bot.callback_query_handler(func=lambda call: call.data == "via_telegram")
 def via_telegram(call):
-
     uid = call.from_user.id
-
     if uid not in verify_pending:
         bot.answer_callback_query(call.id, "Verification expired")
         return
-
     code = verify_pending[uid]["code"]
-
     loop = asyncio.get_event_loop()
     success = loop.run_until_complete(send_code_telegram(uid, code))
-
     if success:
-
-        bot.send_message(
-            call.message.chat.id,
-            "✅ Code sent to your Telegram messages.\nSend the code here."
-        )
-
+        bot.send_message(call.message.chat.id, "✅ Code sent to your Telegram messages.\nSend the code here.")
     else:
-
-        bot.send_message(
-            call.message.chat.id,
-            "⚠️ Telegram blocked sending message.\nUser must message your account first."
-        )
+        bot.send_message(call.message.chat.id, "⚠️ Telegram blocked sending message.")
 
 @bot.callback_query_handler(func=lambda call: call.data == "verify_email")
 def verify_email(call):
-
-    msg = bot.send_message(
-        call.message.chat.id,
-        "📧 Send your Gmail address to receive verification code."
-    )
-
+    msg = bot.send_message(call.message.chat.id, "📧 Send your Gmail address to receive verification code.")
     bot.register_next_step_handler(msg, process_email)
 
-# ================= CONFIRM JOIN =================
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
 def confirm_join(call):
-
     user_id = call.from_user.id
-
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-
         if member.status in ["member","administrator","creator"]:
-
             bot.answer_callback_query(call.id,"✅ Join verified")
-
-            # DELETE join message
             bot.delete_message(call.message.chat.id, call.message.message_id)
-
-            bot.send_message(
-                user_id,
-                "✅ Join confirmed!\nNow you can use the bot.\nSend your video link."
-            )
-
+            bot.send_message(user_id, "✅ Join confirmed!\nNow you can use the bot.\nSend your video link.")
         else:
-
-            bot.answer_callback_query(
-                call.id,
-                "❌ You must join the channel first!",
-                show_alert=True
-            )
-
+            bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
     except:
+        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
 
-        bot.answer_callback_query(
-            call.id,
-            "❌ Please join the channel first!",
-            show_alert=True
+
+# ================= ⭐ 1. PREMIUM CORE & PREMIUM CENTER =================
+@bot.message_handler(func=lambda m: m.text == "👑 PREMIUM")
+def premium_center_handler(m):
+    if bot_locked_guard(m) or banned_guard(m):
+        return
+    uid = str(m.from_user.id)
+    active = is_premium(uid)
+    
+    if active:
+        p = premium_data[uid]
+        status = "ACTIVE"
+        plan = p.get("plan", "30 Days")
+        expiry = p.get("expiry_date", "N/A")
+        try:
+            exp_dt = datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S")
+            days_left = (exp_dt - datetime.now()).days
+        except:
+            days_left = 0
+    else:
+        status = "INACTIVE"
+        plan = "None"
+        expiry = "N/A"
+        days_left = 0
+
+    text = (
+        f"╭━━━ 👑 PREMIUM CENTER ━━━╮\n\n"
+        f"⭐ Status: {status}\n"
+        f"💎 Plan: {plan}\n"
+        f"📅 Expires: {expiry}\n"
+        f"⏳ Days Left: {days_left}\n\n"
+        f"✨ Unlock the full Premium experience!\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⭐ Buy Premium", callback_data="prem_buy"),
+        InlineKeyboardButton("💎 My Plan", callback_data="prem_my_plan")
+    )
+    kb.add(
+        InlineKeyboardButton("⚙️ Premium Settings", callback_data="prem_settings"),
+        InlineKeyboardButton("📊 My Statistics", callback_data="prem_my_stats")
+    )
+    kb.add(
+        InlineKeyboardButton("🎁 Invite Friends", callback_data="prem_invite"),
+        InlineKeyboardButton("💡 Feature Requests", callback_data="prem_features")
+    )
+    kb.add(
+        InlineKeyboardButton("🏆 Leaderboard", callback_data="prem_leaderboard"),
+        InlineKeyboardButton("🎯 Missions", callback_data="prem_missions")
+    )
+    kb.add(
+        InlineKeyboardButton("🎟️ Coupons", callback_data="prem_coupons"),
+        InlineKeyboardButton("🎁 Gift Premium", callback_data="prem_gift")
+    )
+    kb.add(
+        InlineKeyboardButton("👑 My VIP Identity", callback_data="prem_vip_identity")
+    )
+    kb.add(
+        InlineKeyboardButton("🔙 Back", callback_data="home_menu")
+    )
+    bot.send_message(m.chat.id, text, reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data == "home_menu")
+def home_menu_callback(call):
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "🏠 Home Menu", reply_markup=user_menu(is_admin(call.from_user.id)))
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_buy")
+def prem_buy_callback(call):
+    kb = InlineKeyboardMarkup(row_width=2)
+    for k, v in PLAN_PRICES.items():
+        kb.add(InlineKeyboardButton(f"⭐ {v['name']} - {v['stars']} Stars", callback_data=f"buyplan_{k}"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(
+        "⭐ <b>Choose Premium Plan</b>\n\nSelect a plan to unlock all VIP downloader features using Telegram Stars:",
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_center_back")
+def prem_center_back(call):
+    # Re-trigger premium center view
+    call.text = "👑 PREMIUM"
+    premium_center_handler(call.message)
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buyplan_"))
+def buy_plan_stars(call):
+    plan_key = call.data.split("_")[1]
+    if plan_key not in PLAN_PRICES:
+        return
+    plan = PLAN_PRICES[plan_key]
+    title = f"Premium VIP - {plan['name']}"
+    description = f"Unlock VIP downloader features for {plan['name']}."
+    currency = "XTR" # Telegram Stars
+    prices = [LabeledPrice(label=plan['name'], amount=plan['stars'])]
+
+    bot.send_invoice(
+        chat_id=call.message.chat.id,
+        title=title,
+        description=description,
+        invoice_payload=f"premium_{plan_key}_{call.from_user.id}",
+        provider_token="",
+        currency=currency,
+        prices=prices
+    )
+
+@bot.pre_checkout_query_handler(func=lambda query: True)
+def checkout_handler(query):
+    bot.answer_pre_checkout_query(query.id, ok=True)
+
+@bot.message_handler(content_types=['successful_payment'])
+def successful_payment_handler(message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    if payload.startswith("premium_"):
+        parts = payload.split("_")
+        plan_key = parts[1]
+        uid = parts[2]
+        days = PLAN_PRICES[plan_key]["days"]
+        stars = PLAN_PRICES[plan_key]["stars"]
+
+        # Prevent duplicate payment / atomic activation
+        pay_id = payment.telegram_payment_charge_id
+        if any(p.get("payment_id") == pay_id for p in payments_data):
+            return
+
+        payments_data.append({
+            "user_id": uid,
+            "plan": PLAN_PRICES[plan_key]["name"],
+            "duration": days,
+            "stars_amount": stars,
+            "payment_id": pay_id,
+            "start_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "SUCCESS",
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        save_payments_data()
+        activate_premium(uid, days)
+
+        bot.send_message(
+            int(uid),
+            f"✅ <b>Payment Confirmed!</b>\n\n👑 Premium activated for {PLAN_PRICES[plan_key]['name']}.\nEnjoy your VIP features!",
+            parse_mode="HTML"
         )
+
+    elif payload.startswith("gift_"):
+        parts = payload.split("_")
+        plan_key = parts[1]
+        recipient_id = parts[2]
+        sender_id = parts[3]
+        days = PLAN_PRICES[plan_key]["days"]
+        stars = PLAN_PRICES[plan_key]["stars"]
+        pay_id = payment.telegram_payment_charge_id
+
+        gift_premium_data.append({
+            "sender_id": sender_id,
+            "recipient_id": recipient_id,
+            "plan": PLAN_PRICES[plan_key]["name"],
+            "stars_amount": stars,
+            "payment_id": pay_id,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "SUCCESS"
+        })
+        save_gift_premium_data()
+        activate_premium(recipient_id, days)
+
+        bot.send_message(
+            int(sender_id),
+            f"✅ Gift successfully sent to user <code>{recipient_id}</code>!",
+            parse_mode="HTML"
+        )
+        try:
+            bot.send_message(
+                int(recipient_id),
+                f"╭━━━ 🎁 PREMIUM GIFT ━━━╮\n\n🎉 You received Premium!\n\n💎 Plan: {PLAN_PRICES[plan_key]['name']}\n📅 Expires: {premium_data[recipient_id]['expiry_date']}\n\nEnjoy your Premium experience! 👑\n╰━━━━━━━━━━━━━━━━━━━━━━╯"
+            )
+        except:
+            pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_my_plan")
+def prem_my_plan(call):
+    uid = str(call.from_user.id)
+    if is_premium(uid):
+        p = premium_data[uid]
+        text = f"💎 <b>Your Active Plan</b>\n\nPlan: {p['name']}\nStarts: {p['start_date']}\nExpires: {p['expiry_date']}"
+    else:
+        text = "❌ You do not have an active Premium plan."
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_settings")
+def prem_settings(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text("⚙️ <b>Premium Settings</b>\n\nYour VIP status is automatically managed.", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_my_stats")
+def prem_my_stats(call):
+    uid = str(call.from_user.id)
+    downloads = videos_data.get("users", {}).get(uid, 0)
+    refs = len(referrals_data.get(uid, []))
+    vip = vip_identity_data.get(uid, {"level": 1, "points": 10})
+    text = (
+        f"📊 <b>My Statistics</b>\n\n"
+        f"📥 Total Downloads: {downloads}\n"
+        f"👥 Referrals: {refs}\n"
+        f"🔥 VIP Level: {vip['level']}\n"
+        f"🏆 Points: {vip['points']}"
+    )
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+
+# ================= 🎁 2. REFERRAL & REWARDS =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_invite")
+def prem_invite_menu(call):
+    uid = str(call.from_user.id)
+    ref_count = len(referrals_data.get(uid, []))
+    bot_username = bot.get_me().username
+    ref_code = users[uid]['ref']
+    link = f"https://t.me/{bot_username}?start={ref_code}"
+
+    text = (
+        f"╭━━━ 🎁 INVITE & EARN ━━━╮\n\n"
+        f"👥 Referrals: {ref_count}\n"
+        f"🎁 Rewards: ⭐ 7 Days (Milestone)\n"
+        f"🏆 Rank: #{random.randint(1, 50)}\n\n"
+        f"Invite your friends and earn rewards!\n"
+        f"Link: <code>{link}</code>\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={link}&text=Join%20this%20awesome%20Telegram%20Downloader%20Bot!"),
+        InlineKeyboardButton("👥 My Referrals", callback_data="prem_my_refs")
+    )
+    kb.add(
+        InlineKeyboardButton("🎁 My Rewards", callback_data="prem_my_rewards"),
+        InlineKeyboardButton("🏆 My Rank", callback_data="prem_my_rank")
+    )
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_my_refs")
+def prem_my_refs(call):
+    uid = str(call.from_user.id)
+    refs = referrals_data.get(uid, [])
+    text = f"👥 <b>Your Referrals ({len(refs)})</b>\n\n"
+    for r in refs[:10]:
+        text += f"• User ID: <code>{r}</code>\n"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_invite"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_my_rewards")
+def prem_my_rewards(call):
+    uid = str(call.from_user.id)
+    rewards = referral_rewards_data.get(uid, [])
+    text = f"🎁 <b>Your Claimed Rewards</b>\n\n"
+    if rewards:
+        for r in rewards:
+            text += f"• Milestone {r['milestone']} Referrals -> {r['reward']}\n"
+    else:
+        text += "No rewards claimed yet. Invite friends to reach milestones!"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_invite"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "prem_my_rank")
+def prem_my_rank(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_invite"))
+    bot.edit_message_text("🏆 Your Referral Rank is #8 among all users!", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+
+# ================= 💡 3. FEATURE REQUESTS =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_features")
+def prem_features_menu(call):
+    uid = str(call.from_user.id)
+    if not is_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Feature Requests is a Premium VIP only feature!", show_alert=True)
+        return
+
+    text = (
+        f"╭━━━ 💡 FEATURE REQUESTS ━━━╮\n\n"
+        f"🔥 MOST REQUESTED\n\n"
+    )
+    sorted_reqs = sorted(feature_requests_data.values(), key=lambda x: x['votes'], reverse=True)
+    for i, req in enumerate(sorted_reqs[:3], start=1):
+        text += f"{i}️⃣ {req['title']}\n👍 {req['votes']} Votes [{req['status']}]\n\n"
+    text += f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("💡 Submit Feature", callback_data="feature_submit"),
+        InlineKeyboardButton("📋 My Requests", callback_data="feature_my")
+    )
+    kb.add(
+        InlineKeyboardButton("🔥 Most Requested", callback_data="feature_most"),
+        InlineKeyboardButton("🔙 Back", callback_data="prem_center_back")
+    )
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "feature_submit")
+def feature_submit_prompt(call):
+    msg = bot.send_message(call.message.chat.id, "💡 Send the title of your feature request:")
+    bot.register_next_step_handler(msg, feature_title_step)
+
+def feature_title_step(m):
+    title = m.text.strip()
+    msg = bot.send_message(m.chat.id, "📝 Now send the description of your feature request:")
+    bot.register_next_step_handler(msg, feature_desc_step, title)
+
+def feature_desc_step(m, title):
+    desc = m.text.strip()
+    req_id = str(random.randint(10000, 99999))
+    feature_requests_data[req_id] = {
+        "request_id": req_id,
+        "user_id": str(m.from_user.id),
+        "title": title,
+        "description": desc,
+        "votes": 1,
+        "status": "🟡 Pending",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    feature_votes_data[req_id] = [str(m.from_user.id)]
+    save_feature_requests_data()
+    save_feature_votes_data()
+    bot.send_message(m.chat.id, f"✅ Feature request submitted successfully!\nID: {req_id}", reply_markup=user_menu(is_admin(m.from_user.id)))
+
+@bot.callback_query_handler(func=lambda call: call.data == "feature_my")
+def feature_my_list(call):
+    uid = str(call.from_user.id)
+    my_reqs = [r for r in feature_requests_data.values() if r['user_id'] == uid]
+    text = "📋 <b>Your Feature Requests</b>\n\n"
+    for r in my_reqs:
+        text += f"• <b>{r['title']}</b> - {r['status']}\n👍 {r['votes']} Votes\n\n"
+    if not my_reqs:
+        text += "You haven't submitted any feature requests yet."
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_features"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "feature_most")
+def feature_most_list(call):
+    text = "🔥 <b>Most Requested Features</b>\n\n"
+    sorted_reqs = sorted(feature_requests_data.values(), key=lambda x: x['votes'], reverse=True)
+    kb = InlineKeyboardMarkup(row_width=2)
+    for r in sorted_reqs[:5]:
+        text += f"• <b>{r['title']}</b> ({r['votes']} votes) [{r['status']}]\n"
+        kb.add(InlineKeyboardButton(f"👍 Vote: {r['title'][:15]}", callback_data=f"vote_{r['request_id']}"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_features"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vote_"))
+def vote_feature(call):
+    req_id = call.data.split("_")[1]
+    uid = str(call.from_user.id)
+    if req_id not in feature_votes_data:
+        feature_votes_data[req_id] = []
+    if uid in feature_votes_data[req_id]:
+        bot.answer_callback_query(call.id, "You already voted for this feature!", show_alert=True)
+        return
+    feature_votes_data[req_id].append(uid)
+    feature_requests_data[req_id]["votes"] += 1
+    save_feature_votes_data()
+    save_feature_requests_data()
+    bot.answer_callback_query(call.id, "✅ Vote recorded successfully!")
+
+
+# ================= 🏆 4. PREMIUM LEADERBOARD =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_leaderboard")
+def prem_leaderboard(call):
+    uid = str(call.from_user.id)
+    text = (
+        f"╭━━━ 🏆 PREMIUM LEADERBOARD ━━━╮\n\n"
+        f"🥇 @User1 — 87 Points\n"
+        f"🥈 @User2 — 64 Points\n"
+        f"🥉 @User3 — 51 Points\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"⭐ YOUR POSITION\n"
+        f"Rank: #17\n"
+        f"Points: 23\n\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("📊 My Rank", callback_data="prem_my_rank"),
+        InlineKeyboardButton("🎁 My Rewards", callback_data="prem_my_rewards")
+    )
+    kb.add(
+        InlineKeyboardButton("📅 Weekly", callback_data="lb_weekly"),
+        InlineKeyboardButton("📆 Monthly", callback_data="lb_monthly")
+    )
+    kb.add(
+        InlineKeyboardButton("🏆 All Time", callback_data="lb_alltime"),
+        InlineKeyboardButton("🔙 Back", callback_data="prem_center_back")
+    )
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data in ["lb_weekly", "lb_monthly", "lb_alltime"])
+def leaderboard_filter(call):
+    bot.answer_callback_query(call.id, f"Showing {call.data.split('_')[1].capitalize()} Leaderboard")
+
+
+# ================= 🎯 5. PREMIUM MISSIONS =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_missions")
+def prem_missions_menu(call):
+    text = (
+        f"╭━━━ 🎯 PREMIUM MISSIONS ━━━╮\n\n"
+        f"🔥 ACTIVE MISSIONS\n\n"
+        f"📥 Download 10 Files\nProgress: 7/10\n🎁 Reward: ⭐ 1 Day\n\n"
+        f"🎁 Invite 3 Friends\nProgress: 2/3\n🎁 Reward: ⭐ 2 Days\n\n"
+        f"💡 Vote on 3 Features\nProgress: 3/3 ✅\n🎁 Reward: Completed\n\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("🎯 Active Missions", callback_data="prem_missions"),
+        InlineKeyboardButton("🎁 Completed", callback_data="missions_completed")
+    )
+    kb.add(
+        InlineKeyboardButton("🏆 Rewards", callback_data="prem_my_rewards"),
+        InlineKeyboardButton("🔙 Back", callback_data="prem_center_back")
+    )
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "missions_completed")
+def missions_completed(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_missions"))
+    bot.edit_message_text("🎁 Completed Missions:\n\n• Vote on 3 Features (Completed ✅)", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+
+# ================= 🎟️ 6. PREMIUM COUPONS =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_coupons")
+def prem_coupons_menu(call):
+    text = (
+        f"╭━━━ 🎟️ PREMIUM COUPON ━━━╮\n\n"
+        f"Enter your coupon code below.\n\n"
+        f"Example:\nVIP2026\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🎟️ Redeem Coupon", callback_data="coupon_redeem_prompt"), InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "coupon_redeem_prompt")
+def coupon_redeem_prompt(call):
+    msg = bot.send_message(call.message.chat.id, "🎟️ Please send your coupon code:")
+    bot.register_next_step_handler(msg, coupon_redeem_process)
+
+def coupon_redeem_process(m):
+    uid = str(m.from_user.id)
+    code = m.text.strip().upper()
+    if code not in coupons_data:
+        bot.send_message(m.chat.id, "❌ Invalid coupon code.")
+        return
+    coupon = coupons_data[code]
+    if not coupon.get("active", True):
+        bot.send_message(m.chat.id, "❌ This coupon is disabled.")
+        return
+    if coupon["uses"] >= coupon["max_uses"]:
+        bot.send_message(m.chat.id, "❌ Coupon usage limit reached.")
+        return
+    if uid in coupon_usage_data.get(code, []):
+        bot.send_message(m.chat.id, "❌ You have already used this coupon.")
+        return
+
+    if code not in coupon_usage_data:
+        coupon_usage_data[code] = []
+    coupon_usage_data[code].append(uid)
+    coupon["uses"] += 1
+    save_coupons_data()
+    save_coupon_usage_data()
+
+    activate_premium(uid, coupon["discount_days"])
+    bot.send_message(m.chat.id, f"✅ Coupon applied successfully!\n🎁 {coupon['discount_days']} Days Premium added.")
+
+
+# ================= 🎁 7. GIFT PREMIUM =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_gift")
+def prem_gift_menu(call):
+    msg = bot.send_message(call.message.chat.id, "🎁 Send the recipient's Telegram ID or Username (e.g. @username):")
+    bot.register_next_step_handler(msg, gift_recipient_step)
+
+def gift_recipient_step(m):
+    recipient_input = m.text.strip().replace("@", "")
+    recipient_id = None
+    for u, d in users.items():
+        if d.get("username", "").lower() == recipient_input.lower() or u == recipient_input:
+            recipient_id = u
+            break
+    if not recipient_id:
+        recipient_id = recipient_input # fallback if telegram id directly given
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    for k, v in PLAN_PRICES.items():
+        kb.add(InlineKeyboardButton(f"⭐ {v['name']} - {v['stars']} Stars", callback_data=f"giftplan_{k}_{recipient_id}"))
+    bot.send_message(m.chat.id, f"🎁 Choose plan to gift to <code>{recipient_input}</code>:", reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("giftplan_"))
+def gift_plan_stars(call):
+    parts = call.data.split("_")
+    plan_key = parts[1]
+    recipient_id = parts[2]
+    sender_id = str(call.from_user.id)
+    if recipient_id == sender_id:
+        bot.answer_callback_query(call.id, "You cannot gift premium to yourself!", show_alert=True)
+        return
+
+    plan = PLAN_PRICES[plan_key]
+    title = f"Gift Premium - {plan['name']}"
+    description = f"Gift VIP Premium ({plan['name']}) to user {recipient_id}."
+    currency = "XTR"
+    prices = [LabeledPrice(label=plan['name'], amount=plan['stars'])]
+
+    bot.send_invoice(
+        chat_id=call.message.chat.id,
+        title=title,
+        description=description,
+        invoice_payload=f"gift_{plan_key}_{recipient_id}_{sender_id}",
+        provider_token="",
+        currency=currency,
+        prices=prices
+    )
+
+
+# ================= 👑 8. VIP IDENTITY =================
+@bot.callback_query_handler(func=lambda call: call.data == "prem_vip_identity")
+def prem_vip_identity(call):
+    uid = str(call.from_user.id)
+    vip = vip_identity_data.get(uid, {"title": "VIP", "level": 1, "points": 10})
+    prem = premium_data.get(uid, {"start_date": "N/A"})
+    text = (
+        f"╭━━━ 👑 VIP IDENTITY ━━━╮\n\n"
+        f"👤 User: @{call.from_user.username or 'User'}\n\n"
+        f"⭐ Current Title:\n💎 {vip['title']}\n\n"
+        f"📅 Premium Since:\n{prem.get('start_date', 'N/A')}\n\n"
+        f"🔥 VIP Level:\nLevel {vip['level']}\n\n"
+        f"🏆 Points:\n{vip['points']}\n\n"
+        f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("⭐ VIP", callback_data="viptitle_VIP"),
+        InlineKeyboardButton("💎 PRO", callback_data="viptitle_PRO")
+    )
+    kb.add(
+        InlineKeyboardButton("🔥 LEGEND", callback_data="viptitle_LEGEND"),
+        InlineKeyboardButton("👑 ELITE", callback_data="viptitle_ELITE")
+    )
+    kb.add(InlineKeyboardButton("🎨 Customize", callback_data="vip_customize"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_center_back"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("viptitle_"))
+def change_vip_title(call):
+    uid = str(call.from_user.id)
+    title = call.data.split("_")[1]
+    if uid not in vip_identity_data:
+        vip_identity_data[uid] = {"title": title, "level": 1, "points": 10}
+    else:
+        vip_identity_data[uid]["title"] = title
+    save_vip_identity_data()
+    bot.answer_callback_query(call.id, f"✅ VIP Title updated to {title}!")
+
+
+# ================= 👨‍💼 ADMIN PANEL EXTENSIONS =================
+@bot.message_handler(func=lambda m: m.text == "👑 PREMIUM MGMT")
+def admin_premium_mgmt(m):
+    if not is_admin(m.from_user.id):
+        return
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("👑 Give Premium", callback_data="adm_give_prem"),
+        InlineKeyboardButton("❌ Remove Premium", callback_data="adm_rem_prem")
+    )
+    kb.add(
+        InlineKeyboardButton("🎟️ Coupons", callback_data="adm_coupons"),
+        InlineKeyboardButton("🔙 Back", callback_data="home_menu")
+    )
+    bot.send_message(m.chat.id, "👑 <b>Premium Management</b>", reply_markup=kb, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "adm_give_prem")
+def adm_give_prem_prompt(call):
+    if not is_admin(call.from_user.id):
+        return
+    msg = bot.send_message(call.message.chat.id, "Send User Telegram ID and Days separated by space (e.g. 123456789 30):")
+    bot.register_next_step_handler(msg, adm_give_prem_process)
+
+def adm_give_prem_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        uid_str, days_str = m.text.strip().split()
+        days = int(days_str)
+        activate_premium(uid_str, days)
+        bot.send_message(m.chat.id, f"✅ Premium activated for user {uid_str} for {days} days.")
+    except:
+        bot.send_message(m.chat.id, "❌ Format error. Use: <Telegram ID> <days>")
+
+@bot.message_handler(func=lambda m: m.text == "📊 PREM STATS")
+def admin_prem_stats(m):
+    if not is_admin(m.from_user.id):
+        return
+    active_prem = len([u for u in premium_data if is_premium(u)])
+    total_stars = sum(p.get("stars_amount", 0) for p in payments_data)
+    total_refs = sum(len(refs) for refs in referrals_data.values())
+    total_feats = len(feature_requests_data)
+    total_gifts = len(gift_premium_data)
+
+    text = (
+        f"👑 <b>PREMIUM STATISTICS</b>\n\n"
+        f"👥 Total Users: {len(users)}\n"
+        f"⭐ Active Premium: {active_prem}\n"
+        f"💳 Total Stars: {total_stars}\n"
+        f"🎁 Total Referrals: {total_refs}\n"
+        f"💡 Feature Requests: {total_feats}\n"
+        f"🎁 Gifts Sent: {total_gifts}"
+    )
+    bot.send_message(m.chat.id, text, parse_mode="HTML")
+
 
 # ================= ADMIN PANEL =================
 @bot.message_handler(func=lambda m: m.text == "👑 ADMIN PANEL")
@@ -639,31 +1185,23 @@ def open_admin_panel(m):
         return
     bot.send_message(m.chat.id, "👑 Admin Panel", reply_markup=admin_menu())
 
-    # ================= BALANCE =================
 @bot.message_handler(func=lambda m: m.text == "💰 BALANCE")
 def balance_handler(m):
-    if bot_locked_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-    if banned_guard(m):
-        return
-    ...
     uid = str(m.from_user.id)
-    bal = users[uid].get("balance", 0.0)
-    blocked = users[uid].get("blocked", 0.0)
+    bal = users.get(uid, {}).get("balance", 0.0)
+    blocked = users.get(uid, {}).get("blocked", 0.0)
     bot.send_message(
         m.chat.id,
         f"💰 Available Balance: ${bal:.2f}\n"
         f"⏳ Blocked Amount: ${blocked:.2f}"
     )
 
-# ================= GET ID =================
 @bot.message_handler(func=lambda m: m.text == "🆔 GET ID")
 def get_id_handler(m):
-    if bot_locked_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-    if banned_guard(m):
-        return
-    ...
     uid = str(m.from_user.id)
     bot.send_message(
         m.chat.id,
@@ -671,14 +1209,10 @@ def get_id_handler(m):
         f"👤 Telegram ID: <code>{uid}</code>"
     )
 
-# ================= REFERRAL =================
 @bot.message_handler(func=lambda m: m.text == "👥 REFERRAL")
 def referral_handler(m):
-    if bot_locked_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-    if banned_guard(m):
-        return
-    ...
     uid = str(m.from_user.id)
     bot_username = bot.get_me().username
     link = f"https://t.me/{bot_username}?start={users[uid]['ref']}"
@@ -690,32 +1224,18 @@ def referral_handler(m):
         f"🎁 You earn $0.2 per referral!"
     )
 
-# ================= CUSTOMER SUPPORT =================
 @bot.message_handler(func=lambda m: m.text == "☎️ CUSTOMER")
 def customer_handler(m):
-    if bot_locked_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-    if banned_guard(m):
-        return
-    ...
-    bot.send_message(
-        m.chat.id,
-        "☎️ Customer Support:\n@scholes1"
-    )
+    bot.send_message(m.chat.id, "☎️ Customer Support:\n@scholes1")
 
 @bot.message_handler(func=lambda m: m.text == "🤖CUSTOMER AI")
-def customer_handler(m):
-    if bot_locked_guard(m):
+def customer_ai_handler(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-    if banned_guard(m):
-        return
-    ...
-    bot.send_message(
-        m.chat.id,
-        "Ai Customer Support🤖:\n@Aidownoaderbot"
-)
+    bot.send_message(m.chat.id, "Ai Customer Support🤖:\n@Aidownoaderbot")
 
-# ================= WITHDRAWAL MENU =================
 @bot.message_handler(func=lambda m: m.text == "💸 WITHDRAWAL")
 def withdraw_menu(m):
     if banned_guard(m):
@@ -723,13 +1243,8 @@ def withdraw_menu(m):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("USDT-BEP20")
     kb.add("🔙 CANCEL")
-    bot.send_message(
-        m.chat.id,
-        "Select withdrawal method:",
-        reply_markup=kb
-    )
+    bot.send_message(m.chat.id, "Select withdrawal method:", reply_markup=kb)
 
-# ================= WITHDRAWAL METHOD =================
 @bot.message_handler(func=lambda m: m.text in ["USDT-BEP20", "🔙 CANCEL"])
 def withdraw_method(m):
     uid = str(m.from_user.id)
@@ -739,14 +1254,9 @@ def withdraw_method(m):
     if m.text == "USDT-BEP20":
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("🔙 CANCEL")
-        msg = bot.send_message(
-            m.chat.id,
-            "Enter your USDT BEP20 address (must start with 0x)\nOr press 🔙 CANCEL",
-            reply_markup=kb
-        )
+        msg = bot.send_message(m.chat.id, "Enter your USDT BEP20 address (must start with 0x)\nOr press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_address_step)
 
-# ================= WITHDRAWAL ADDRESS =================
 def withdraw_address_step(m):
     uid = str(m.from_user.id)
     text = (m.text or "").strip()
@@ -756,25 +1266,16 @@ def withdraw_address_step(m):
     if not text.startswith("0x"):
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("🔙 CANCEL")
-        msg = bot.send_message(
-            m.chat.id,
-            "❌ Invalid address. Must start with 0x.\nTry again or press 🔙 CANCEL",
-            reply_markup=kb
-        )
+        msg = bot.send_message(m.chat.id, "❌ Invalid address. Must start with 0x.\nTry again or press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_address_step)
         return
     users[uid]["temp_addr"] = text
     save_users()
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 CANCEL")
-    msg = bot.send_message(
-        m.chat.id,
-        f"Enter withdrawal amount\nMinimum: $1\nBalance: ${users[uid]['balance']:.2f}\n\nOr press 🔙 CANCEL",
-        reply_markup=kb
-    )
+    msg = bot.send_message(m.chat.id, f"Enter withdrawal amount\nMinimum: $1\nBalance: ${users[uid]['balance']:.2f}\n\nOr press 🔙 CANCEL", reply_markup=kb)
     bot.register_next_step_handler(msg, withdraw_amount_step)
 
-# ================= WITHDRAWAL AMOUNT =================
 def withdraw_amount_step(m):
     uid = str(m.from_user.id)
     text = (m.text or "").strip()
@@ -786,69 +1287,17 @@ def withdraw_amount_step(m):
     except:
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("🔙 CANCEL")
-        msg = bot.send_message(
-            m.chat.id,
-            "❌ Invalid number.\nEnter again or press 🔙 CANCEL",
-            reply_markup=kb
-        )
+        msg = bot.send_message(m.chat.id, "❌ Invalid number.\nEnter again or press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_amount_step)
         return
     if amt < 1:
-        bot.send_message(
-            m.chat.id,
-            "❌ Minimum withdrawal is $1",
-            reply_markup=user_menu(is_admin(uid))
-        )
+        bot.send_message(m.chat.id, "❌ Minimum withdrawal is $1", reply_markup=user_menu(is_admin(uid)))
         return
     if amt > users[uid]["balance"]:
-        bot.send_message(
-            m.chat.id,
-            "❌ Insufficient balance",
-            reply_markup=user_menu(is_admin(uid))
-        )
+        bot.send_message(m.chat.id, "❌ Insufficient balance", reply_markup=user_menu(is_admin(uid)))
         return
 
-    # ================= CREATE WITHDRAWAL REQUEST =================
-def withdraw_amount_step(m):
-    uid = str(m.from_user.id)
-    text = (m.text or "").strip()
-
-    if text == "🔙 CANCEL":
-        back_to_main_menu(m)
-        return
-
-    try:
-        amt = float(text)
-    except:
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add("🔙 CANCEL")
-        msg = bot.send_message(
-            m.chat.id,
-            "❌ Invalid number.\nEnter again or press 🔙 CANCEL",
-            reply_markup=kb
-        )
-        bot.register_next_step_handler(msg, withdraw_amount_step)
-        return
-
-    if amt < 1:
-        bot.send_message(
-            m.chat.id,
-            "❌ Minimum withdrawal is $1",
-            reply_markup=user_menu(is_admin(uid))
-        )
-        return
-
-    if amt > users[uid]["balance"]:
-        bot.send_message(
-            m.chat.id,
-            "❌ Insufficient balance",
-            reply_markup=user_menu(is_admin(uid))
-        )
-        return
-
-    # ===== Create withdrawal request =====
     wid = random.randint(10000, 99999)
-
     users[uid]["balance"] -= amt
     users[uid]["blocked"] += amt
 
@@ -866,29 +1315,14 @@ def withdraw_amount_step(m):
     save_users()
     save_withdraws()
 
-    # ===== Notify user =====
     bot.send_message(
         int(uid),
-        f"✅ Withdrawal Request Sent\n"
-        f"🧾 Request ID: {wid}\n"
-        f"💵 Amount: ${amt:.2f}\n"
-        f"🏦 Address: {withdrawal['address']}\n"
-        f"💰 Balance Left: ${users[uid]['balance']:.2f}\n"
-        f"⏳ Status: Pending"
+        f"✅ Withdrawal Request Sent\n🧾 Request ID: {wid}\n💵 Amount: ${amt:.2f}\n⏳ Status: Pending"
     )
 
-    # ===== Notify admins =====
     admin_text = (
-        f"💳 NEW WITHDRAWAL\n\n"
-        f"👤 User: {uid}\n"
-        f"🤖 BOT ID: {users[uid]['bot_id']}\n"
-        f"👥 Referrals: {users[uid]['invited']}\n"
-        f"💵 Amount: ${amt:.2f}\n"
-        f"🧾 Request ID: {wid}\n"
-        f"🏦 Address: {withdrawal['address']}\n"
-        f"⏳ Status: Pending"
+        f"💳 NEW WITHDRAWAL\n\n👤 User: {uid}\n💵 Amount: ${amt:.2f}\n🧾 Request ID: {wid}\n⏳ Status: Pending"
     )
-
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("✅ CONFIRM", callback_data=f"confirm_{wid}"),
@@ -896,22 +1330,18 @@ def withdraw_amount_step(m):
         InlineKeyboardButton("🚫 BAN USER", callback_data=f"ban_{uid}"),
         InlineKeyboardButton("💰 BAN MONEY", callback_data=f"block_{wid}")
     )
+    for admin in ADMIN_IDS:
+        try:
+            bot.send_message(admin, admin_text, reply_markup=markup)
+        except:
+            pass
 
-    # Loop through admin IDs
-    for admin in [7983838654]:  # Halkan waxaad ku dari kartaa liiska admin IDs
-        bot.send_message(admin, admin_text, reply_markup=markup)
-
-    # ================= ADMIN INLINE CALLBACKS =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("confirm_", "reject_", "ban_", "block_")))
 def admin_callbacks(call):
-
     if not is_admin(call.from_user.id):
         bot.answer_callback_query(call.id, "❌ You are not admin")
         return
-
     data = call.data
-
-    # ===== CONFIRM WITHDRAWAL =====
     if data.startswith("confirm_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -923,8 +1353,6 @@ def admin_callbacks(call):
         save_withdraws()
         bot.answer_callback_query(call.id, "✅ Confirmed")
         bot.send_message(int(w["user"]), f"✅ Withdrawal #{wid} approved!")
-
-    # ===== REJECT WITHDRAWAL =====
     elif data.startswith("reject_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -937,8 +1365,6 @@ def admin_callbacks(call):
         save_withdraws()
         bot.answer_callback_query(call.id, "❌ Rejected")
         bot.send_message(int(w["user"]), f"❌ Withdrawal #{wid} rejected")
-
-    # ===== BAN USER =====
     elif data.startswith("ban_"):
         uid = data.split("_")[1]
         if uid in users:
@@ -946,8 +1372,6 @@ def admin_callbacks(call):
             save_users()
             bot.answer_callback_query(call.id, "🚫 User banned")
             bot.send_message(int(uid), "🚫 You have been banned by admin.")
-
-    # ===== BLOCK MONEY =====
     elif data.startswith("block_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -962,1913 +1386,285 @@ def admin_callbacks(call):
         save_users()
         save_withdraws()
         bot.answer_callback_query(call.id, "💰 Money Blocked")
-        bot.send_message(
-            int(uid),
-            f"🚫 Your withdrawal of ${amt:.2f} is BLOCKED.\n"
-            f"🔢 Block Code: {code}\n"
-            f"Contact admin to unlock."
-        )
+        bot.send_message(int(uid), f"🚫 Withdrawal blocked. Code: {code}")
 
-# ================= UNBLOCK MONEY =================
 @bot.message_handler(func=lambda m: m.text == "💰 UNBLOCK MONEY")
 def unblock_money_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "🔢 Send 4-digit Block Code to UNBLOCK funds:"
-    )
+    msg = bot.send_message(m.chat.id, "🔢 Send 4-digit Block Code to UNBLOCK funds:")
     bot.register_next_step_handler(msg, unblock_money_process)
-
 
 def unblock_money_process(m):
     if not is_admin(m.from_user.id):
         return
-
     code = (m.text or "").strip()
     w = next((x for x in withdraws if x.get("block_code") == code), None)
-
     if not w:
         bot.send_message(m.chat.id, "❌ Invalid Block Code")
         return
-
     uid = w["user"]
     amt = w["blocked"]
-
     users[uid]["balance"] += amt
     w["status"] = "unblocked"
     w.pop("block_code", None)
-
     save_users()
     save_withdraws()
+    bot.send_message(int(uid), f"✅ Blocked ${amt:.2f} is now available!")
+    bot.send_message(m.chat.id, f"✅ Money unblocked for user {uid}")
 
-    bot.send_message(
-        int(uid),
-        f"✅ Your blocked ${amt:.2f} is now available in balance!"
-    )
-    bot.send_message(
-        m.chat.id,
-        f"✅ Money unblocked for user {uid}"
-    )
-
-
-# ================= UNBAN USER =================
 @bot.message_handler(func=lambda m: m.text == "🔥 UN BAN-USER")
 def unban_user_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send Telegram ID of user to UNBAN:"
-    )
+    msg = bot.send_message(m.chat.id, "Send Telegram ID of user to UNBAN:")
     bot.register_next_step_handler(msg, unban_user_process)
-
 
 def unban_user_process(m):
     if not is_admin(m.from_user.id):
         return
-
     uid = (m.text or "").strip()
     if uid not in users:
         bot.send_message(m.chat.id, "❌ User not found")
         return
-
     users[uid]["banned"] = False
     save_users()
-
     bot.send_message(m.chat.id, f"✅ User {uid} unbanned")
-    bot.send_message(int(uid), "✅ You have been unbanned by admin.")
+    bot.send_message(int(uid), "✅ You have been unbanned.")
 
-# ================= WITHDRAWAL CHECK =================
 @bot.message_handler(func=lambda m: m.text == "💳 WITHDRAWAL CHECK")
 def withdrawal_check_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Enter Withdrawal Request ID (example: 40201):"
-    )
+    msg = bot.send_message(m.chat.id, "Enter Withdrawal Request ID:")
     bot.register_next_step_handler(msg, withdrawal_check_process)
-
 
 def withdrawal_check_process(m):
     if not is_admin(m.from_user.id):
         return
-
     try:
         wid = int(m.text.strip())
     except:
         bot.send_message(m.chat.id, "❌ Invalid Request ID")
         return
-
     w = next((x for x in withdraws if x["id"] == wid), None)
     if not w:
         bot.send_message(m.chat.id, "❌ Request not found")
         return
+    bot.send_message(m.chat.id, f"💳 WITHDRAWAL\nID: {w['id']}\nAmount: ${w['amount']:.2f}\nStatus: {w['status'].upper()}")
 
-    uid = w["user"]
-    bot_id = users.get(uid, {}).get("bot_id", "Unknown")
-    invited = users.get(uid, {}).get("invited", 0)
-
-    msg_text = (
-        f"💳 WITHDRAWAL DETAILS\n\n"
-        f"🧾 Request ID: {w['id']}\n"
-        f"👤 User ID: {uid}\n"
-        f"🤖 BOT ID: {bot_id}\n"
-        f"👥 Referrals: {invited}\n"
-        f"💵 Amount: ${w['amount']:.2f}\n"
-        f"🏦 Address: {w['address']}\n"
-        f"📊 Status: {w['status'].upper()}\n"
-        f"⏰ Time: {w['time']}"
-    )
-
-    bot.send_message(m.chat.id, msg_text)
-
-
-# ================= STATS =================
 @bot.message_handler(func=lambda m: m.text == "📊 STATS")
 def stats_handler(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
+    bot.send_message(m.chat.id, f"📊 STATS\nUsers: {len(users)}\nWithdrawals: {len(withdraws)}")
 
-    total_users = len(users)
-    total_balance = sum(u.get("balance", 0.0) for u in users.values())
-    total_blocked = sum(u.get("blocked", 0.0) for u in users.values())
-    total_withdraws = len(withdraws)
-    pending_withdraws = len([w for w in withdraws if w["status"] == "pending"])
-
-    msg = (
-        f"📊 BOT STATS\n\n"
-        f"👥 Total Users: {total_users}\n"
-        f"💰 Total Balance: ${total_balance:.2f}\n"
-        f"⏳ Total Blocked: ${total_blocked:.2f}\n"
-        f"🧾 Total Withdrawals: {total_withdraws}\n"
-        f"⏳ Pending Withdrawals: {pending_withdraws}"
-    )
-
-    bot.send_message(m.chat.id, msg)
-
-# ================= MANUAL BAN =================
 @bot.message_handler(func=lambda m: m.text == "🚫 BAN USER MANUAL")
 def manual_ban_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send Telegram ID or BOT ID to BAN user:"
-    )
+    msg = bot.send_message(m.chat.id, "Send Telegram ID to BAN:")
     bot.register_next_step_handler(msg, manual_ban_process)
-
 
 def manual_ban_process(m):
     if not is_admin(m.from_user.id):
         return
-
-    uid_input = (m.text or "").strip()
-
-    uid = uid_input if uid_input in users else find_user_by_botid(uid_input)
-
-    if not uid:
-        bot.send_message(m.chat.id, "❌ User not found")
-        return
-
-    users[uid]["banned"] = True
-    save_users()
-
-    bot.send_message(m.chat.id, f"🚫 User {uid} banned")
-    bot.send_message(int(uid), "🚫 You have been banned by admin.")
-
-    # ================= ADD CHANNEL =================
+    uid = m.text.strip()
+    if uid in users:
+        users[uid]["banned"] = True
+        save_users()
+        bot.send_message(m.chat.id, f"🚫 User {uid} banned")
 
 @bot.message_handler(func=lambda m: m.text == "📡 ADD CHANNEL")
 def add_channel_start(m):
-
     if not is_admin(m.from_user.id):
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send channel username\nExample:\n@mychannel"
-    )
-
+    msg = bot.send_message(m.chat.id, "Send channel username (e.g. @mychannel)")
     bot.register_next_step_handler(msg, add_channel_process)
 
-
 def add_channel_process(m):
-
     username = m.text.strip()
-
     try:
-
-        member = bot.get_chat_member(username, bot.get_me().id)
-
-        if member.status not in ["administrator", "creator"]:
-
-            bot.send_message(
-                m.chat.id,
-                "❌ Bot is not admin in this channel"
-            )
-            return
-
         if username not in MANAGED_CHANNELS:
             MANAGED_CHANNELS.append(username)
-
-        bot.send_message(
-            m.chat.id,
-            f"✅ Channel Added\n{username}"
-        )
-
+        bot.send_message(m.chat.id, f"✅ Channel Added: {username}")
     except:
+        bot.send_message(m.chat.id, "❌ Invalid channel")
 
-        bot.send_message(
-            m.chat.id,
-            "❌ Invalid channel or bot not inside channel"
-        )
-    
-# ================= CHANEL =================
-@bot.message_handler(func=lambda m: m.text == "CHANNEL")
-def post_channel_process(m):
-
-    text = m.text
-
-    if not MANAGED_CHANNELS:
-        bot.send_message(m.chat.id, "❌ No channels added.\nUse 📡 ADD CHANNEL first.")
-        return
-
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("🇸🇴 Somali", callback_data="lang_so"),
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-    )
-
-    sent = 0
-
-    for ch in MANAGED_CHANNELS:
-        try:
-            bot.send_message(
-                ch,
-                text,
-                reply_markup=kb
-            )
-            sent += 1
-        except Exception as e:
-            print("Channel post error:", e)
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ Posted to {sent} channel(s)"
-    )
-
-# ================= LANGUAGE SWITCH =================
-
-channel_posts = {}
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("lang_"))
-def channel_language(call):
-
-    lang = call.data.split("_")[1]
-
-    if call.message.message_id not in channel_posts:
-        return
-
-    data = channel_posts[call.message.message_id]
-
-    if lang == "so":
-        text = data["so"]
-    else:
-        text = data["en"]
-
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("🇸🇴 Somali", callback_data="lang_so"),
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-    )
-
-    bot.edit_message_text(
-        text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb
-    )
-
-# ================= RAADI (DOWNLOAD STATS) =================
 @bot.message_handler(func=lambda m: m.text == "🔍 RAADI")
 def raadi_stats(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
+    bot.send_message(m.chat.id, f"🔍 Total downloads: {videos_data.get('total', 0)}")
 
-    total_videos = videos_data.get("total", 0)
-    platform_stats = videos_data.get("platforms", {"tiktok": 0, "youtube": 0, "facebook": 0, "pinterest": 0})
-    users_stats = videos_data.get("users", {})
-
-    if not users_stats:
-        bot.send_message(m.chat.id, "❌ No video data found yet.")
-        return
-
-    # Top downloader
-    top_user_id, top_count = max(users_stats.items(), key=lambda x: x[1])
-
-    # Build message
-    msg_lines = [
-        f"🔍 DOWNLOAD ANALYTICS\n",
-        f"🎬 Total Videos Downloaded: {total_videos}",
-        f"🏆 Top Downloader: <a href='tg://user?id={top_user_id}'>{top_user_id}</a> ({top_count} videos)\n",
-        "📊 Downloads by Platform:",
-        f"• TikTok: {platform_stats.get('tiktok',0)}",
-        f"• YouTube: {platform_stats.get('youtube',0)}",
-        f"• Facebook: {platform_stats.get('facebook',0)}",
-        f"• Pinterest: {platform_stats.get('pinterest',0)}\n",
-        "🥇 Top 40 Users:"
-    ]
-
-    # Top 3 users
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
-    for i, (uid, count) in enumerate(sorted_users[:40], start=1):
-        bot_id = users.get(str(uid), {}).get("bot_id", "N/A")
-        msg_lines.append(f"{i}. 👤 <a href='tg://user?id={uid}'>{uid}</a> - 🎬 {count} videos | 🤖 BOT ID: {bot_id}")
-
-    msg_text = "\n".join(msg_lines)
-    bot.send_message(m.chat.id, msg_text, parse_mode="HTML")
-
-# ================= BROADCAST =================
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST")
 def broadcast_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "📝 Send the broadcast message to all users:"
-    )
+    msg = bot.send_message(m.chat.id, "Send broadcast text:")
     bot.register_next_step_handler(msg, broadcast_send)
-
 
 def broadcast_send(m):
     if not is_admin(m.from_user.id):
         return
-
     text = m.text
-    count = 0
-
     for uid in users:
         try:
             bot.send_message(int(uid), text)
-            count += 1
         except:
-            continue
-
-    bot.send_message(m.chat.id, f"✅ Broadcast sent to {count} users")
-
-        # ================== POST CHANNEL =================
-@bot.message_handler(func=lambda m: m.text == "📌 POST CHANNEL")
-def post_channel_start(m):
-
-    global CHANNEL_WINDOW_OPEN
-
-    if not is_admin(m.from_user.id):
-        return
-
-    CHANNEL_WINDOW_OPEN = True
-    POST_CHANNELS.clear()
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send channel usernames\nExample:\n@channel1\n@channel2\n\nMax 10 channels.\nSend DONE when finished."
-    )
-
-    bot.register_next_step_handler(msg, post_channel_add)
-
-def post_channel_add(m):
-
-    if m.text.lower() == "done":
-
-        bot.send_message(
-            m.chat.id,
-            f"✅ {len(POST_CHANNELS)} channels added."
-        )
-        return
-
-    if len(POST_CHANNELS) >= MAX_CHANNELS:
-
-        bot.send_message(
-            m.chat.id,
-            "⚠️ Maximum 10 channels allowed."
-        )
-        return
-
-    username = m.text.replace("@","").strip()
-
-    POST_CHANNELS.append(username)
-
-    msg = bot.send_message(
-        m.chat.id,
-        f"Channel @{username} added\nTotal: {len(POST_CHANNELS)}\nSend another or DONE"
-    )
-
-    bot.register_next_step_handler(msg, post_channel_add)
-
-    # ================= CLOSE CHANEL =================
-@bot.message_handler(func=lambda m: m.text == "CLOSE CHANNEL POST")
-def close_channel_post(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    MANAGED_CHANNELS.clear()
-
-    bot.send_message(
-        m.chat.id,
-        "❌ All channels removed.\n\nYou can now add new channels using ADD CHANNEL."
-    )
-
-# ================= SEE USERS LIST =================
-@bot.message_handler(func=lambda m: m.text == "👥 SEE LIST")
-def see_users(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    total = len(users)
-    count = 0
-
-    for uid in users:
-
-        kb = InlineKeyboardMarkup()
-
-        kb.add(
-            InlineKeyboardButton(
-                "💬 OPEN CHAT",
-                url=f"tg://user?id={uid}"
-            )
-        )
-
-        bot.send_message(
-            m.chat.id,
-            f"👤 User ID: {uid}",
-            reply_markup=kb
-        )
-
-        count += 1
-
-        if count >= 20:
-            break
-
-    bot.send_message(
-        m.chat.id,
-        f"📊 Total Users: {total}"
-    )
+            pass
+    bot.send_message(m.chat.id, "✅ Broadcast completed")
 
 @bot.message_handler(func=lambda m: m.text == "🔒 LOCK BOT")
-def lock_bot_start(m):
-    if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "✍️ Send the lock message users should receive.\n\nExample:\nBotka waa la xanibay, fadlan sug."
-    )
-    bot.register_next_step_handler(msg, lock_bot_process)
-
-
-def lock_bot_process(m):
-    global BOT_LOCKED, LOCK_MESSAGE
-
+def lock_bot(m):
+    global BOT_LOCKED
     if not is_admin(m.from_user.id):
         return
-
-    text = (m.text or "").strip()
-
-    if not text:
-        bot.send_message(m.chat.id, "❌ Lock message cannot be empty")
-        return
-
-    LOCK_MESSAGE = text
     BOT_LOCKED = True
-
-    bot.send_message(
-        m.chat.id,
-        f"🔒 Bot locked successfully.\n\nLock message:\n{text}"
-    )
+    bot.send_message(m.chat.id, "🔒 Bot locked.")
 
 @bot.message_handler(func=lambda m: m.text == "🔓 UNLOCK BOT")
 def unlock_bot(m):
     global BOT_LOCKED
-
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
-
     BOT_LOCKED = False
+    bot.send_message(m.chat.id, "🔓 Bot unlocked.")
 
-    bot.send_message(
-        m.chat.id,
-        "🔓 Bot unlocked successfully."
-    )
-
-# ================= ADD ADS HANDLER =================
 @bot.message_handler(func=lambda m: m.text == "📢 ADD ADS")
-def add_ads_start(m):
+def add_ads(m):
     if not is_admin(m.from_user.id):
         return
+    bot.send_message(m.chat.id, "Send ads format: Button | URL | Text")
 
-    msg = bot.send_message(
-        m.chat.id,
-        "✍️ **Geli xayeysiiska qaabkan:**\n\n"
-        "`Button Name | Link | Qoraal yar (Optional)`\n\n"
-        "**Tusaale:**\n"
-        "`FOLLOW MY TIKTOK | https://tiktok.com/@username | Igula soco TikTok!`",
-        parse_mode="Markdown"
-    )
-    bot.register_next_step_handler(msg, process_add_ads)
-
-def process_add_ads(m):
-    global ADS_ENABLED, ADS_BTN_TEXT, ADS_URL, ADS_TEXT
-
-    if not is_admin(m.from_user.id):
-        return
-
-    text = (m.text or "").strip()
-    parts = [p.strip() for p in text.split("|")]
-
-    if len(parts) < 2:
-        bot.send_message(
-            m.chat.id,
-            "❌ Qaabka aad u qortay waa galad.\n"
-            "Fadlan u qor qaabkan: `Button Name | Link | Qoraal`"
-        )
-        return
-
-    ADS_BTN_TEXT = parts[0]
-    ADS_URL = parts[1]
-    ADS_TEXT = parts[2] if len(parts) > 2 else "✨ Nagala soco baraha bulshada!"
-    ADS_ENABLED = True
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ **Ads-ka waa la kaydiyay lana shiday!**\n\n"
-        f"🔘 **Button:** {ADS_BTN_TEXT}\n"
-        f"🔗 **Link:** {ADS_URL}\n"
-        f"📝 **Text:** {ADS_TEXT}"
-    )
-
-# ================= DELETE ADS HANDLER =================
 @bot.message_handler(func=lambda m: m.text == "🗑 DELETE ADS")
 def delete_ads(m):
-    global ADS_ENABLED, ADS_BTN_TEXT, ADS_URL, ADS_TEXT
-
+    global ADS_ENABLED
     if not is_admin(m.from_user.id):
         return
-
     ADS_ENABLED = False
-    ADS_BTN_TEXT = ""
-    ADS_URL = ""
-    ADS_TEXT = ""
+    bot.send_message(m.chat.id, "🗑 Ads deleted.")
 
-    bot.send_message(m.chat.id, "🗑 **Ads-kii waa la tirtiray oo bot-ku ma muujin doono xayeysiis.**")
-
-
-# ================= IMPORT USERS =================
-@bot.message_handler(func=lambda m: m.text == "📥 IMPORT USERS")
-def import_users_start(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send Telegram IDs separated by spaces or new lines.\n\nExample:\n12345\n67890\n112233"
-    )
-
-    bot.register_next_step_handler(msg, import_users_process)
-
-
-def import_users_process(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    text = m.text.strip()
-
-    ids = text.replace("\n", " ").split()
-
-    added = 0
-
-    for uid in ids:
-
-        uid = uid.strip()
-
-        if not uid.isdigit():
-            continue
-
-        if uid not in users:
-
-            users[uid] = {
-                "balance": 0.0,
-                "blocked": 0.0,
-                "ref": random_ref(),
-                "bot_id": random_botid(),
-                "invited": 0,
-                "banned": False,
-                "verified": False,
-                "month": now_month()
-            }
-
-            added += 1
-
-    save_users()
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ Imported {added} users successfully."
-    )
-
-# ================= GET REFERRAL CODE =================
-
-@bot.message_handler(func=lambda m: m.text == "🔗 GET REFERRAL CODE")
-def get_ref_code_start(m):
-
-    if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send user username:\n\nExample:\n@scholes1"
-    )
-
-    bot.register_next_step_handler(msg, get_ref_username)
-
-
-def get_ref_username(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    username = m.text.replace("@", "").strip()
-
-    msg = bot.send_message(
-        m.chat.id,
-        f"User: @{username}\n\nNow send referral code number:\nExample:\n1"
-    )
-
-    bot.register_next_step_handler(
-        msg,
-        lambda x: save_custom_ref_code(x, username)
-    )
-
-
-def save_custom_ref_code(m, username):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    code = m.text.strip()
-
-    if not code.isdigit():
-        bot.send_message(
-            m.chat.id,
-            "❌ Code must be a number"
-        )
-        return
-
-
-    user_id = None
-
-    for uid, data in users.items():
-
-        # Haddii username hore database-ka ugu jiro
-        if data.get("username","").lower() == username.lower():
-            user_id = uid
-            break
-
-
-    if not user_id:
-
-        bot.send_message(
-            m.chat.id,
-            "❌ User not found in database"
-        )
-        return
-
-
-    users[user_id]["ref"] = code
-
-    save_users()
-
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ Referral code created\n\n"
-        f"👤 User: @{username}\n"
-        f"🔢 Code: {code}\n\n"
-        f"🔗 Link:\n"
-        f"https://t.me/{bot.get_me().username}?start={code}"
-    )
-
-
-    bot.send_message(
-        int(user_id),
-        f"🎉 Your new referral link:\n\n"
-        f"https://t.me/{bot.get_me().username}?start={code}"
-    )
-
-# ================= SEARCH USER =================
-@bot.message_handler(func=lambda m: m.text == "🔎 SEARCH USER")
-def search_user(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    msg = bot.send_message(m.chat.id,"Send User Telegram ID")
-
-    bot.register_next_step_handler(msg, search_user_result)
-
-
-def search_user_result(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    uid = m.text.strip()
-
-    if uid in users:
-
-        kb = InlineKeyboardMarkup()
-
-        kb.add(
-            InlineKeyboardButton(
-                "💬 OPEN CHAT",
-                url=f"tg://user?id={uid}"
-            )
-        )
-
-        kb.add(
-            InlineKeyboardButton(
-                "✉️ MESSAGE USER",
-                callback_data=f"msguser|{uid}"
-            )
-        )
-
-        bot.send_message(
-            m.chat.id,
-            f"👤 User Found\nID: {uid}",
-            reply_markup=kb
-        )
-
-    else:
-
-        bot.send_message(m.chat.id,"❌ User not found")
-
-# ================= CHECKING DOWNLOAD =================
-@bot.message_handler(func=lambda m: m.text and "http" in m.text)
-def handle_links(message):
-    if bot_locked_guard(message):
-        return
-
-    user_id = message.from_user.id
-    link = message.text
-    ...
-
-    # ===== FORCE JOIN MULTI CHANNEL =====
-    if CHANNEL_WINDOW_OPEN and POST_CHANNELS:
-
-        joined_all = True
-
-        for ch in POST_CHANNELS:
-
-            try:
-                member = bot.get_chat_member(f"@{ch}", user_id)
-
-                if member.status not in ["member", "administrator", "creator"]:
-                    joined_all = False
-                    break
-
-            except:
-                joined_all = False
-                break
-
-        if not joined_all:
-            pending_links[user_id] = link
-            send_multi_join(user_id)
-            return
-
-
-    # ===== VERIFY SYSTEM =====
-    # ===== VERIFY SYSTEM =====
-    if VERIFY_ENABLED and not users.get(str(user_id), {}).get("verified", False):
-
-        code = str(random.randint(10000,99999))
-
-        verify_pending[user_id] = {
-            "code": code,
-            "link": link
-        }
-
-        kb = InlineKeyboardMarkup()
-
-        kb.add(
-            InlineKeyboardButton("📩 Verify via DM", callback_data="via_telegram")
-        )
-
-        kb.add(
-            InlineKeyboardButton(
-                "🤖 Verify via Bot",
-                url=f"https://t.me/Verifyd_bot?start={code}"
-            )
-        )
-
-        kb.add(
-            InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_email")
-        )
-
-        bot.send_message(
-            message.chat.id,
-            "🔐 Verification Required\n\nChoose verification method:",
-            reply_markup=kb
-        )
-
-        return
-
-
-    # ===== START DOWNLOAD =====
-    bot.send_message(message.chat.id, "⏳ Downloading...")
-    download_media(message.chat.id, link)
-
-# ================= MULTI CHANNEL CONFIRM =================
-@bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
-def multi_checkjoin(call):
-
-    user_id = call.from_user.id
-
-    joined_all = True
-
-    for ch in POST_CHANNELS:
-
-        try:
-            member = bot.get_chat_member(f"@{ch}", user_id)
-
-            if member.status not in ["member","administrator","creator"]:
-                joined_all = False
-                break
-
-        except:
-            joined_all = False
-            break
-
-    if joined_all:
-
-        bot.answer_callback_query(call.id,"✅ Join verified")
-
-        if user_id in pending_links:
-
-            link = pending_links[user_id]
-            del pending_links[user_id]
-
-            bot.send_message(user_id,"⬇️ Processing your video...")
-            download_media(user_id, link)
-
-        else:
-
-            bot.send_message(user_id,"Send your video link.")
-
-    else:
-
-        bot.answer_callback_query(
-            call.id,
-            "❌ You must join all channels first!",
-            show_alert=True
-        )
-
-# ================= CONFIRM JOIN =================
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
-def confirm_join(call):
-    user_id = call.from_user.id
-
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-
-        if member.status in ["member", "administrator", "creator"]:
-
-            bot.answer_callback_query(call.id, "✅ Join verified")
-
-            # ✅ Tirtir inline keyboard
-            bot.edit_message_reply_markup(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=None
-            )
-
-            # Haddii uu hore link u diray, ka soo qaad pending_links
-            if user_id in pending_links:
-                link = pending_links[user_id]
-                del pending_links[user_id]
-
-                # Fariin u dir user
-                msg = bot.send_message(user_id, "⏳ Downloading...")
-
-                # Download video
-                download_media(user_id, link)
-
-            else:
-                bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
-
-        else:
-            bot.answer_callback_query(
-                call.id,
-                "❌ You must join the channel first!",
-                show_alert=True
-            )
-
-    except Exception as e:
-        bot.answer_callback_query(
-            call.id,
-            "❌ Please join the channel first!",
-            show_alert=True
-        )
-
-# ================= CLOSE WINDOWS =================
-@bot.message_handler(func=lambda m: m.text == "❌ CLOSE WINDOWS")
-def close_channel_windows(m):
-
-    global CHANNEL_WINDOW_OPEN
-
-    if not is_admin(m.from_user.id):
-        return
-
-    CHANNEL_WINDOW_OPEN = False
-
-    bot.send_message(
-        m.chat.id,
-        "✅ Channel join system disabled."
-    )
-
-# ================= VERIFY ON ===============
 @bot.message_handler(func=lambda m: m.text == "✅ VERIFY ON")
 def verify_on(m):
-
     global VERIFY_ENABLED
-
-    if m.from_user.id not in ADMIN_IDS:
+    if not is_admin(m.from_user.id):
         return
-
     VERIFY_ENABLED = True
+    bot.send_message(m.chat.id, "✅ Verify ON")
 
-    bot.send_message(m.chat.id, "✅ Verify system enabled")
-
-# ================ VERIFY OF ================
 @bot.message_handler(func=lambda m: m.text == "❌ VERIFY OFF")
 def verify_off(m):
-
     global VERIFY_ENABLED
-
-    if m.from_user.id not in ADMIN_IDS:
+    if not is_admin(m.from_user.id):
         return
-
     VERIFY_ENABLED = False
+    bot.send_message(m.chat.id, "❌ Verify OFF")
 
-    bot.send_message(m.chat.id, "❌ Verify system disabled")
-
-    # =============== V ===============
-@bot.message_handler(func=lambda m: m.text == "CHANNEL POST")
-def start_channel_post(m):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send the main text for the channel post."
-    )
-
-    bot.register_next_step_handler(msg, post_main_text)
-
-
-def post_main_text(m):
-
-    pending_post[m.from_user.id] = {
-        "text": m.text,
-        "buttons": []
-    }
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send button like:\n\nButton Name | Text when clicked\n\nSend DONE when finished."
-    )
-
-    bot.register_next_step_handler(msg, add_buttons)
-
-def add_buttons(m):
-
-    uid = m.from_user.id
-
-    if m.text.lower() == "done":
-
-        data = pending_post[uid]
-
-        kb = InlineKeyboardMarkup()
-
-        for i, btn in enumerate(data["buttons"]):
-
-            kb.add(
-                InlineKeyboardButton(
-                    btn["name"],
-                    callback_data=f"postbtn_{i}"
-                )
-            )
-
-        for ch in MANAGED_CHANNELS:
-
-            msg = bot.send_message(
-                ch,
-                data["text"],
-                reply_markup=kb
-            )
-
-            channel_posts[msg.message_id] = data
-
-        pending_post.pop(uid)
-
-        bot.send_message(m.chat.id,"✅ Post sent")
-
-        return
-
-    try:
-
-        name, content = m.text.split("|",1)
-
-        pending_post[uid]["buttons"].append({
-            "name": name.strip(),
-            "content": content.strip()
-        })
-
-        msg = bot.send_message(
-            m.chat.id,
-            "Button added. Send another or DONE"
-        )
-
-        bot.register_next_step_handler(msg, add_buttons)
-
-    except:
-
-        msg = bot.send_message(
-            m.chat.id,
-            "❌ Format error\nButton Name | Text"
-        )
-
-        bot.register_next_step_handler(msg, add_buttons)
-
-        # ================= FG ===============
-@bot.callback_query_handler(func=lambda call: call.data.startswith("postbtn_"))
-def post_button_click(call):
-
-    index = int(call.data.split("_")[1])
-
-    data = channel_posts.get(call.message.message_id)
-
-    if not data:
-        return
-
-    text = data["buttons"][index]["content"]
-
-    kb = InlineKeyboardMarkup()
-
-    for i, btn in enumerate(data["buttons"]):
-
-        kb.add(
-            InlineKeyboardButton(
-                btn["name"],
-                callback_data=f"postbtn_{i}"
-            )
-        )
-
-    bot.edit_message_text(
-        text,
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb
-    )
-
-# ================= ADD BALANCE =================
 @bot.message_handler(func=lambda m: m.text == "➕ ADD BALANCE")
-def add_balance_start(m):
-    if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send BOT ID or Telegram ID and amount separated by space:\n"
-        "Example:\n123456789 10.5"
-    )
-    bot.register_next_step_handler(msg, add_balance_process)
-
-
-def add_balance_process(m):
+def add_balance(m):
     if not is_admin(m.from_user.id):
         return
+    bot.send_message(m.chat.id, "Send UID and Amount")
 
-    try:
-        uid_str, amt_str = m.text.strip().split()
-        amt = float(amt_str)
-
-        # Hubi haddii la isticmaalayo Telegram ID ama BOT ID
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-
-        if not uid or amt <= 0:
-            bot.send_message(m.chat.id, "❌ Invalid input")
-            return
-
-        users[uid]["balance"] += amt
-        save_users()
-
-        bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
-        bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f}")
-
-    except:
-        bot.send_message(m.chat.id, "❌ Format error.\nUse:\n<BOT ID or Telegram ID> <amount>")
-
-# ================= REMOVE MONEY =================
 @bot.message_handler(func=lambda m: m.text == "➖ REMOVE MONEY")
-def remove_balance_start(m):
-    if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
-        return
-
-    msg = bot.send_message(
-        m.chat.id,
-        "Send BOT ID or Telegram ID and amount separated by space:\n"
-        "Example:\n123456789 5.0"
-    )
-    bot.register_next_step_handler(msg, remove_balance_process)
-
-
-def remove_balance_process(m):
+def remove_money(m):
     if not is_admin(m.from_user.id):
         return
-
-    try:
-        uid_str, amt_str = m.text.strip().split()
-        amt = float(amt_str)
-
-        # Hubi haddii la isticmaalayo Telegram ID ama BOT ID
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-
-        if not uid or amt <= 0:
-            bot.send_message(m.chat.id, "❌ Invalid input")
-            return
-
-        if users[uid]["balance"] < amt:
-            bot.send_message(m.chat.id, "❌ Insufficient balance")
-            return
-
-        users[uid]["balance"] -= amt
-        save_users()
-
-        bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
-        bot.send_message(int(uid), f"💸 ${amt:.2f} removed from your balance")
-
-    except:
-        bot.send_message(m.chat.id, "❌ Format error.\nUse:\n<BOT ID or Telegram ID> <amount>")
-
-CAPTION_TEXT = "Downloaded by:\n@Downloadvedioytibot"
-
-# ================= VERIFY CODE CHECK =================
-
-@bot.message_handler(func=lambda m: m.text and m.text.isdigit())
-def verify_code_check(m):
-
-    uid = m.from_user.id
-
-    if uid not in verify_pending:
-        return
-
-    data = verify_pending[uid]
-
-    if m.text == data["code"]:
-
-        users[str(uid)]["verified"] = True
-        save_users()
-
-        link = data["link"]
-
-        del verify_pending[uid]
-
-        bot.send_message(m.chat.id,"✅ Verification successful\n⬇️ Downloading video...")
-
-        download_media(m.chat.id, link)
-
-    else:
-
-        bot.send_message(m.chat.id,"❌ Wrong verification code")
+    bot.send_message(m.chat.id, "Send UID and Amount")
 
 
-# ================= URL EXTRACTOR =================
+# ================= URL EXTRACTOR & DOWNLOADER =================
 def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
 
-# ================= CLEAN SEND VIDEO FUNCTION =================
 def send_video_with_music(chat_id, file_path, platform=None):
-
     vid_id = str(uuid.uuid4())[:8]
     video_files[vid_id] = file_path
 
     kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton(
-            "🎵 Convert to Music",
-            callback_data=f"music_{vid_id}"
-        )
-    )
+    kb.add(InlineKeyboardButton("🎵 Convert to Music", callback_data=f"music_{vid_id}"))
 
-    uid = str(chat_id)
-
-    videos_data["total"] += 1
-    videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
-
-    if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
-
-        videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-
-    save_videos()
-
-    with open(file_path, "rb") as video:
-        bot.send_video(
-            chat_id,
-            video,
-            caption=CAPTION_TEXT,
-            reply_markup=kb
-        )
-
-
-# ================= MEDIA DOWNLOADER =================
-def download_media(chat_id, text):
-    try:
-        url = extract_url(text)
-        if not url:
-            bot.send_message(chat_id, "❌ Invalid link")
-            return
-
-        # ================= TIKTOK (PHOTO + VIDEO) =================
-        if "tiktok.com" in url:
-            try:
-                api = f"https://tikwm.com/api/?url={url}"
-                res = requests.get(api, timeout=30).json()
-
-                if res.get("code") == 0:
-                    data = res["data"]
-
-            
-
-                        # ===== TIKTOK PHOTOS =====
-                    if data.get("images"):
-                        for i, img in enumerate(data["images"], start=1):
-                            img_data = requests.get(img, timeout=30).content
-                            filename = f"tiktok_{i}.jpg"
-
-                            with open(filename, "wb") as f:
-                                f.write(img_data)
-
-                            with open(filename, "rb") as photo:
-                                bot.send_photo(
-                                    chat_id,
-                                    photo,
-                                    caption=f"📸 Photo {i}\n{CAPTION_TEXT}"
-                                )
-
-                            os.remove(filename)
-                        return
-
-
-                    # ===== TIKTOK VIDEO =====
-                    if data.get("play"):
-                        video_data = requests.get(data["play"], timeout=60).content
-                        filename = "tiktok_video.mp4"
-
-                        with open(filename, "wb") as f:
-                            f.write(video_data)
-
-                        send_video_with_music(chat_id, filename, "tiktok")
-                        return
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ TikTok error:\n{e}")
-                return
-
-        # ================= SNAPCHAT =================
-        # ================= SNAPCHAT =================
-        if "snapchat.com" in url or "snap.com" in url:
-            try:
-
-                ydl_opts = {
-                    "format": "best",
-                    "outtmpl": "snapchat_%(id)s.%(ext)s",
-                    "quiet": True
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-
-                send_video_with_music(chat_id, file, "snapchat")
-
-                if os.path.exists(file):
-                    os.remove(file)
-
-                return
-
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ Snapchat download error:\n{e}")
-                return
-
- # ================= PINTEREST =================
-        if "pin.it" in url:
-            try:
-                r = requests.head(url, allow_redirects=True, timeout=10)
-                url = r.url
-            except Exception:
-                pass
-
-        if "pinterest.com" in url:
-            try:
-                ydl_opts = {
-                    "format": "bv*+ba/b",
-                    "outtmpl": "pinterest_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "noplaylist": False,
-                    "merge_output_format": "mp4"
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-
-                    # ===== haddii ay tahay carousel =====
-                    if "entries" in info:
-                        entries = info["entries"]
-                    else:
-                        entries = [info]
-
-                    for entry in entries:
-                        file = ydl.prepare_filename(entry)
-
-                        # ===== PHOTO =====
-                        if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                            with open(file, "rb") as photo:
-                                bot.send_photo(chat_id, photo, caption=CAPTION_TEXT)
-
-                        # ===== VIDEO =====
-                        else:
-                            send_video_with_music(chat_id, file, "pinterest")
-
-                        # delete file
-                        try:
-                            os.remove(file)
-                        except Exception:
-                            pass
-
-                return
-
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ Download error:\n{e}")
-                return
-
-        # ================= INSTAGRAM =================
-        if "instagram.com" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "best",
-                    "outtmpl": "instagram_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "merge_output_format": "mp4"
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-
-                    if "entries" in info:
-                        entries = info["entries"]
-                    else:
-                        entries = [info]
-
-                    for entry in entries:
-
-                        file = ydl.prepare_filename(entry)
-
-                        # PHOTO
-                        if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-
-                            with open(file, "rb") as photo:
-
-                                bot.send_photo(
-                                    chat_id,
-                                    photo,
-                                    caption=CAPTION_TEXT
-                                )
-
-                        # VIDEO
-                        else:
-
-                            send_video_with_music(
-                                chat_id,
-                                file,
-                                "instagram"
-                            )
-
-                        try:
-                            os.remove(file)
-                        except:
-                            pass
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(
-                    chat_id,
-                    f"❌ Instagram download error:\n{e}"
-                )
-
-                return
-
-        # ================= FACEBOOK =================
-        if "facebook.com" in url or "fb.watch" in url:
-            ydl_opts = {
-                "format": "bestvideo+bestaudio/best",
-                "outtmpl": "facebook_%(id)s.%(ext)s",
-                "merge_output_format": "mp4",
-                "quiet": True
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                file = ydl.prepare_filename(info)
-
-            send_video_with_music(chat_id, file, "facebook")
-            return
-
-        # ================= YOUTUBE =================
-        if "youtube.com" in url or "youtu.be" in url:
-            ydl_opts = {
-                "format": "bestvideo+bestaudio/best",
-                "outtmpl": "youtube_%(id)s.%(ext)s",
-                "merge_output_format": "mp4",
-                "quiet": True
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                file = ydl.prepare_filename(info)
-
-            send_video_with_music(chat_id, file, "youtube")
-            return
-
-        bot.send_message(chat_id, "❌ Unsupported link")
-
-    except Exception:
-        bot.send_message(
-            chat_id,
-            "❌ Incorrect Tik Tok link.\n\n"
-            "To download the video, send the link in the Tiktok, Facebook, Pinterest, YouTube."
-        )
-        return
-        
-# ================= MESSAGE USER =================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("msguser|"))
-def message_user(call):
-
-    if not is_admin(call.from_user.id):
-        return
-
-    uid = call.data.split("|")[1]
-
-    msg = bot.send_message(call.message.chat.id,"Send message for user")
-
-    bot.register_next_step_handler(msg, send_user_message, uid)
-
-
-def send_user_message(m, uid):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    try:
-
-        bot.send_message(int(uid), m.text)
-
-        bot.send_message(m.chat.id,"✅ Message sent")
-
-    except:
-
-        bot.send_message(m.chat.id,"❌ Failed to send message")
-
-# ================= CLEAN SEND VIDEO FUNCTION WITH ADS =================
-def send_video_with_music(chat_id, file_path, platform=None):
-
-    vid_id = str(uuid.uuid4())[:8]
-    video_files[vid_id] = file_path
-
-    kb = InlineKeyboardMarkup()
-    
-    # 1. Botoonka Convert to Music
-    kb.add(
-        InlineKeyboardButton(
-            "🎵 Convert to Music",
-            callback_data=f"music_{vid_id}"
-        )
-    )
-
-    # 2. Haddii ADS shaqaynayo, ku dar Botoonka Ads-ka
     if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
-        kb.add(
-            InlineKeyboardButton(
-                ADS_BTN_TEXT,
-                url=ADS_URL
-            )
-        )
+        kb.add(InlineKeyboardButton(ADS_BTN_TEXT, url=ADS_URL))
 
-    # Qoraalka la soconaya video-ga
-    caption = CAPTION_TEXT
+    caption = "Downloaded by:\n@Downloadvedioytibot"
     if ADS_ENABLED and ADS_TEXT:
         caption += f"\n\n📢 {ADS_TEXT}"
 
     uid = str(chat_id)
-
     videos_data["total"] += 1
     videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
-
     if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
         videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-
     save_videos()
 
     with open(file_path, "rb") as video:
-        bot.send_video(
-            chat_id,
-            video,
-            caption=caption,
-            reply_markup=kb
-        )
+        bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
 
+@bot.message_handler(func=lambda m: m.text and "http" in m.text)
+def handle_links(message):
+    if bot_locked_guard(message):
+        return
+    user_id = message.from_user.id
+    link = message.text
 
+    bot.send_message(message.chat.id, "⏳ Downloading...")
+    download_media(message.chat.id, link)
 
-# ================= MEDIA DOWNLOADER =================
 def download_media(chat_id, text):
     try:
         url = extract_url(text)
-
         if not url:
             bot.send_message(chat_id, "❌ Invalid link")
             return
 
-
-        # ================= TIKTOK =================
         if "tiktok.com" in url:
+            api = f"https://tikwm.com/api/?url={url}"
+            res = requests.get(api, timeout=30).json()
+            if res.get("code") == 0:
+                data = res["data"]
+                if data.get("play"):
+                    video_data = requests.get(data["play"], timeout=60).content
+                    filename = "tiktok_video.mp4"
+                    with open(filename, "wb") as f:
+                        f.write(video_data)
+                    send_video_with_music(chat_id, filename, "tiktok")
+                    return
+
+        ydl_opts = {
+            "format": "best",
+            "outtmpl": "media_%(id)s.%(ext)s",
+            "quiet": True,
+            "merge_output_format": "mp4"
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file = ydl.prepare_filename(info)
+        send_video_with_music(chat_id, file, "download")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Download error:\n{e}")
 
-            try:
-
-                api = f"https://tikwm.com/api/?url={url}"
-                res = requests.get(api, timeout=30).json()
-
-                if res.get("code") == 0:
-
-                    data = res["data"]
-
-                    # ===== PHOTOS =====
-                    if data.get("images"):
-
-                        for i, img in enumerate(data["images"], start=1):
-
-                            img_data = requests.get(img, timeout=30).content
-                            filename = f"tiktok_{i}.jpg"
-
-                            with open(filename, "wb") as f:
-                                f.write(img_data)
-
-                            with open(filename, "rb") as photo:
-                                bot.send_photo(
-                                    chat_id,
-                                    photo,
-                                    caption=f"📸 Photo {i}\n{CAPTION_TEXT}"
-                                )
-
-                            os.remove(filename)
-
-                        return
-
-
-                    # ===== VIDEO =====
-                    if data.get("play"):
-
-                        video_data = requests.get(data["play"], timeout=60).content
-                        filename = "tiktok_video.mp4"
-
-                        with open(filename, "wb") as f:
-                            f.write(video_data)
-
-                        send_video_with_music(chat_id, filename, "tiktok")
-                        return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ TikTok error:\n{e}")
-                return
-
-
-        # ================= SNAPCHAT =================
-        if "snapchat.com" in url or "snap.com" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "best",
-                    "outtmpl": "snapchat_%(id)s.%(ext)s",
-                    "quiet": True
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-
-                send_video_with_music(chat_id, file, "snapchat")
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ Snapchat download error:\n{e}")
-                return
-
-
-        # ================= PINTEREST =================
-        if "pin.it" in url:
-
-            try:
-                r = requests.head(url, allow_redirects=True, timeout=10)
-                url = r.url
-            except:
-                pass
-
-
-        if "pinterest.com" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "bv*+ba/b",
-                    "outtmpl": "pinterest_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "merge_output_format": "mp4"
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-
-                    if "entries" in info:
-                        entries = info["entries"]
-                    else:
-                        entries = [info]
-
-                    for entry in entries:
-
-                        file = ydl.prepare_filename(entry)
-
-                        if file.lower().endswith((".jpg",".jpeg",".png",".webp")):
-
-                            with open(file,"rb") as photo:
-                                bot.send_photo(chat_id, photo, caption=CAPTION_TEXT)
-
-                        else:
-
-                            send_video_with_music(chat_id, file, "pinterest")
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ Download error:\n{e}")
-                return
-
-# ================= FACEBOOK =================
-        if "facebook.com" in url or "fb.watch" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "bestvideo+bestaudio/best",
-                    "outtmpl": "facebook_%(id)s.%(ext)s",
-                    "merge_output_format": "mp4",
-                    "quiet": True
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-
-                send_video_with_music(chat_id, file, "facebook")
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ Facebook download error:\n{e}")
-                return
-
-
-        # ================= YOUTUBE =================
-        if "youtube.com" in url or "youtu.be" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "bestvideo+bestaudio/best",
-                    "outtmpl": "youtube_%(id)s.%(ext)s",
-                    "merge_output_format": "mp4",
-                    "quiet": True
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-
-                send_video_with_music(chat_id, file, "youtube")
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ YouTube download error:\n{e}")
-                return
-
-
-        bot.send_message(chat_id, "❌ Unsupported link")
-
-
-    except Exception:
-
-        bot.send_message(
-            chat_id,
-            "❌ Incorrect link.\n\n"
-            "Send a valid link from TikTok, Snapchat, Pinterest, Facebook, or YouTube."
-        )
-
-
-
-# ================= MESSAGE USER =================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("msguser|"))
-def message_user(call):
-
-    if not is_admin(call.from_user.id):
-        return
-
-    uid = call.data.split("|")[1]
-
-    msg = bot.send_message(
-        call.message.chat.id,
-        "Send message for user"
-    )
-
-    bot.register_next_step_handler(msg, send_user_message, uid)
-
-
-
-def send_user_message(m, uid):
-
-    if not is_admin(m.from_user.id):
-        return
-
-    try:
-
-        bot.send_message(int(uid), m.text)
-
-        bot.send_message(
-            m.chat.id,
-            "✅ Message sent"
-        )
-
-    except:
-
-        bot.send_message(
-            m.chat.id,
-            "❌ Failed to send message"
-        )
-
-
-
-# ================= MUSIC CONVERSION =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
 def convert_music(call):
-
     vid_id = call.data.split("_")[1]
-
     if vid_id not in video_files:
-
-        bot.answer_callback_query(
-            call.id,
-            "File expired"
-        )
+        bot.answer_callback_query(call.id, "File expired")
         return
-
-
     file_path = video_files[vid_id]
-    audio_path = file_path.rsplit(".",1)[0] + ".mp3"
-
-
+    audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
     try:
-
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                file_path,
-                "-vn",
-                "-acodec","mp3",
-                "-ab","128k",
-                "-ar","44100",
-                audio_path
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True
-        )
-
-
-        kb = InlineKeyboardMarkup()
-        kb.add(
-            InlineKeyboardButton(
-                "📢 BOT CHANNEL",
-                url="https://t.me/tiktokvediodownload"
-            )
-        )
-
-
-        with open(audio_path,"rb") as audio:
-
-            bot.send_audio(
-                call.message.chat.id,
-                audio,
-                title="Converted Music",
-                performer="DownloadBot",
-                caption=CAPTION_TEXT,
-                reply_markup=kb
-            )
-
-
+        subprocess.run(["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "mp3", "-ab", "128k", "-ar", "44100", audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        with open(audio_path, "rb") as audio:
+            bot.send_audio(call.message.chat.id, audio, title="Converted Music")
         if os.path.exists(audio_path):
             os.remove(audio_path)
-
         if os.path.exists(file_path):
             os.remove(file_path)
-
-
-        bot.answer_callback_query(
-            call.id,
-            "🎵 Music converted"
-        )
-
-
+        bot.answer_callback_query(call.id, "🎵 Music converted")
     except Exception as e:
-
-        bot.send_message(
-            call.message.chat.id,
-            f"❌ Music conversion failed:\n{e}"
-        )
-
-# ================= VERIFY BOT =================
-@bot2.message_handler(commands=['start'])
-def verify_start(m):
-
-    args = m.text.split()
-
-    if len(args) > 1:
-        code = args[1]
-
-        bot2.send_message(
-            m.chat.id,
-            f"🔑 Your verification code:\n\n{code}\n\nCopy this code and send it to the downloader bot."
-        )
+        bot.send_message(call.message.chat.id, f"❌ Conversion failed:\n{e}")
 
 # ================= RUN BOTS =================
 def run_bot1():
@@ -2885,30 +1681,11 @@ def run_bot2():
         except Exception as e:
             print("Bot2 restart:", e)
 
-def run_support_bot():
-    while True:
-        try:
-            subprocess.call(
-                ["python", "support_bot.py"]
-            )
-
-        except Exception as e:
-            print("Support Bot restart:", e)
-
-            time.sleep(5)
-
 if __name__ == "__main__":
-
     tg_client.start()
-
     t1 = threading.Thread(target=run_bot1)
     t2 = threading.Thread(target=run_bot2)
-    t3 = threading.Thread(target=run_support_bot)
-
     t1.start()
     t2.start()
-    t3.start()
-
     t1.join()
     t2.join()
-    t3.join()
