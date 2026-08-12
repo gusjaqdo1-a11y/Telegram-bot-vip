@@ -508,9 +508,9 @@ def check_membership(user_id):
                 user_id,
                 f"🎬 Welcome to Universal Video & Music Downloader Bot!\n"
                 f"Badge: <b>{badge}</b>\n\n"
-                "Somalida: Dhammaan Barta Bulshada Linkiyadooda Halkan ku soo dir!\n"
+                "This bot helps you easily download videos and music from popular platforms.\n"
                 "Supports: TikTok, YouTube, Facebook, Instagram, Pinterest, Snapchat.\n\n"
-                "📥 Direct Link Send Kareey!",
+                "👑VIP members get high-speed conversion & zero normal ads!",
                 reply_markup=user_menu(user_id)
             )
         else:
