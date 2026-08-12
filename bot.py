@@ -1375,6 +1375,7 @@ def handle_links(message):
     threading.Thread(target=download_media, args=(message.chat.id, link, message.from_user)).start()
 
 # ================= MEDIA DOWNLOADER ENGINE (ALL PLATFORMS) =================
+# ================= MEDIA DOWNLOADER ENGINE (ALL PLATFORMS) =================
 def download_media(chat_id, text, m_user=None):
     try:
         url = extract_url(text)
@@ -1395,29 +1396,36 @@ def download_media(chat_id, text, m_user=None):
                         for i, img in enumerate(data["images"], start=1):
                             img_data = requests.get(img, timeout=20).content
                             filename = f"tiktok_{i}.jpg"
-                            with open(filename, "wb") as f: f.write(img_data)
+                            with open(filename, "wb") as f: 
+                                f.write(img_data)
                             with open(filename, "rb") as photo:
                                 prefix = get_user_caption_prefix(m_user) if m_user else ""
                                 bot.send_photo(chat_id, photo, caption=f"{prefix}📸 Photo {i}\n{CAPTION_TEXT}")
-                            if os.path.exists(filename): os.remove(filename)
+                            if os.path.exists(filename): 
+                                os.remove(filename)
                         return
 
                     if data.get("play"):
                         video_data = requests.get(data["play"], timeout=40).content
                         filename = f"tiktok_{uuid.uuid4().hex[:6]}.mp4"
-                        with open(filename, "wb") as f: f.write(video_data)
+                        with open(filename, "wb") as f: 
+                            f.write(video_data)
                         send_video_with_music(chat_id, filename, "tiktok", m_user, original_url=url)
                         return
             except Exception as e:
                 print("TikTok API Fallback:", e)
 
-        # 2. PINTEREST SHORTENED URL RESOLVER
+        # 2. PINTEREST SHORTENED URL RESOLVER & FIX
         if "pin.it" in url or "pinterest.com" in url:
             try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                }
                 session = requests.Session()
-                resp = session.get(url, allow_redirects=True, timeout=15)
-                url = resp.url
-            except Exception: pass
+                resp = session.get(url, allow_redirects=True, timeout=15, headers=headers)
+                url = resp.url.split('?')[0]  # Ka bixi tracking query-yada ku jira link-ga
+            except Exception as e:
+                print("Pinterest resolve error:", e)
 
         # IDENTIFY PLATFORM
         platform = "other"
@@ -1430,14 +1438,19 @@ def download_media(chat_id, text, m_user=None):
         out_template = f"dl_{platform}_{uuid.uuid4().hex[:6]}.%(ext)s"
 
         user_quality = st.get("quality", "Best")
-        format_opt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
         
+        # Quality Format Strategy
         if user_quality == "1080p":
-            format_opt = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]"
+            format_opt = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best"
         elif user_quality == "720p":
-            format_opt = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]"
+            format_opt = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best"
         elif user_quality == "480p":
-            format_opt = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]"
+            format_opt = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/best"
+        else:
+            format_opt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+
+        if not is_vip(chat_id):
+            format_opt = "best[ext=mp4]/best"
 
         ydl_opts = {
             "format": format_opt,
@@ -1447,32 +1460,49 @@ def download_media(chat_id, text, m_user=None):
             "merge_output_format": "mp4",
             "nocheckcertificate": True,
             "geo_bypass": True,
+            # YouTube Block Bypass Options
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["android", "ios", "web"]
+                }
+            },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/"
             }
         }
 
-        if not is_vip(chat_id):
-            ydl_opts["format"] = "best[ext=mp4]/best"
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            if not info:
+                raise Exception("No media info retrieved")
+
             entries = info["entries"] if "entries" in info and info["entries"] else [info]
 
             for entry in entries:
-                if not entry: continue
+                if not entry: 
+                    continue
+                
                 file_path = ydl.prepare_filename(entry)
+                
+                # Check for file format changes (e.g. mkv -> mp4 or missing extensions)
                 if not os.path.exists(file_path):
                     base, _ = os.path.splitext(file_path)
-                    if os.path.exists(f"{base}.mp4"): file_path = f"{base}.mp4"
+                    for ext in [".mp4", ".mkv", ".webm", ".jpg", ".png", ".jpeg", ".webp"]:
+                        if os.path.exists(f"{base}{ext}"):
+                            file_path = f"{base}{ext}"
+                            break
 
                 if os.path.exists(file_path):
+                    # Direct photo download handling (Pinterest/Instagram images)
                     if file_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                         with open(file_path, "rb") as photo:
                             prefix = get_user_caption_prefix(m_user) if m_user else ""
                             bot.send_photo(chat_id, photo, caption=f"{prefix}{CAPTION_TEXT}")
-                        os.remove(file_path)
+                        try:
+                            os.remove(file_path)
+                        except Exception: pass
                     else:
                         send_video_with_music(chat_id, file_path, platform, m_user, original_url=url)
 
@@ -1481,6 +1511,7 @@ def download_media(chat_id, text, m_user=None):
     except Exception as e:
         print("DOWNLOAD ERROR:", e)
         bot.send_message(chat_id, "❌ Download failed! Please make sure link is public and accurate.")
+
 
 # ================= FIXED MUSIC CONVERSION =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
