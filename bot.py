@@ -1,5 +1,5 @@
 import telebot
-import aiohttp
+import requests
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 import os, json, random
 from datetime import datetime
