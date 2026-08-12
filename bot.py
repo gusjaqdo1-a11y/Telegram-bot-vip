@@ -175,7 +175,7 @@ def user_menu(uid):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
     kb.add("👥 REFERRAL", "🆔 GET ID")
-    kb.add("🔓 UNLOCK VIP", "👑 VIP USERS")
+    kb.add("🚀PREMIUM", "👑PREMIUM USERS")
     kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
     if is_admin(uid):
         kb.add("👑 ADMIN PANEL")
@@ -370,7 +370,7 @@ def send_multi_join(user_id):
     )
 
 # ================= VIP SYSTEM =================
-@bot.message_handler(func=lambda m: m.text == "🔓 UNLOCK VIP")
+@bot.message_handler(func=lambda m: m.text == "🚀PREMIUM")
 def unlock_vip_cmd(m):
     if bot_locked_guard(m):
         return
@@ -383,7 +383,7 @@ def unlock_vip_cmd(m):
         return
 
     text = (
-        "👑 <b>VIP ACCESS</b>\n\n"
+        "👑 <b>VIP PREMIYM ACCESS</b>\n\n"
         "Unlock VIP Downloader\n\n"
         "🚀 Faster processing\n"
         "🎬 High quality downloads\n"
@@ -404,7 +404,7 @@ def buy_vip_stars_cb(call):
     prices = [LabeledPrice(label="VIP Access", amount=100)] # 100 Stars
     bot.send_invoice(
         call.message.chat.id,
-        title="👑 VIP ACCESS",
+        title="👑PREMIUM VIP ACCESS",
         description="Unlock VIP Downloader Features permanently!",
         invoice_payload="vip_subscription_payload",
         provider_token=STARS_PROVIDER_TOKEN,
@@ -430,7 +430,7 @@ def got_payment(message):
             reply_markup=user_menu(message.from_user.id)
         )
 
-@bot.message_handler(func=lambda m: m.text == "👑 VIP USERS")
+@bot.message_handler(func=lambda m: m.text == "👑PREMIUM USERS")
 def vip_users_list(m):
     if bot_locked_guard(m):
         return
@@ -499,7 +499,7 @@ def remove_vip_proc(m):
     save_users()
     bot.send_message(m.chat.id, f"❌ VIP status removed for user {uid}.")
     try:
-        bot.send_message(int(uid), "ℹ️ Your VIP status has been removed by admin.")
+        bot.send_message(int(uid), "ℹ️ Your VIP status has been expired.")
     except Exception:
         pass
 
