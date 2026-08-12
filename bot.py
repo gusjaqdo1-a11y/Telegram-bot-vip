@@ -1380,7 +1380,7 @@ def download_media(chat_id, text, m_user=None):
     try:
         url = extract_url(text)
         if not url:
-            bot.send_message(chat_id, "❌ Invalid or unsupported link.")
+            bot.send_message(chat_id, "❌ Link-ga aad soo dirtay ma aha mid sax ah.")
             return
 
         st = get_user_settings(chat_id)
@@ -1413,7 +1413,7 @@ def download_media(chat_id, text, m_user=None):
                         send_video_with_music(chat_id, filename, "tiktok", m_user, original_url=url)
                         return
             except Exception as e:
-                print("TikTok API Fallback:", e)
+                print("TikTok API Fallback error:", e)
 
         # 2. PINTEREST SHORTENED URL RESOLVER & FIX
         if "pin.it" in url or "pinterest.com" in url:
@@ -1439,17 +1439,14 @@ def download_media(chat_id, text, m_user=None):
 
         user_quality = st.get("quality", "Best")
         
-        # Quality Format Strategy
+        # Safe Format Strategy (Ensures Audio + Video are pre-merged by YouTube/Platforms to prevent FFmpeg crashes)
         if user_quality == "1080p":
-            format_opt = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best"
+            format_opt = "best[height<=1080][ext=mp4]/best[height<=1080]/best"
         elif user_quality == "720p":
-            format_opt = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]/best"
+            format_opt = "best[height<=720][ext=mp4]/best[height<=720]/best"
         elif user_quality == "480p":
-            format_opt = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]/best"
+            format_opt = "best[height<=480][ext=mp4]/best[height<=480]/best"
         else:
-            format_opt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-
-        if not is_vip(chat_id):
             format_opt = "best[ext=mp4]/best"
 
         ydl_opts = {
@@ -1457,10 +1454,10 @@ def download_media(chat_id, text, m_user=None):
             "outtmpl": out_template,
             "quiet": True,
             "no_warnings": True,
-            "merge_output_format": "mp4",
             "nocheckcertificate": True,
             "geo_bypass": True,
-            # YouTube Block Bypass Options
+            "ignoreerrors": True,
+            # YouTube & Social Media Block Bypass Options
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "ios", "web"]
@@ -1476,17 +1473,18 @@ def download_media(chat_id, text, m_user=None):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                raise Exception("No media info retrieved")
+                raise Exception("No media info retrieved from link")
 
-            entries = info["entries"] if "entries" in info and info["entries"] else [info]
+            entries = info.get("entries") if "entries" in info and info["entries"] else [info]
 
+            downloaded_any = False
             for entry in entries:
                 if not entry: 
                     continue
                 
                 file_path = ydl.prepare_filename(entry)
                 
-                # Check for file format changes (e.g. mkv -> mp4 or missing extensions)
+                # Check for extension mismatch (e.g. mkv, webm, jpg, png, etc.)
                 if not os.path.exists(file_path):
                     base, _ = os.path.splitext(file_path)
                     for ext in [".mp4", ".mkv", ".webm", ".jpg", ".png", ".jpeg", ".webp"]:
@@ -1495,6 +1493,7 @@ def download_media(chat_id, text, m_user=None):
                             break
 
                 if os.path.exists(file_path):
+                    downloaded_any = True
                     # Direct photo download handling (Pinterest/Instagram images)
                     if file_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
                         with open(file_path, "rb") as photo:
@@ -1506,11 +1505,15 @@ def download_media(chat_id, text, m_user=None):
                     else:
                         send_video_with_music(chat_id, file_path, platform, m_user, original_url=url)
 
+            if not downloaded_any:
+                raise Exception("File was not saved correctly to disk.")
+
         return
 
     except Exception as e:
         print("DOWNLOAD ERROR:", e)
-        bot.send_message(chat_id, "❌ Download failed! Please make sure link is public and accurate.")
+        bot.send_message(chat_id, "❌ Download failed! Please make sure link is public and accurate..")
+
 
 
 # ================= FIXED MUSIC CONVERSION =================
