@@ -81,6 +81,11 @@ CAPTION_TEXT = "Downloaded by:\n@Downloadvedioytibot"
 USERS_FILE = "users.json"
 WITHDRAWS_FILE = "withdraws.json"
 VIDEOS_FILE = "videos.json"
+CONFIG_FILE = "config.json"  # <-- KU DAR TANI
+
+# Load Config
+config_data = load_json(CONFIG_FILE, {"vip_price": 100})
+VIP_PRICE = config_data.get("vip_price", 100)
 
 # ================= JSON FUNCTIONS =================
 def load_json(path, default):
@@ -104,6 +109,10 @@ def save_users():
 
 def save_withdraws():
     save_json(WITHDRAWS_FILE, withdraws)
+
+def save_config():
+    save_json(CONFIG_FILE, {"vip_price": VIP_PRICE})
+
 
 videos_data = load_json(VIDEOS_FILE, {
     "total": 0,
@@ -197,6 +206,7 @@ def admin_menu():
     kb.add("🔒 LOCK BOT", "🔓 UNLOCK BOT")  
     kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
     kb.add("📥 IMPORT USERS")
+    kb.add("⚙️ SET VIP PRICE")
     kb.add("🔗 GET REFERRAL CODE")
     kb.add("🔙 BACK MAIN MENU")
     return kb
@@ -383,25 +393,25 @@ def unlock_vip_cmd(m):
         return
 
     text = (
-        "👑 <b>VIP PREMIYM ACCESS</b>\n\n"
+        "👑 <b>VIP PREMIUM ACCESS</b>\n\n"
         "Unlock VIP Downloader\n\n"
         "🚀 Faster processing\n"
         "🎬 High quality downloads\n"
         "🎵 Unlimited MP3\n"
         "📦 Multiple links\n"
         "⭐ VIP badge\n\n"
-        "Price: 100 ⭐ Stars"
+        f"Price: {VIP_PRICE} ⭐ Stars"  # <-- WUXUU ISTICMAALAYAA QIIMAHA CUSUB
     )
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("⭐ Pay 100 Stars", callback_data="buy_vip_stars"))
+    kb.add(InlineKeyboardButton(f"⭐ Pay {VIP_PRICE} Stars", callback_data="buy_vip_stars"))
 
     bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_vip_stars")
 def buy_vip_stars_cb(call):
     bot.answer_callback_query(call.id)
-    prices = [LabeledPrice(label="VIP Access", amount=100)] # 100 Stars
+    prices = [LabeledPrice(label="VIP Access", amount=VIP_PRICE)] # <-- VIP_PRICE QIIMAHA BADALMAYA
     bot.send_invoice(
         call.message.chat.id,
         title="👑PREMIUM VIP ACCESS",
@@ -412,6 +422,7 @@ def buy_vip_stars_cb(call):
         prices=prices,
         start_parameter="vip-access"
     )
+
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
 def checkout_pre(query):
@@ -1326,6 +1337,33 @@ def search_user_result(m):
         bot.send_message(m.chat.id, f"👤 User Found\nID: {uid}\nStatus: {v_status}", reply_markup=kb)
     else:
         bot.send_message(m.chat.id, "❌ User not found")
+
+# ================= ADMIN VIP PRICE MANAGEMENT =================
+@bot.message_handler(func=lambda m: m.text == "⚙️ SET VIP PRICE")
+def set_vip_price_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    msg = bot.send_message(
+        m.chat.id,
+        f"⚙️ **Qiimaha VIP-da hadda waa:** `{VIP_PRICE}` ⭐ Stars\n\n"
+        f"Geli qiimaha cusub (Tusaale: `999` ama `100`):",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, set_vip_price_process)
+
+def set_vip_price_process(m):
+    global VIP_PRICE
+    if not is_admin(m.from_user.id):
+        return
+    text = (m.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        bot.send_message(m.chat.id, "❌ Fadlan geli tiro sax ah (nambarku waa inuu ka weyn yahay 0).")
+        return
+
+    VIP_PRICE = int(text)
+    save_config()
+    bot.send_message(m.chat.id, f"✅ Qiimaha VIP-da waxaa loo beddelay **{VIP_PRICE}** ⭐ Stars!", parse_mode="Markdown")
+
 
 @bot.message_handler(func=lambda m: m.text == "➕ ADD BALANCE")
 def add_balance_start(m):
