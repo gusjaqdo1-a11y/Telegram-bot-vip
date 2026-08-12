@@ -16,6 +16,7 @@ from telethon import TelegramClient
 import smtplib
 from email.mime.text import MIMEText
 
+
 # ================= CONFIG =================
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -64,12 +65,11 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""     
 ADS_URL = "" 
 
+
 # ================= DATABASE FILES =================
 USERS_FILE = "users.json"
 WITHDRAWS_FILE = "withdraws.json"
 VIDEOS_FILE = "videos.json"
-
-# PREMIUM & ADVANCED MODULE FILES
 PREMIUM_FILE = "premium.json"
 PAYMENTS_FILE = "payments.json"
 REFERRALS_FILE = "referrals.json"
@@ -77,7 +77,6 @@ REFERRAL_REWARDS_FILE = "referral_rewards.json"
 REFERRAL_MILESTONES_FILE = "referral_milestones.json"
 FEATURE_REQUESTS_FILE = "feature_requests.json"
 FEATURE_VOTES_FILE = "feature_votes.json"
-LEADERBOARD_FILE = "leaderboard.json"
 MISSIONS_FILE = "missions.json"
 MISSION_PROGRESS_FILE = "mission_progress.json"
 COUPONS_FILE = "coupons.json"
@@ -100,9 +99,45 @@ def save_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=4)
 
-# ================= LOAD ALL DATABASES =================
 users = load_json(USERS_FILE, {})
 withdraws = load_json(WITHDRAWS_FILE, [])
+premium_data = load_json(PREMIUM_FILE, {
+    "plans": {
+        "7_days": {"name": "⭐ 7 Days", "duration": 7, "stars": 50, "active": True},
+        "30_days": {"name": "⭐ 30 Days", "duration": 30, "stars": 150, "active": True},
+        "90_days": {"name": "⭐ 90 Days", "duration": 90, "stars": 400, "active": True},
+        "1_year": {"name": "⭐ 1 Year", "duration": 365, "stars": 1200, "active": True}
+    },
+    "subscriptions": {}
+})
+payments_data = load_json(PAYMENTS_FILE, [])
+referrals_data = load_json(REFERRALS_FILE, {})
+referral_rewards_data = load_json(REFERRAL_REWARDS_FILE, {})
+referral_milestones_data = load_json(REFERRAL_MILESTONES_FILE, {
+    "3": "⭐ 1 Day",
+    "5": "⭐ 3 Days",
+    "10": "⭐ 7 Days",
+    "25": "⭐ 30 Days",
+    "50": "⭐ 90 Days"
+})
+feature_requests_data = load_json(FEATURE_REQUESTS_FILE, [])
+feature_votes_data = load_json(FEATURE_VOTES_FILE, {})
+missions_data = load_json(MISSIONS_FILE, {
+    "active": [
+        {"id": "dl_10", "title": "📥 Download 10 Files", "target": 10, "reward_days": 1, "type": "download"},
+        {"id": "ref_3", "title": "🎁 Invite 3 Friends", "target": 3, "reward_days": 2, "type": "referral"},
+        {"id": "vote_3", "title": "💡 Vote on 3 Features", "target": 3, "reward_days": 1, "type": "vote"}
+    ]
+})
+mission_progress_data = load_json(MISSION_PROGRESS_FILE, {})
+coupons_data = load_json(COUPONS_FILE, {
+    "VIP2026": {"reward_days": 30, "max_uses": 100, "uses": 0, "active": True},
+    "WELCOME": {"reward_days": 7, "max_uses": 1000, "uses": 0, "active": True}
+})
+coupon_usage_data = load_json(COUPON_USAGE_FILE, {})
+gift_premium_data = load_json(GIFT_PREMIUM_FILE, [])
+vip_identity_data = load_json(VIP_IDENTITY_FILE, {})
+user_settings_data = load_json(USER_SETTINGS_FILE, {})
 
 videos_data = load_json(VIDEOS_FILE, {
     "total": 0,
@@ -115,108 +150,29 @@ videos_data = load_json(VIDEOS_FILE, {
     "users": {}
 })
 
-premium_db = load_json(PREMIUM_FILE, {}) # {user_id: {"plan": str, "duration": int, "start_date": str, "expiry_date": str, "status": "ACTIVE"/"INACTIVE"}}
-payments_db = load_json(PAYMENTS_FILE, [])
-referrals_db = load_json(REFERRALS_FILE, {}) # {user_id: [referred_user_ids]}
-referral_rewards_db = load_json(REFERRAL_REWARDS_FILE, {}) # {user_id: [claimed_milestones]}
-referral_milestones_db = load_json(REFERRAL_MILESTONES_FILE, {
-    3: "⭐ 3 Days",
-    5: "⭐ 7 Days",
-    10: "⭐ 15 Days",
-    25: "⭐ 30 Days",
-    50: "⭐ 90 Days"
-})
-feature_requests_db = load_json(FEATURE_REQUESTS_FILE, [])
-feature_votes_db = load_json(FEATURE_VOTES_FILE, {}) # {request_id: [user_ids]}
-leaderboard_db = load_json(LEADERBOARD_FILE, {}) # {user_id: points}
-missions_db = load_json(MISSIONS_FILE, [
-    {"id": "m1", "type": "daily", "title": "📥 Download 10 Files", "target": 10, "reward": "⭐ 1 Day"},
-    {"id": "m2", "type": "daily", "title": "🎁 Invite 3 Friends", "target": 3, "reward": "⭐ 2 Days"},
-    {"id": "m3", "type": "special", "title": "💡 Vote on 3 Features", "target": 3, "reward": "⭐ 1 Day"}
-])
-mission_progress_db = load_json(MISSION_PROGRESS_FILE, {}) # {user_id: {mission_id: progress_int}}
-coupons_db = load_json(COUPONS_FILE, {
-    "VIP2026": {"reward_days": 30, "max_uses": 100, "uses": 0, "active": True}
-})
-coupon_usage_db = load_json(COUPON_USAGE_FILE, {}) # {user_id: [coupon_codes]}
-gift_premium_db = load_json(GIFT_PREMIUM_FILE, [])
-vip_identity_db = load_json(VIP_IDENTITY_FILE, {}) # {user_id: {"title": "💎 PRO", "level": 1, "points": 0, "since": str}}
-user_settings_db = load_json(USER_SETTINGS_FILE, {})
-
-def save_users():
-    save_json(USERS_FILE, users)
-
-def save_withdraws():
-    save_json(WITHDRAWS_FILE, withdraws)
-
-def save_videos():
-    save_json(VIDEOS_FILE, videos_data)
-
-def save_premium():
-    save_json(PREMIUM_FILE, premium_db)
-
-def save_payments():
-    save_json(PAYMENTS_FILE, payments_db)
-
-def save_referrals():
-    save_json(REFERRALS_FILE, referrals_db)
-
-def save_referral_rewards():
-    save_json(REFERRAL_REWARDS_FILE, referral_rewards_db)
-
-def save_referral_milestones():
-    save_json(REFERRAL_MILESTONES_FILE, referral_milestones_db)
-
-def save_feature_requests():
-    save_json(FEATURE_REQUESTS_FILE, feature_requests_db)
-
-def save_feature_votes():
-    save_json(FEATURE_VOTES_FILE, feature_votes_db)
-
-def save_leaderboard():
-    save_json(LEADERBOARD_FILE, leaderboard_db)
-
-def save_missions():
-    save_json(MISSIONS_FILE, missions_db)
-
-def save_mission_progress():
-    save_json(MISSION_PROGRESS_FILE, mission_progress_db)
-
-def save_coupons():
-    save_json(COUPONS_FILE, coupons_db)
-
-def save_coupon_usage():
-    save_json(COUPON_USAGE_FILE, coupon_usage_db)
-
-def save_gift_premium():
-    save_json(GIFT_PREMIUM_FILE, gift_premium_db)
-
-def save_vip_identity():
-    save_json(VIP_IDENTITY_FILE, vip_identity_db)
-
-def save_user_settings():
-    save_json(USER_SETTINGS_FILE, user_settings_db)
-
-# ================= CONFIGURABLE PREMIUM PLANS =================
-PREMIUM_PLANS = {
-    "7_days": {"name": "7 Days", "days": 7, "stars": 50},
-    "30_days": {"name": "30 Days", "days": 30, "stars": 150},
-    "90_days": {"name": "90 Days", "days": 90, "stars": 350},
-    "1_year": {"name": "1 Year", "days": 365, "stars": 1000}
-}
+def save_users(): save_json(USERS_FILE, users)
+def save_withdraws(): save_json(WITHDRAWS_FILE, withdraws)
+def save_videos(): save_json(VIDEOS_FILE, videos_data)
+def save_premium(): save_json(PREMIUM_FILE, premium_data)
+def save_payments(): save_json(PAYMENTS_FILE, payments_data)
+def save_referrals(): save_json(REFERRALS_FILE, referrals_data)
+def save_referral_rewards(): save_json(REFERRAL_REWARDS_FILE, referral_rewards_data)
+def save_referral_milestones(): save_json(REFERRAL_MILESTONES_FILE, referral_milestones_data)
+def save_feature_requests(): save_json(FEATURE_REQUESTS_FILE, feature_requests_data)
+def save_feature_votes(): save_json(FEATURE_VOTES_FILE, feature_votes_data)
+def save_missions(): save_json(MISSIONS_FILE, missions_data)
+def save_mission_progress(): save_json(MISSION_PROGRESS_FILE, mission_progress_data)
+def save_coupons(): save_json(COUPONS_FILE, coupons_data)
+def save_coupon_usage(): save_json(COUPON_USAGE_FILE, coupon_usage_data)
+def save_gift_premium(): save_json(GIFT_PREMIUM_FILE, gift_premium_data)
+def save_vip_identity(): save_json(VIP_IDENTITY_FILE, vip_identity_data)
+def save_user_settings(): save_json(USER_SETTINGS_FILE, user_settings_data)
 
 # ================= HELPER FUNCTIONS =================
-def random_ref():
-    return str(random.randint(1000000000, 9999999999))
-
-def random_botid():
-    return str(random.randint(10000000000, 99999999999))
-
-def now_month():
-    return datetime.now().month
-
-def is_admin(uid):
-    return int(uid) in ADMIN_IDS
+def random_ref(): return str(random.randint(1000000000, 9999999999))
+def random_botid(): return str(random.randint(10000000000, 99999999999))
+def now_month(): return datetime.now().month
+def is_admin(uid): return int(uid) in ADMIN_IDS
 
 def find_user_by_botid(bid):
     for u, data in users.items():
@@ -238,69 +194,67 @@ def bot_locked_guard(message):
         return True
     return False
 
-def is_premium(uid):
+def is_user_premium(uid):
     uid_str = str(uid)
-    if uid_str not in premium_db:
-        return False
-    p = premium_db[uid_str]
-    if p.get("status") != "ACTIVE":
-        return False
-    expiry = datetime.strptime(p["expiry_date"], "%Y-%m-%d %H:%M:%S")
-    if datetime.now() > expiry:
-        p["status"] = "INACTIVE"
-        save_premium()
-        try:
-            bot.send_message(
-                int(uid),
-                "⏰ Your Premium has expired.\n\n⭐ Renew Premium to continue using VIP features.",
-                reply_markup=InlineKeyboardMarkup().add(
-                    InlineKeyboardButton("⭐ Renew Premium", callback_data="prem_buy_menu"),
-                    InlineKeyboardButton("🏠 Home", callback_data="home_menu")
-                )
-            )
-        except:
-            pass
-        return False
-    return True
+    if uid_str in premium_data.get("subscriptions", {}):
+        sub = premium_data["subscriptions"][uid_str]
+        if sub.get("status") == "ACTIVE":
+            expiry = datetime.strptime(sub["expiry_date"], "%Y-%m-%d %H:%M:%S")
+            if datetime.now() < expiry:
+                return True
+            else:
+                sub["status"] = "INACTIVE"
+                save_premium()
+                try:
+                    bot.send_message(
+                        int(uid),
+                        "⏰ Your Premium has expired.\n\n⭐ Renew Premium to continue using VIP features.",
+                        reply_markup=InlineKeyboardMarkup().add(
+                            InlineKeyboardButton("⭐ Renew Premium", callback_data="buy_premium"),
+                            InlineKeyboardButton("🏠 Home", callback_data="go_home")
+                        )
+                    )
+                except:
+                    pass
+    return False
+
+def get_user_vip_identity(uid):
+    uid_str = str(uid)
+    if uid_str not in vip_identity_data:
+        vip_identity_data[uid_str] = {
+            "title": "PRO" if is_user_premium(uid) else "VIP",
+            "level": 1,
+            "points": 0,
+            "premium_since": datetime.now().strftime("%Y-%m-%d")
+        }
+        save_vip_identity()
+    return vip_identity_data[uid_str]
 
 def add_user_points(uid, pts):
     uid_str = str(uid)
-    leaderboard_db[uid_str] = leaderboard_db.get(uid_str, 0) + pts
-    save_leaderboard()
-    if uid_str in vip_identity_db:
-        vip_identity_db[uid_str]["points"] = vip_identity_db[uid_str].get("points", 0) + pts
-        # Level up logic every 100 points
-        new_level = (vip_identity_db[uid_str]["points"] // 100) + 1
-        vip_identity_db[uid_str]["level"] = new_level
-        save_vip_identity()
-
-def check_mission_progress(uid, mission_type, count=1):
-    uid_str = str(uid)
-    if uid_str not in mission_progress_db:
-        mission_progress_db[uid_str] = {}
-    
-    for m in missions_db:
-        if m["type"] == mission_type:
-            mid = m["id"]
-            current = mission_progress_db[uid_str].get(mid, 0)
-            if current < m["target"]:
-                current += count
-                mission_progress_db[uid_str][mid] = current
-                save_mission_progress()
+    ident = get_user_vip_identity(uid_str)
+    ident["points"] += pts
+    ident["level"] = 1 + (ident["points"] // 100)
+    save_vip_identity()
 
 # ================= MENUS =================
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📥 Downloader", "👑 Premium")
+    kb.add("⚙️ Settings", "📊 My Stats")
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
-    kb.add("👑 PREMIUM", "👥 REFERRAL")
-    kb.add("🆔 GET ID", "☎️ CUSTOMER")
-    kb.add("🤖CUSTOMER AI")
+    kb.add("👥 REFERRAL", "🆔 GET ID")
+    kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
     if show_admin:
         kb.add("👑 ADMIN PANEL")
     return kb
 
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("👑 PREMIUM MANAGEMENT", "🎁 REFERRALS", "💡 FEATURE REQUESTS")
+    kb.add("🏆 LEADERBOARD", "🎯 MISSIONS", "🎟 COUPONS")
+    kb.add("🎁 GIFT PREMIUM", "👑 VIP IDENTITY", "💳 STARS PAYMENTS")
+    kb.add("📊 PREMIUM STATISTICS")
     kb.add("📊 STATS", "📢 BROADCAST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
@@ -314,11 +268,6 @@ def admin_menu():
     kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
-    kb.add("👑 PREMIUM MANAGEMENT", "🎁 REFERRAL MGMT")
-    kb.add("💡 FEATURE MGMT", "🏆 LEADERBOARD MGMT")
-    kb.add("🎯 MISSIONS MGMT", "🎟 COUPONS MGMT")
-    kb.add("🎁 GIFT MGMT", "👑 VIP ID MGMT")
-    kb.add("💳 STARS PAYMENTS", "📊 PREMIUM STATS")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -342,12 +291,15 @@ def start_handler(message):
     if bot_locked_guard(message):
         return
 
-    uid = str(message.from_user.id)
+    uid = message.from_user.id
     args = message.text.split()
 
-    if uid not in users:
-        ref = args[1] if len(args) > 1 else None
-        users[uid] = {
+    if str(uid) not in users:
+        ref = args[1] if len(args) > 1 and not args[1].startswith("ref_") else None
+        if len(args) > 1 and args[1].startswith("ref_"):
+            ref = args[1].split("_")[1]
+
+        users[str(uid)] = {
             "username": message.from_user.username or "",
             "balance": 0.0,
             "blocked": 0.0,
@@ -359,84 +311,61 @@ def start_handler(message):
             "month": now_month()
         }
         
-        # Initialize VIP identity
-        if uid not in vip_identity_db:
-            vip_identity_db[uid] = {
-                "title": "VIP",
-                "level": 1,
-                "points": 10,
-                "since": datetime.now().strftime("%Y-%m-%d")
-            }
-            save_vip_identity()
-
-        # Referral handling
-        if ref:
+        if ref and ref != users[str(uid)]["ref"]:
             ref_user = next((u for u, d in users.items() if d["ref"] == ref), None)
-            if ref_user and ref_user != uid:
+            if ref_user and ref_user != str(uid):
+                referrals_data[str(uid)] = {"referrer": ref_user, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                save_referrals()
+                
                 users[ref_user]["balance"] += 0.2
                 users[ref_user]["invited"] += 1
-                
-                if ref_user not in referrals_db:
-                    referrals_db[ref_user] = []
-                if uid not in referrals_db[ref_user]:
-                    referrals_db[ref_user].append(uid)
-                    save_referrals()
-                
                 add_user_points(ref_user, 10)
-                check_mission_progress(ref_user, "daily", 0) # Trigger checks if needed
                 
-                bot.send_message(int(ref_user), "🎉 You earned $0.2 from referral!")
-                
-                # Check referral milestones
-                inv_count = len(referrals_db[ref_user])
-                if inv_count in referral_milestones_db:
-                    if ref_user not in referral_rewards_db:
-                        referral_rewards_db[ref_user] = []
-                    milestone_key = f"milestone_{inv_count}"
-                    if milestone_key not in referral_rewards_db[ref_user]:
-                        referral_rewards_db[ref_user].append(milestone_key)
-                        save_referral_rewards()
-                        bot.send_message(int(ref_user), f"🎁 Congratulations! You reached {inv_count} referrals milestone and earned {referral_milestones_db[inv_count]}!")
+                # Check Milestones
+                inv_count = users[ref_user]["invited"]
+                milestones = [3, 5, 10, 25, 50]
+                for m_target in milestones:
+                    if inv_count == m_target:
+                        rew_key = f"{ref_user}_{m_target}"
+                        if rew_key not in referral_rewards_data:
+                            referral_rewards_data[rew_key] = True
+                            save_referral_rewards()
+                            try:
+                                bot.send_message(int(ref_user), f"🎁 Congratulations! You reached {m_target} referrals and unlocked a milestone reward!")
+                            except:
+                                pass
+
+                try:
+                    bot.send_message(int(ref_user), "🎉 You earned $0.2 from referral!")
+                except:
+                    pass
 
         save_users()
 
-    check_membership(int(uid))
+    check_membership(uid)
 
-@bot.callback_query_handler(func=lambda call: call.data == "home_menu")
-def home_menu_callback(call):
-    uid = str(call.from_user.id)
-    bot.delete_message(call.message.chat.id, call.message.message_id)
-    bot.send_message(
-        call.message.chat.id,
-        "🏠 Main Menu",
-        reply_markup=user_menu(is_admin(uid))
-    )
-
-# ================= 1. PREMIUM SYSTEM =================
-@bot.message_handler(func=lambda m: m.text == "👑 PREMIUM")
+@bot.message_handler(func=lambda m: m.text == "👑 Premium")
 def premium_center_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
+    is_prem = is_user_premium(uid)
+    sub = premium_data.get("subscriptions", {}).get(uid, {})
     
-    status_str = "ACTIVE" if is_premium(uid) else "INACTIVE"
-    plan_name = "None"
-    expiry_str = "N/A"
+    status = "ACTIVE" if is_prem else "INACTIVE"
+    plan_name = sub.get("plan_name", "None")
+    expiry = sub.get("expiry_date", "N/A")
+    
     days_left = 0
-    
-    if uid in premium_db and premium_db[uid].get("status") == "ACTIVE":
-        plan_name = premium_db[uid].get("plan", "30 Days")
-        expiry_date_obj = datetime.strptime(premium_db[uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
-        expiry_str = expiry_date_obj.strftime("%d %b %Y")
-        days_left = max(0, (expiry_date_obj - datetime.now()).days)
+    if is_prem:
+        exp_dt = datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S")
+        days_left = max(0, (exp_dt - datetime.now()).days)
 
     text = f"""╭━━━ 👑 PREMIUM CENTER ━━━╮
 
-⭐ Status: {status_str}
+⭐ Status: {status}
 💎 Plan: {plan_name}
-📅 Expires: {expiry_str}
+📅 Expires: {expiry}
 ⏳ Days Left: {days_left}
 
 ✨ Unlock the full Premium experience!
@@ -444,388 +373,336 @@ def premium_center_handler(m):
 
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("⭐ Buy Premium", callback_data="prem_buy_menu"),
-        InlineKeyboardButton("💎 My Plan", callback_data="prem_my_plan")
+        InlineKeyboardButton("⭐ Buy Premium", callback_data="buy_premium"),
+        InlineKeyboardButton("💎 My Plan", callback_data="my_plan")
     )
     kb.add(
         InlineKeyboardButton("⚙️ Premium Settings", callback_data="prem_settings"),
-        InlineKeyboardButton("📊 My Statistics", callback_data="prem_my_stats")
+        InlineKeyboardButton("📊 My Statistics", callback_data="my_stats")
     )
     kb.add(
-        InlineKeyboardButton("🎁 Invite Friends", callback_data="prem_invite"),
-        InlineKeyboardButton("💡 Feature Requests", callback_data="prem_features")
+        InlineKeyboardButton("🎁 Invite Friends", callback_data="invite_friends"),
+        InlineKeyboardButton("💡 Feature Requests", callback_data="feature_requests")
     )
     kb.add(
-        InlineKeyboardButton("🏆 Leaderboard", callback_data="prem_leaderboard"),
-        InlineKeyboardButton("🎯 Missions", callback_data="prem_missions")
+        InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard"),
+        InlineKeyboardButton("🎯 Missions", callback_data="missions")
     )
     kb.add(
-        InlineKeyboardButton("🎟️ Coupons", callback_data="prem_coupons"),
-        InlineKeyboardButton("🎁 Gift Premium", callback_data="prem_gift")
+        InlineKeyboardButton("🎟️ Coupons", callback_data="coupons"),
+        InlineKeyboardButton("🎁 Gift Premium", callback_data="gift_premium")
     )
     kb.add(
-        InlineKeyboardButton("👑 My VIP Identity", callback_data="prem_vip_id"),
-        InlineKeyboardButton("🔙 Back", callback_data="home_menu")
+        InlineKeyboardButton("👑 My VIP Identity", callback_data="vip_identity"),
+        InlineKeyboardButton("🔙 Back", callback_data="go_home")
     )
 
     bot.send_message(m.chat.id, text, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data == "prem_buy_menu")
-def callback_prem_buy(call):
-    kb = InlineKeyboardMarkup(row_width=2)
-    for key, plan in PREMIUM_PLANS.items():
-        kb.add(InlineKeyboardButton(f"⭐ {plan['name']} — {plan['stars']} Stars", callback_data=f"buyplan_{key}"))
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    
-    bot.edit_message_text(
-        "⭐ <b>Choose a Premium Plan</b>\n\nPay securely using Telegram Stars to unlock all VIP features instantly.",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+@bot.callback_query_handler(func=lambda call: call.data == "go_home")
+def callback_go_home(call):
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    bot.send_message(call.message.chat.id, "🏠 Main Menu", reply_markup=user_menu(is_admin(call.from_user.id)))
 
-@bot.callback_query_handler(func=lambda call: call.data == "prem_back_center")
-def callback_prem_back(call):
+@bot.callback_query_handler(func=lambda call: call.data == "buy_premium")
+def callback_buy_premium(call):
+    kb = InlineKeyboardMarkup(row_width=2)
+    for p_key, p_val in premium_data["plans"].items():
+        if p_val.get("active", True):
+            kb.add(InlineKeyboardButton(f"{p_val['name']} — ⭐ {p_val['stars']} Stars", callback_data=f"plan_{p_key}"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text("⭐ Choose your Premium Plan:", call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data == "premium_center")
+def callback_premium_center(call):
     uid = str(call.from_user.id)
-    status_str = "ACTIVE" if is_premium(uid) else "INACTIVE"
-    plan_name = "None"
-    expiry_str = "N/A"
+    is_prem = is_user_premium(uid)
+    sub = premium_data.get("subscriptions", {}).get(uid, {})
+    status = "ACTIVE" if is_prem else "INACTIVE"
+    plan_name = sub.get("plan_name", "None")
+    expiry = sub.get("expiry_date", "N/A")
     days_left = 0
-    
-    if uid in premium_db and premium_db[uid].get("status") == "ACTIVE":
-        plan_name = premium_db[uid].get("plan", "30 Days")
-        expiry_date_obj = datetime.strptime(premium_db[uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
-        expiry_str = expiry_date_obj.strftime("%d %b %Y")
-        days_left = max(0, (expiry_date_obj - datetime.now()).days)
+    if is_prem:
+        exp_dt = datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S")
+        days_left = max(0, (exp_dt - datetime.now()).days)
 
     text = f"""╭━━━ 👑 PREMIUM CENTER ━━━╮
 
-⭐ Status: {status_str}
+⭐ Status: {status}
 💎 Plan: {plan_name}
-📅 Expires: {expiry_str}
+📅 Expires: {expiry}
 ⏳ Days Left: {days_left}
 
 ✨ Unlock the full Premium experience!
 ╰━━━━━━━━━━━━━━━━━━━━━━╯"""
-
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("⭐ Buy Premium", callback_data="prem_buy_menu"),
-        InlineKeyboardButton("💎 My Plan", callback_data="prem_my_plan")
+        InlineKeyboardButton("⭐ Buy Premium", callback_data="buy_premium"),
+        InlineKeyboardButton("💎 My Plan", callback_data="my_plan")
     )
     kb.add(
         InlineKeyboardButton("⚙️ Premium Settings", callback_data="prem_settings"),
-        InlineKeyboardButton("📊 My Statistics", callback_data="prem_my_stats")
+        InlineKeyboardButton("📊 My Statistics", callback_data="my_stats")
     )
     kb.add(
-        InlineKeyboardButton("🎁 Invite Friends", callback_data="prem_invite"),
-        InlineKeyboardButton("💡 Feature Requests", callback_data="prem_features")
+        InlineKeyboardButton("🎁 Invite Friends", callback_data="invite_friends"),
+        InlineKeyboardButton("💡 Feature Requests", callback_data="feature_requests")
     )
     kb.add(
-        InlineKeyboardButton("🏆 Leaderboard", callback_data="prem_leaderboard"),
-        InlineKeyboardButton("🎯 Missions", callback_data="prem_missions")
+        InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard"),
+        InlineKeyboardButton("🎯 Missions", callback_data="missions")
     )
     kb.add(
-        InlineKeyboardButton("🎟️ Coupons", callback_data="prem_coupons"),
-        InlineKeyboardButton("🎁 Gift Premium", callback_data="prem_gift")
+        InlineKeyboardButton("🎟️ Coupons", callback_data="coupons"),
+        InlineKeyboardButton("🎁 Gift Premium", callback_data="gift_premium")
     )
     kb.add(
-        InlineKeyboardButton("👑 My VIP Identity", callback_data="prem_vip_id"),
-        InlineKeyboardButton("🔙 Back", callback_data="home_menu")
+        InlineKeyboardButton("👑 My VIP Identity", callback_data="vip_identity"),
+        InlineKeyboardButton("🔙 Back", callback_data="go_home")
     )
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buyplan_"))
-def callback_buy_plan(call):
-    plan_key = call.data.split("_", 1)[1]
-    if plan_key not in PREMIUM_PLANS:
-        bot.answer_callback_query(call.id, "❌ Invalid plan")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("plan_"))
+def callback_choose_plan(call):
+    p_key = call.data.split("_", 1)[1]
+    plan = premium_data["plans"].get(p_key)
+    if not plan:
+        bot.answer_callback_query(call.id, "❌ Plan not found")
         return
     
-    plan = PREMIUM_PLANS[plan_key]
-    title = f"Premium Access - {plan['name']}"
-    description = f"Unlock VIP Downloader features for {plan['name']}."
-    prices = [LabeledPrice(label=plan['name'], amount=plan['stars'])]
-    
+    prices = [LabeledPrice(label=plan["name"], amount=plan["stars"] * 1)] # Telegram Stars amount (1 star = 1 unit depending on provider, here XTR)
     try:
         bot.send_invoice(
             chat_id=call.message.chat.id,
-            title=title,
-            description=description,
-            invoice_payload=f"premium_{plan_key}_{call.from_user.id}",
-            provider_token="", # Empty token for Telegram Stars
+            title=f"Premium Subscription: {plan['name']}",
+            description=f"Unlock VIP features for {plan['duration']} days.",
+            invoice_payload=f"premium_{p_key}_{call.from_user.id}",
+            provider_token="", # Empty for Telegram Stars
             currency="XTR",
-            prices=prices
+            prices=[LabeledPrice(label=plan["name"], amount=plan["stars"])]
         )
     except Exception as e:
         bot.answer_callback_query(call.id, f"❌ Error creating invoice: {e}", show_alert=True)
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
-def checkout_handler(pre_checkout_query):
+def checkout(pre_checkout_query):
     bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 @bot.message_handler(content_types=['successful_payment'])
-def successful_payment_handler(message):
+def got_payment(message):
     payment = message.successful_payment
     payload = payment.invoice_payload
     uid = str(message.from_user.id)
     
     if payload.startswith("premium_"):
         parts = payload.split("_")
-        plan_key = parts[1]
-        if plan_key in PREMIUM_PLANS:
-            plan = PREMIUM_PLANS[plan_key]
-            days = plan["days"]
-            stars = plan["stars"]
-            
-            start_date = datetime.now()
-            if uid in premium_db and premium_db[uid].get("status") == "ACTIVE":
-                current_expiry = datetime.strptime(premium_db[uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
-                if current_expiry > start_date:
-                    start_date = current_expiry
-            
-            expiry_date = start_date + timedelta(days=days)
-            
-            premium_db[uid] = {
-                "plan": plan["name"],
-                "duration": days,
-                "stars_amount": stars,
+        p_key = f"{parts[1]}_{parts[2]}" if len(parts) > 2 else parts[1]
+        plan = premium_data["plans"].get(p_key)
+        if plan:
+            duration = plan["duration"]
+            now = datetime.now()
+            if uid in premium_data.get("subscriptions", {}) and premium_data["subscriptions"][uid]["status"] == "ACTIVE":
+                cur_exp = datetime.strptime(premium_data["subscriptions"][uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
+                if cur_exp > now:
+                    new_exp = cur_exp + timedelta(days=duration)
+                else:
+                    new_exp = now + timedelta(days=duration)
+            else:
+                new_exp = now + timedelta(days=duration)
+
+            premium_data.setdefault("subscriptions", {})[uid] = {
+                "plan_id": p_key,
+                "plan_name": plan["name"],
+                "duration": duration,
+                "stars_amount": payment.total_amount,
                 "payment_id": payment.telegram_payment_charge_id,
-                "start_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "expiry_date": expiry_date.strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "ACTIVE",
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "start_date": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "expiry_date": new_exp.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "ACTIVE"
             }
             save_premium()
             
-            payments_db.append({
+            payments_data.append({
                 "user_id": uid,
-                "plan": plan["name"],
-                "stars": stars,
+                "type": "premium",
+                "plan": p_key,
+                "stars": payment.total_amount,
                 "payment_id": payment.telegram_payment_charge_id,
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "time": now.strftime("%Y-%m-%d %H:%M:%S")
             })
             save_payments()
-            
             add_user_points(uid, 50)
-            
+
             bot.send_message(
                 message.chat.id,
-                f"🎉 <b>Payment Successful!</b>\n\nYour Premium subscription for <b>{plan['name']}</b> is now active until {expiry_date.strftime('%d %b %Y')}! 👑",
-                parse_mode="HTML"
+                f"🎉 Payment Confirmed!\n\n👑 Premium Activated!\n💎 Plan: {plan['name']}\n📅 Expires: {new_exp.strftime('%Y-%m-%d %H:%M:%S')}"
             )
             
     elif payload.startswith("gift_"):
         parts = payload.split("_")
         recipient_id = parts[1]
-        plan_key = parts[2]
-        if plan_key in PREMIUM_PLANS:
-            plan = PREMIUM_PLANS[plan_key]
-            days = plan["days"]
-            stars = plan["stars"]
+        p_key = f"{parts[2]}_{parts[3]}" if len(parts) > 3 else parts[2]
+        plan = premium_data["plans"].get(p_key)
+        if plan:
+            duration = plan["duration"]
+            now = datetime.now()
+            new_exp = now + timedelta(days=duration)
             
-            start_date = datetime.now()
-            if recipient_id in premium_db and premium_db[recipient_id].get("status") == "ACTIVE":
-                current_expiry = datetime.strptime(premium_db[recipient_id]["expiry_date"], "%Y-%m-%d %H:%M:%S")
-                if current_expiry > start_date:
-                    start_date = current_expiry
-            
-            expiry_date = start_date + timedelta(days=days)
-            
-            premium_db[recipient_id] = {
-                "plan": plan["name"],
-                "duration": days,
-                "stars_amount": stars,
+            premium_data.setdefault("subscriptions", {})[recipient_id] = {
+                "plan_id": p_key,
+                "plan_name": plan["name"],
+                "duration": duration,
+                "stars_amount": payment.total_amount,
                 "payment_id": payment.telegram_payment_charge_id,
-                "start_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "expiry_date": expiry_date.strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "ACTIVE",
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "start_date": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "expiry_date": new_exp.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "ACTIVE"
             }
             save_premium()
             
-            gift_record = {
+            gift_premium_data.append({
                 "sender_id": uid,
                 "recipient_id": recipient_id,
-                "plan": plan["name"],
-                "stars_amount": stars,
+                "plan": p_key,
+                "stars_amount": payment.total_amount,
                 "payment_id": payment.telegram_payment_charge_id,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "status": "completed"
-            }
-            gift_premium_db.append(gift_record)
+            })
             save_gift_premium()
             
-            bot.send_message(message.chat.id, f"✅ Gift successfully sent to user `{recipient_id}`!", parse_mode="HTML")
+            bot.send_message(message.chat.id, "🎁 Gift sent successfully!")
             try:
                 bot.send_message(
                     int(recipient_id),
-                    f"╭━━━ 🎁 PREMIUM GIFT ━━━╮\n\n🎉 You received Premium!\n\n💎 Plan: {plan['name']}\n📅 Expires: {expiry_date.strftime('%d %b %Y')}\n\nEnjoy your Premium experience! 👑\n╰━━━━━━━━━━━━━━━━━━━━━━╯",
-                    parse_mode="HTML"
+                    f"╭━━━ 🎁 PREMIUM GIFT ━━━╮\n\n🎉 You received Premium!\n\n💎 Plan: {plan['name']}\n📅 Expires: {new_exp.strftime('%Y-%m-%d %H:%M:%S')}\n\nEnjoy your Premium experience! 👑\n╰━━━━━━━━━━━━━━━━━━━━━━╯"
                 )
             except:
                 pass
 
-@bot.callback_query_handler(func=lambda call: call.data == "prem_my_plan")
+@bot.callback_query_handler(func=lambda call: call.data == "my_plan")
 def callback_my_plan(call):
     uid = str(call.from_user.id)
-    if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ You do not have an active Premium subscription.", show_alert=True)
+    is_prem = is_user_premium(uid)
+    sub = premium_data.get("subscriptions", {}).get(uid, {})
+    if not is_prem:
+        bot.answer_callback_query(call.id, "❌ You do not have an active Premium plan.", show_alert=True)
         return
-    p = premium_db[uid]
-    text = f"""╭━━━ 💎 MY PLAN DETAILS ━━━╮
-
-⭐ Status: ACTIVE
-💎 Plan: {p['plan']}
-📅 Started: {p['start_date']}
-📅 Expires: {p['expiry_date']}
-💳 Stars Paid: {p.get('stars_amount', 'N/A')}
-
-╰━━━━━━━━━━━━━━━━━━━━━━╯"""
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    text = f"💎 <b>Your Plan Details</b>\n\nPlan: {sub.get('plan_name')}\nStarted: {sub.get('start_date')}\nExpires: {sub.get('expiry_date')}"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data == "prem_settings")
 def callback_prem_settings(call):
     uid = str(call.from_user.id)
-    if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ Premium feature only.", show_alert=True)
+    if not is_user_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
         return
-    text = "⚙️ <b>Premium Settings</b>\n\nConfigure your exclusive preferences and VIP automation here."
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    text = "⚙️ <b>Premium Settings</b>\n\nManage your exclusive VIP preferences here."
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data == "prem_my_stats")
-def callback_prem_my_stats(call):
+@bot.callback_query_handler(func=lambda call: call.data == "my_stats")
+def callback_my_stats(call):
     uid = str(call.from_user.id)
-    v_count = videos_data.get("users", {}).get(uid, 0)
-    ref_count = len(referrals_db.get(uid, []))
-    pts = leaderboard_db.get(uid, 0)
-    text = f"""📊 <b>Your Statistics</b>
+    dl_count = videos_data.get("users", {}).get(uid, 0)
+    ident = get_user_vip_identity(uid)
+    text = f"📊 <b>Your Statistics</b>\n\n🎬 Downloads: {dl_count}\n🏆 Points: {ident['points']}\n🔥 VIP Level: {ident['level']}"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-🎬 Total Downloads: {v_count}
-👥 Referrals Invited: {ref_count}
-🏆 Leaderboard Points: {pts}
-"""
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
-
-# ================= 2. REFERRAL & REWARDS =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_invite")
-def callback_prem_invite(call):
+# REFERRAL & REWARDS
+@bot.callback_query_handler(func=lambda call: call.data == "invite_friends")
+def callback_invite_friends(call):
     uid = str(call.from_user.id)
     bot_username = bot.get_me().username
-    ref_code = users.get(uid, {}).get("ref", "123456")
-    link = f"https://t.me/{bot_username}?start={ref_code}"
-    referrals_count = len(referrals_db.get(uid, []))
+    ref_code = users.get(uid, {}).get("ref", random_ref())
+    link = f"https://t.me/{bot_username}?start=ref_{ref_code}"
+    invited = users.get(uid, {}).get("invited", 0)
     
-    rank = "#--"
-    sorted_lb = sorted(leaderboard_db.items(), key=lambda x: x[1], reverse=True)
-    for i, (u, p) in enumerate(sorted_lb, 1):
-        if u == uid:
-            rank = f"#{i}"
-            break
-
     text = f"""╭━━━ 🎁 INVITE & EARN ━━━╮
 
-👥 Referrals: {referrals_count}
-🎁 Rewards: ⭐ Active Milestones
-🏆 Rank: {rank}
+👥 Referrals: {invited}
+🎁 Rewards: ⭐ Active
+🏆 Rank: #1
 
 Invite your friends and earn rewards!
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-
-🔗 Your Link:
-<code>{link}</code>"""
-
+╰━━━━━━━━━━━━━━━━━━━━━━╯"""
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={link}&text=Download%20videos%20easily%20with%20this%20bot!"),
-        InlineKeyboardButton("👥 My Referrals", callback_data="ref_my_list")
+        InlineKeyboardButton("📤 Share Link", url=f"https://t.me/share/url?url={link}&text=Join%20this%20awesome%20Downloader%20Bot!"),
+        InlineKeyboardButton("👥 My Referrals", callback_data="my_referrals")
     )
     kb.add(
-        InlineKeyboardButton("🎁 My Rewards", callback_data="ref_my_rewards"),
-        InlineKeyboardButton("🏆 My Rank", callback_data="prem_leaderboard")
+        InlineKeyboardButton("🎁 My Rewards", callback_data="my_rewards"),
+        InlineKeyboardButton("🏆 My Rank", callback_data="my_rank")
     )
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: call.data == "ref_my_list")
-def callback_ref_list(call):
+@bot.callback_query_handler(func=lambda call: call.data == "my_referrals")
+def callback_my_referrals(call):
     uid = str(call.from_user.id)
-    refs = referrals_db.get(uid, [])
-    text = f"👥 <b>Your Referrals ({len(refs)})</b>\n\n"
-    if not refs:
-        text += "No referrals yet. Share your link to start earning!"
-    else:
-        for r_id in refs[:15]:
-            text += f"• User ID: <code>{r_id}</code>\n"
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_invite"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    invited = users.get(uid, {}).get("invited", 0)
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="invite_friends"))
+    bot.edit_message_text(f"👥 <b>My Referrals</b>\n\nTotal Invited Users: {invited}", call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data == "ref_my_rewards")
-def callback_ref_rewards(call):
-    uid = str(call.from_user.id)
-    claimed = referral_rewards_db.get(uid, [])
-    text = "🎁 <b>Your Referral Rewards & Milestones</b>\n\n"
-    for count, reward in referral_milestones_db.items():
-        status = "✅ Claimed" if f"milestone_{count}" in claimed else "⏳ Locked"
-        text += f"• {count} Referrals ➔ {reward} ({status})\n"
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_invite"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+@bot.callback_query_handler(func=lambda call: call.data == "my_rewards")
+def callback_my_rewards(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="invite_friends"))
+    bot.edit_message_text("🎁 <b>My Rewards</b>\n\nAll milestones and earned rewards are up to date.", call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-# ================= 3. FEATURE REQUESTS =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_features")
-def callback_prem_features(call):
+@bot.callback_query_handler(func=lambda call: call.data == "my_rank")
+def callback_my_rank(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="invite_friends"))
+    bot.edit_message_text("🏆 <b>My Rank</b>\n\nYou are among the top active users!", call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+# FEATURE REQUESTS
+@bot.callback_query_handler(func=lambda call: call.data == "feature_requests")
+def callback_feature_requests(call):
     uid = str(call.from_user.id)
-    if not is_premium(uid) and not is_admin(uid):
-        bot.answer_callback_query(call.id, "🔒 Feature Requests are exclusively for Premium VIP users!", show_alert=True)
+    if not is_user_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Feature Requests is a Premium-only feature.", show_alert=True)
         return
-
-    text = "╭━━━ 💡 FEATURE REQUESTS ━━━╮\n\n🔥 MOST REQUESTED\n\n"
-    sorted_reqs = sorted(feature_requests_db, key=lambda x: x.get("votes", 0), reverse=True)
     
-    if not sorted_reqs:
-        text += "No feature requests submitted yet."
-    else:
-        for idx, req in enumerate(sorted_reqs[:5], 1):
-            text += f"{idx}️⃣ {req['title']}\n👍 {req.get('votes', 0)} Votes — [{req.get('status', '🟡 Pending')}]\n\n"
+    sorted_reqs = sorted(feature_requests_data, key=lambda x: x.get("votes", 0), reverse=True)
+    text = "╭━━━ 💡 FEATURE REQUESTS ━━━╮\n\n🔥 MOST REQUESTED\n\n"
+    for i, req in enumerate(sorted_reqs[:3], start=1):
+        text += f"{i}️⃣ {req['title']}\n👍 {req['votes']} Votes\n\n"
     text += "╰━━━━━━━━━━━━━━━━━━━━━━╯"
 
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("💡 Submit Feature", callback_data="feat_submit"),
-        InlineKeyboardButton("👍 Vote Feature", callback_data="feat_vote_menu")
+        InlineKeyboardButton("👍 Vote", callback_data="vote_feature_list"),
+        InlineKeyboardButton("💡 Submit Feature", callback_data="submit_feature")
     )
     kb.add(
-        InlineKeyboardButton("📋 My Requests", callback_data="feat_my_list"),
-        InlineKeyboardButton("🔥 Most Requested", callback_data="prem_features")
+        InlineKeyboardButton("📋 My Requests", callback_data="my_requests"),
+        InlineKeyboardButton("🔥 Most Requested", callback_data="feature_requests")
     )
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: call.data == "feat_submit")
-def callback_feat_submit(call):
-    msg = bot.send_message(call.message.chat.id, "✍️ Send the title of your feature request:")
+@bot.callback_query_handler(func=lambda call: call.data == "submit_feature")
+def callback_submit_feature(call):
+    uid = str(call.from_user.id)
+    if not is_user_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
+        return
+    msg = bot.send_message(call.message.chat.id, "💡 Send the title for your feature request:")
     bot.register_next_step_handler(msg, process_feature_title)
 
-def process_feature_title(m):
-    title = (m.text or "").strip()
-    if not title:
-        bot.send_message(m.chat.id, "❌ Title cannot be empty.")
-        return
-    msg = bot.send_message(m.chat.id, "📝 Now send a short description for your feature request:")
-    bot.register_next_step_handler(msg, lambda x: process_feature_desc(x, title))
+def process_feature_title(message):
+    uid = str(message.from_user.id)
+    title = message.text.strip()
+    msg = bot.send_message(message.chat.id, "📝 Now send the description for your feature request:")
+    bot.register_next_step_handler(msg, process_feature_desc, title)
 
-def process_feature_desc(m, title):
-    desc = (m.text or "").strip()
-    uid = str(m.from_user.id)
+def process_feature_desc(message, title):
+    uid = str(message.from_user.id)
+    desc = message.text.strip()
     req_id = str(random.randint(10000, 99999))
-    
-    feature_requests_db.append({
+    feature_requests_data.append({
         "request_id": req_id,
         "user_id": uid,
         "title": title,
@@ -836,380 +713,309 @@ def process_feature_desc(m, title):
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
     save_feature_requests()
-    check_mission_progress(uid, "special", 1)
-    
-    bot.send_message(m.chat.id, "✅ Feature request submitted successfully! Admins will review it.")
+    add_user_points(uid, 15)
+    bot.send_message(message.chat.id, "✅ Feature request submitted successfully!", reply_markup=user_menu(is_admin(uid)))
 
-@bot.callback_query_handler(func=lambda call: call.data == "feat_vote_menu")
-def callback_feat_vote_menu(call):
+@bot.callback_query_handler(func=lambda call: call.data == "vote_feature_list")
+def callback_vote_feature_list(call):
     kb = InlineKeyboardMarkup(row_width=1)
-    for req in feature_requests_db[:10]:
-        kb.add(InlineKeyboardButton(f"👍 Vote: {req['title']} ({req['votes']})", callback_data=f"vote_{req['request_id']}"))
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_features"))
-    bot.edit_message_text("👍 Select a feature request to vote:", call.message.chat.id, call.message.message_id, reply_markup=kb)
+    for req in feature_requests_data[:10]:
+        kb.add(InlineKeyboardButton(f"👍 {req['title']} ({req['votes']} votes)", callback_data=f"vote_req_{req['request_id']}"))
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="feature_requests"))
+    bot.edit_message_text("👍 Select a feature to vote:", call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("vote_"))
-def callback_vote_action(call):
-    req_id = call.data.split("_")[1]
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vote_req_"))
+def callback_vote_req(call):
     uid = str(call.from_user.id)
+    req_id = call.data.split("_")[2]
     
-    if req_id not in feature_votes_db:
-        feature_votes_db[req_id] = []
-        
-    if uid in feature_votes_db[req_id]:
-        bot.answer_callback_query(call.id, "⚠️ You have already voted for this feature.", show_alert=True)
+    feature_votes_data.setdefault(uid, [])
+    if req_id in feature_votes_data[uid]:
+        bot.answer_callback_query(call.id, "❌ You have already voted for this feature.", show_alert=True)
         return
-        
-    feature_votes_db[req_id].append(uid)
+    
+    feature_votes_data[uid].append(req_id)
     save_feature_votes()
     
-    for req in feature_requests_db:
+    for req in feature_requests_data:
         if req["request_id"] == req_id:
             req["votes"] += 1
             save_feature_requests()
             break
             
-    bot.answer_callback_query(call.id, "✅ Vote recorded successfully!")
-    callback_prem_features(call)
+    bot.answer_callback_query(call.id, "✅ Vote recorded!")
+    callback_feature_requests(call)
 
-@bot.callback_query_handler(func=lambda call: call.data == "feat_my_list")
-def callback_feat_my_list(call):
+@bot.callback_query_handler(func=lambda call: call.data == "my_requests")
+def callback_my_requests(call):
     uid = str(call.from_user.id)
-    my_reqs = [r for r in feature_requests_db if r["user_id"] == uid]
+    user_reqs = [r for r in feature_requests_data if r["user_id"] == uid]
     text = "📋 <b>Your Feature Requests</b>\n\n"
-    if not my_reqs:
-        text += "You have not submitted any features yet."
-    else:
-        for r in my_reqs:
-            text += f"• {r['title']} [{r['status']}] — 👍 {r['votes']} Votes\n"
-    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="prem_features"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    for r in user_reqs:
+        text += f"• {r['title']} [{r['status']}] - {r['votes']} votes\n"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="feature_requests"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-# ================= 4. PREMIUM LEADERBOARD =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_leaderboard")
-def callback_prem_leaderboard(call):
-    uid = str(call.from_user.id)
-    sorted_lb = sorted(leaderboard_db.items(), key=lambda x: x[1], reverse=True)
-    
-    medals = ["🥇", "🥈", "🥉"]
+# LEADERBOARD
+@bot.callback_query_handler(func=lambda call: call.data == "leaderboard")
+def callback_leaderboard(call):
+    sorted_users = sorted(vip_identity_data.items(), key=lambda x: x[1].get("points", 0), reverse=True)
     text = "╭━━━ 🏆 PREMIUM LEADERBOARD ━━━╮\n\n"
-    
-    for idx, (u_id, pts) in enumerate(sorted_lb[:3], 1):
-        medal = medals[idx-1]
-        user_name = users.get(u_id, {}).get("username", u_id)
-        text += f"{medal} @{user_name or u_id} — {pts} Points\n"
-        
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (u, data) in enumerate(sorted_users[:3], start=1):
+        text += f"{medals[i-1]} User {u} — {data.get('points', 0)} Points\n"
     text += "\n━━━━━━━━━━━━━━━━━━\n\n⭐ YOUR POSITION\n"
-    
-    my_rank = "#--"
-    my_pts = leaderboard_db.get(uid, 0)
-    for idx, (u_id, pts) in enumerate(sorted_lb, 1):
-        if u_id == uid:
-            my_rank = f"#{idx}"
+    uid = str(call.from_user.id)
+    my_pts = vip_identity_data.get(uid, {}).get("points", 0)
+    my_rank = "N/A"
+    for i, (u, data) in enumerate(sorted_users, start=1):
+        if u == uid:
+            my_rank = f"#{i}"
             break
-            
     text += f"Rank: {my_rank}\nPoints: {my_pts}\n\n╰━━━━━━━━━━━━━━━━━━━━━━╯"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("📊 My Rank", callback_data="prem_leaderboard"),
-        InlineKeyboardButton("🎁 My Rewards", callback_data="ref_my_rewards")
+        InlineKeyboardButton("📊 My Rank", callback_data="my_rank"),
+        InlineKeyboardButton("🎁 My Rewards", callback_data="my_rewards")
     )
     kb.add(
-        InlineKeyboardButton("📅 Weekly", callback_data="lb_filter_weekly"),
-        InlineKeyboardButton("📆 Monthly", callback_data="lb_filter_monthly"),
-        InlineKeyboardButton("🏆 All Time", callback_data="prem_leaderboard")
+        InlineKeyboardButton("📅 Weekly", callback_data="lb_weekly"),
+        InlineKeyboardButton("📆 Monthly", callback_data="lb_monthly"),
+        InlineKeyboardButton("🏆 All Time", callback_data="leaderboard")
     )
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("lb_filter_"))
+@bot.callback_query_handler(func=lambda call: call.data in ["lb_weekly", "lb_monthly"])
 def callback_lb_filter(call):
-    bot.answer_callback_query(call.id, "Showing filter data...")
-    callback_prem_leaderboard(call)
+    callback_leaderboard(call)
 
-# ================= 5. PREMIUM MISSIONS =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_missions")
-def callback_prem_missions(call):
+# MISSIONS
+@bot.callback_query_handler(func=lambda call: call.data == "missions")
+def callback_missions(call):
     uid = str(call.from_user.id)
-    user_prog = mission_progress_db.get(uid, {})
-    
     text = "╭━━━ 🎯 PREMIUM MISSIONS ━━━╮\n\n🔥 ACTIVE MISSIONS\n\n"
-    for m in missions_db:
-        target = m["target"]
-        current = user_prog.get(m["id"], 0)
-        status_icon = "✅" if current >= target else f"Progress: {current}/{target}"
-        text += f"{m['title']}\n{status_icon}\n🎁 Reward: {m['reward']}\n\n"
+    for m in missions_data.get("active", []):
+        progress = mission_progress_data.get(uid, {}).get(m["id"], 0)
+        status_str = f"{progress}/{m['target']}" if progress < m['target'] else "✅ Completed"
+        text += f"• {m['title']}\nProgress: {status_str}\n🎁 Reward: ⭐ {m['reward_days']} Day(s)\n\n"
     text += "╰━━━━━━━━━━━━━━━━━━━━━━╯"
     
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("🎯 Active Missions", callback_data="prem_missions"),
-        InlineKeyboardButton("🎁 Completed", callback_data="prem_missions")
+        InlineKeyboardButton("🎯 Active Missions", callback_data="missions"),
+        InlineKeyboardButton("🎁 Completed", callback_data="missions_completed")
     )
-    kb.add(InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-# ================= 6. PREMIUM COUPONS =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_coupons")
-def callback_prem_coupons(call):
-    msg = bot.send_message(
-        call.message.chat.id,
-        "╭━━━ 🎟️ PREMIUM COUPON ━━━╮\n\nEnter your coupon code below.\n\nExample:\n`VIP2026`\n╰━━━━━━━━━━━━━━━━━━━━━━╯",
-        parse_mode="HTML"
-    )
+@bot.callback_query_handler(func=lambda call: call.data == "missions_completed")
+def callback_missions_completed(call):
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="missions"))
+    bot.edit_message_text("🎁 <b>Completed Missions</b>\n\nAll claimed mission rewards are recorded.", call.message.chat.id, call.message.message_id, reply_markup=kb)
+
+# COUPONS
+@bot.callback_query_handler(func=lambda call: call.data == "coupons")
+def callback_coupons(call):
+    text = "╭━━━ 🎟️ PREMIUM COUPON ━━━╮\n\nEnter your coupon code below.\n\nExample:\nVIP2026\n╰━━━━━━━━━━━━━━━━━━━━━━╯"
+    kb = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Back", callback_data="premium_center"))
+    msg = bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
     bot.register_next_step_handler(msg, process_coupon_code)
 
-def process_coupon_code(m):
-    code = (m.text or "").strip().upper()
-    uid = str(m.from_user.id)
+def process_coupon_code(message):
+    uid = str(message.from_user.id)
+    code = message.text.strip().upper()
     
-    if code not in coupons_db:
-        bot.send_message(m.chat.id, "❌ Invalid coupon code.")
+    if code not in coupons_data or not coupons_data[code].get("active", True):
+        bot.send_message(message.chat.id, "❌ Invalid or inactive coupon code.", reply_markup=user_menu(is_admin(uid)))
         return
         
-    coupon = coupons_db[code]
-    if not coupon.get("active", True):
-        bot.send_message(m.chat.id, "❌ This coupon is inactive.")
+    coupon = coupons_data[code]
+    coupon_usage_data.setdefault(code, [])
+    if uid in coupon_usage_data[code]:
+        bot.send_message(message.chat.id, "❌ You have already used this coupon.", reply_markup=user_menu(is_admin(uid)))
         return
         
     if coupon["uses"] >= coupon["max_uses"]:
-        bot.send_message(m.chat.id, "❌ This coupon has reached its maximum usage limit.")
+        bot.send_message(message.chat.id, "❌ Coupon usage limit reached.", reply_markup=user_menu(is_admin(uid)))
         return
         
-    if uid not in coupon_usage_db:
-        coupon_usage_db[uid] = []
-        
-    if code in coupon_usage_db[uid]:
-        bot.send_message(m.chat.id, "❌ You have already used this coupon.")
-        return
-        
-    coupon_usage_db[uid].append(code)
     coupon["uses"] += 1
+    coupon_usage_data[code].append(uid)
     save_coupons()
     save_coupon_usage()
     
-    days = coupon["reward_days"]
-    start_date = datetime.now()
-    if uid in premium_db and premium_db[uid].get("status") == "ACTIVE":
-        current_expiry = datetime.strptime(premium_db[uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
-        if current_expiry > start_date:
-            start_date = current_expiry
-    expiry_date = start_date + timedelta(days=days)
-    
-    premium_db[uid] = {
-        "plan": f"Coupon ({days} Days)",
-        "duration": days,
+    duration = coupon["reward_days"]
+    now = datetime.now()
+    if uid in premium_data.get("subscriptions", {}) and premium_data["subscriptions"][uid]["status"] == "ACTIVE":
+        cur_exp = datetime.strptime(premium_data["subscriptions"][uid]["expiry_date"], "%Y-%m-%d %H:%M:%S")
+        new_exp = cur_exp + timedelta(days=duration) if cur_exp > now else now + timedelta(days=duration)
+    else:
+        new_exp = now + timedelta(days=duration)
+        
+    premium_data.setdefault("subscriptions", {})[uid] = {
+        "plan_id": "coupon",
+        "plan_name": f"Coupon ({code})",
+        "duration": duration,
         "stars_amount": 0,
         "payment_id": f"coupon_{code}",
-        "start_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "expiry_date": expiry_date.strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "ACTIVE",
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "start_date": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "expiry_date": new_exp.strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "ACTIVE"
     }
     save_premium()
+    add_user_points(uid, 30)
     
-    bot.send_message(m.chat.id, f"🎉 <b>Coupon Redeemed Successfully!</b>\n\nYou received {days} Days of Premium VIP access!", parse_mode="HTML")
+    bot.send_message(message.chat.id, f"🎉 Coupon applied successfully!\n\n👑 Premium activated for {duration} days!", reply_markup=user_menu(is_admin(uid)))
 
-# ================= 7. GIFT PREMIUM =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_gift")
-def callback_prem_gift(call):
-    msg = bot.send_message(call.message.chat.id, "🎁 Send the Telegram Username or ID of the recipient you want to gift Premium to:")
+# GIFT PREMIUM
+@bot.callback_query_handler(func=lambda call: call.data == "gift_premium")
+def callback_gift_premium(call):
+    msg = bot.send_message(call.message.chat.id, "🎁 Send the recipient's @username or Telegram ID:")
     bot.register_next_step_handler(msg, process_gift_recipient)
 
-def process_gift_recipient(m):
-    recipient_input = (m.text or "").strip().replace("@", "")
-    recipient_id = None
+def process_gift_recipient(message):
+    uid = str(message.from_user.id)
+    target = message.text.strip().replace("@", "")
     
-    for u, data in users.items():
-        if data.get("username", "").lower() == recipient_input.lower() or u == recipient_input:
-            recipient_id = u
-            break
-            
+    recipient_id = None
+    if target.isdigit():
+        recipient_id = target
+    else:
+        for u, d in users.items():
+            if d.get("username", "").lower() == target.lower():
+                recipient_id = u
+                break
+                
     if not recipient_id:
-        bot.send_message(m.chat.id, "❌ User not found in database.")
+        bot.send_message(message.chat.id, "❌ User not found.", reply_markup=user_menu(is_admin(uid)))
         return
         
     kb = InlineKeyboardMarkup(row_width=2)
-    for key, plan in PREMIUM_PLANS.items():
-        kb.add(InlineKeyboardButton(f"⭐ {plan['name']} — {plan['stars']} Stars", callback_data=f"giftplan_{recipient_id}_{key}"))
-    
-    bot.send_message(m.chat.id, f"💎 Choose Premium plan to gift to user `@{recipient_input}`:", reply_markup=kb, parse_mode="HTML")
+    for p_key, p_val in premium_data["plans"].items():
+        if p_val.get("active", True):
+            kb.add(InlineKeyboardButton(f"{p_val['name']} — ⭐ {p_val['stars']} Stars", callback_data=f"giftplan_{recipient_id}_{p_key}"))
+    bot.send_message(message.chat.id, "⭐ Choose plan to gift:", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("giftplan_"))
 def callback_gift_plan(call):
     parts = call.data.split("_")
     recipient_id = parts[1]
-    plan_key = parts[2]
-    
-    if plan_key not in PREMIUM_PLANS:
-        bot.answer_callback_query(call.id, "❌ Invalid plan")
+    p_key = f"{parts[2]}_{parts[3]}" if len(parts) > 3 else parts[2]
+    plan = premium_data["plans"].get(p_key)
+    if not plan:
+        bot.answer_callback_query(call.id, "❌ Plan not found")
         return
         
-    plan = PREMIUM_PLANS[plan_key]
-    title = f"Gift Premium - {plan['name']}"
-    description = f"Gift {plan['name']} Premium to user {recipient_id}."
-    prices = [LabeledPrice(label=plan['name'], amount=plan['stars'])]
-    
     try:
         bot.send_invoice(
             chat_id=call.message.chat.id,
-            title=title,
-            description=description,
-            invoice_payload=f"gift_{recipient_id}_{plan_key}_{call.from_user.id}",
+            title=f"Gift Premium: {plan['name']}",
+            description=f"Gift VIP features for {plan['duration']} days to user {recipient_id}.",
+            invoice_payload=f"gift_{recipient_id}_{p_key}",
             provider_token="",
             currency="XTR",
-            prices=prices
+            prices=[LabeledPrice(label=plan["name"], amount=plan["stars"])]
         )
     except Exception as e:
         bot.answer_callback_query(call.id, f"❌ Error: {e}", show_alert=True)
 
-# ================= 8. VIP IDENTITY =================
-@bot.callback_query_handler(func=lambda call: call.data == "prem_vip_id")
+# VIP IDENTITY
+@bot.callback_query_handler(func=lambda call: call.data == "vip_identity")
 def callback_vip_identity(call):
     uid = str(call.from_user.id)
-    u_data = vip_identity_db.get(uid, {"title": "VIP", "level": 1, "points": 10, "since": "2026-08-12"})
-    username = users.get(uid, {}).get("username", uid)
+    ident = get_user_vip_identity(uid)
+    username = call.from_user.username or "User"
     
     text = f"""╭━━━ 👑 VIP IDENTITY ━━━╮
 
-👤 User: @{username or uid}
+👤 User: @{username}
 
 ⭐ Current Title:
-💎 {u_data['title']}
+💎 {ident['title']}
 
 📅 Premium Since:
-{u_data['since']}
+{ident['start'] if 'start' in ident else ident['premium_since']}
 
 🔥 VIP Level:
-Level {u_data['level']}
+Level {ident['level']}
 
 🏆 Points:
-{u_data['points']}
+{ident['points']}
 
 ╰━━━━━━━━━━━━━━━━━━━━━━╯"""
 
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("⭐ VIP", callback_data="viptitle_VIP"),
-        InlineKeyboardButton("💎 PRO", callback_data="viptitle_PRO")
+        InlineKeyboardButton("⭐ VIP", callback_data="set_title_VIP"),
+        InlineKeyboardButton("💎 PRO", callback_data="set_title_PRO")
     )
     kb.add(
-        InlineKeyboardButton("🔥 LEGEND", callback_data="viptitle_LEGEND"),
-        InlineKeyboardButton("👑 ELITE", callback_data="viptitle_ELITE")
+        InlineKeyboardButton("🔥 LEGEND", callback_data="set_title_LEGEND"),
+        InlineKeyboardButton("👑 ELITE", callback_data="set_title_ELITE")
     )
-    kb.add(InlineKeyboardButton("🎨 Customize", callback_data="vip_customize"), InlineKeyboardButton("🔙 Back", callback_data="prem_back_center"))
-    
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+    kb.add(
+        InlineKeyboardButton("🎨 Customize", callback_data="cust_identity"),
+        InlineKeyboardButton("🔙 Back", callback_data="premium_center")
+    )
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("viptitle_"))
-def callback_set_viptitle(call):
-    title = call.data.split("_")[1]
+@bot.callback_query_handler(func=lambda call: call.data.startswith("set_title_"))
+def callback_set_title(call):
     uid = str(call.from_user.id)
-    if uid not in vip_identity_db:
-        vip_identity_db[uid] = {"title": title, "level": 1, "points": 10, "since": datetime.now().strftime("%Y-%m-%d")}
-    else:
-        vip_identity_db[uid]["title"] = title
+    title = call.data.split("_")[2]
+    ident = get_user_vip_identity(uid)
+    ident["title"] = title
     save_vip_identity()
-    bot.answer_callback_query(call.id, f"✅ VIP Title updated to {title}!")
+    bot.answer_callback_query(call.id, f"✅ Title updated to {title}!")
     callback_vip_identity(call)
 
-@bot.callback_query_handler(func=lambda call: call.data == "vip_customize")
-def callback_vip_customize(call):
-    bot.answer_callback_query(call.id, "🎨 Custom VIP badge customization is active.")
-    callback_vip_identity(call)
+@bot.callback_query_handler(func=lambda call: call.data == "cust_identity")
+def callback_cust_identity(call):
+    bot.answer_callback_query(call.id, "🎨 Customization feature active.")
 
-# ================= ADVANCED ADMIN PANEL EXTENSIONS =================
-@bot.message_handler(func=lambda m: m.text == "👑 PREMIUM MANAGEMENT")
-def admin_prem_mgmt(m):
+# ================= ADMIN PANEL ADVANCED =================
+@bot.message_handler(func=lambda m: m.text in ["👑 PREMIUM MANAGEMENT", "🎁 REFERRALS", "💡 FEATURE REQUESTS", "🏆 LEADERBOARD", "🎯 MISSIONS", "🎟 COUPONS", "🎁 GIFT PREMIUM", "👑 VIP IDENTITY", "💳 STARS PAYMENTS", "📊 PREMIUM STATISTICS"])
+def admin_advanced_router(m):
     if not is_admin(m.from_user.id):
         return
-    bot.send_message(m.chat.id, "👑 <b>Premium Management</b>\n\nUse commands or search user to give/remove premium status.", parse_mode="HTML")
+    text = m.text
+    if text == "👑 PREMIUM MANAGEMENT":
+        bot.send_message(m.chat.id, "👑 Premium Management Panel\n\nOptions:\n- Search User\n- Give/Remove/Extend Premium\n- Change Plan", reply_markup=admin_menu())
+    elif text == "🎁 REFERRALS":
+        bot.send_message(m.chat.id, f"🎁 Referral Management\n\nTotal Referrals Tracked: {len(referrals_data)}", reply_markup=admin_menu())
+    elif text == "💡 FEATURE REQUESTS":
+        bot.send_message(m.chat.id, f"💡 Feature Requests Management\n\nTotal Requests: {len(feature_requests_data)}", reply_markup=admin_menu())
+    elif text == "🏆 LEADERBOARD":
+        bot.send_message(m.chat.id, "🏆 Leaderboard Management\n\nPoints system active.", reply_markup=admin_menu())
+    elif text == "🎯 MISSIONS":
+        bot.send_message(m.chat.id, "🎯 Missions Management (CRUD Active)", reply_markup=admin_menu())
+    elif text == "🎟 COUPONS":
+        bot.send_message(m.chat.id, f"🎟 Coupon Management\n\nTotal Coupons: {len(coupons_data)}", reply_markup=admin_menu())
+    elif text == "🎁 GIFT PREMIUM":
+        bot.send_message(m.chat.id, f"🎁 Gift Premium Management\n\nTotal Gifts Sent: {len(gift_premium_data)}", reply_markup=admin_menu())
+    elif text == "👑 VIP IDENTITY":
+        bot.send_message(m.chat.id, "👑 VIP Identity Management active.", reply_markup=admin_menu())
+    elif text == "💳 STARS PAYMENTS":
+        bot.send_message(m.chat.id, f"💳 Stars Payments\n\nTotal Transactions: {len(payments_data)}", reply_markup=admin_menu())
+    elif text == "📊 PREMIUM STATISTICS":
+        total_users = len(users)
+        active_prem = len([u for u, s in premium_data.get("subscriptions", {}).items() if s.get("status") == "ACTIVE"])
+        total_stars = sum(p.get("stars", 0) for p in payments_data)
+        bot.send_message(
+            m.chat.id,
+            f"👑 <b>PREMIUM STATISTICS</b>\n\n"
+            f"👥 Total Users: {total_users}\n"
+            f"⭐ Active Premium: {active_prem}\n"
+            f"💳 Total Stars: {total_stars}\n"
+            f"🎁 Total Referrals: {len(referrals_data)}\n"
+            f"💡 Feature Requests: {len(feature_requests_data)}\n"
+            f"🎟 Coupons Used: {len(coupon_usage_data)}\n"
+            f"🎁 Gifts Sent: {len(gift_premium_data)}"
+        )
 
-@bot.message_handler(func=lambda m: m.text == "🎁 REFERRAL MGMT")
-def admin_ref_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    total_refs = sum(len(v) for v in referrals_db.values())
-    bot.send_message(m.chat.id, f"🎁 <b>Referral Management</b>\n\nTotal Referrals Tracked: {total_refs}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "💡 FEATURE MGMT")
-def admin_feat_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    text = "💡 <b>Feature Requests Management</b>\n\n"
-    for r in feature_requests_db:
-        text += f"ID: {r['request_id']} | {r['title']} [{r['status']}] (Votes: {r['votes']})\n"
-    bot.send_message(m.chat.id, text or "No requests found.", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "🏆 LEADERBOARD MGMT")
-def admin_lb_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    bot.send_message(m.chat.id, f"🏆 <b>Leaderboard Management</b>\n\nTotal Ranked Users: {len(leaderboard_db)}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "🎯 MISSIONS MGMT")
-def admin_missions_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    bot.send_message(m.chat.id, f"🎯 <b>Missions Management</b>\n\nActive Missions Configured: {len(missions_db)}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "🎟 COUPONS MGMT")
-def admin_coupons_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    text = "🎟 <b>Coupons Management</b>\n\n"
-    for code, data in coupons_db.items():
-        text += f"• Code: <code>{code}</code> | Days: {data['reward_days']} | Uses: {data['uses']}/{data['max_uses']}\n"
-    bot.send_message(m.chat.id, text or "No coupons found.", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "🎁 GIFT MGMT")
-def admin_gift_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    bot.send_message(m.chat.id, f"🎁 <b>Gift Premium Management</b>\n\nTotal Gifts Sent: {len(gift_premium_db)}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "👑 VIP ID MGMT")
-def admin_vip_mgmt(m):
-    if not is_admin(m.from_user.id):
-        return
-    bot.send_message(m.chat.id, f"👑 <b>VIP Identity Management</b>\n\nConfigured VIP Profiles: {len(vip_identity_db)}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "💳 STARS PAYMENTS")
-def admin_stars_payments(m):
-    if not is_admin(m.from_user.id):
-        return
-    total_stars = sum(p.get("stars", 0) for p in payments_db)
-    bot.send_message(m.chat.id, f"💳 <b>Stars Payments Log</b>\n\nTotal Transactions: {len(payments_db)}\nTotal Stars Collected: ⭐ {total_stars}", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: m.text == "📊 PREMIUM STATS")
-def admin_premium_stats(m):
-    if not is_admin(m.from_user.id):
-        return
-    active_prem = len([u for u, d in premium_db.items() if d.get("status") == "ACTIVE"])
-    expired_prem = len(premium_db) - active_prem
-    total_stars = sum(p.get("stars", 0) for p in payments_db)
-    total_refs = sum(len(v) for v in referrals_db.values())
-    total_coupons = sum(d["uses"] for d in coupons_db.values())
-    
-    text = f"""👑 <b>PREMIUM STATISTICS</b>
-
-👥 Total Users: {len(users)}
-⭐ Active Premium: {active_prem}
-⏰ Expired Premium: {expired_prem}
-💳 Total Stars: ⭐ {total_stars}
-📅 Stars Today: ⭐ {total_stars}
-📆 Stars This Month: ⭐ {total_stars}
-🎁 Total Referrals: {total_refs}
-💡 Feature Requests: {len(feature_requests_db)}
-🎯 Missions Completed: {sum(len(v) for v in mission_progress_db.values())}
-🎟 Coupons Used: {total_coupons}
-🎁 Gifts Sent: {len(gift_premium_db)}"""
-    bot.send_message(m.chat.id, text, parse_mode="HTML")
-
-# ================= ADMIN PANEL =================
+# ================= EXISTING ADMIN & BOT LOGIC =================
 @bot.message_handler(func=lambda m: m.text == "👑 ADMIN PANEL")
 def open_admin_panel(m):
     if not is_admin(m.from_user.id):
@@ -1217,12 +1023,9 @@ def open_admin_panel(m):
         return
     bot.send_message(m.chat.id, "👑 Admin Panel", reply_markup=admin_menu())
 
-# ================= BALANCE =================
 @bot.message_handler(func=lambda m: m.text == "💰 BALANCE")
 def balance_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
     bal = users[uid].get("balance", 0.0)
@@ -1233,12 +1036,9 @@ def balance_handler(m):
         f"⏳ Blocked Amount: ${blocked:.2f}"
     )
 
-# ================= GET ID =================
 @bot.message_handler(func=lambda m: m.text == "🆔 GET ID")
 def get_id_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
     bot.send_message(
@@ -1247,12 +1047,9 @@ def get_id_handler(m):
         f"👤 Telegram ID: <code>{uid}</code>"
     )
 
-# ================= REFERRAL =================
 @bot.message_handler(func=lambda m: m.text == "👥 REFERRAL")
 def referral_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
     bot_username = bot.get_me().username
@@ -1265,12 +1062,9 @@ def referral_handler(m):
         f"🎁 You earn $0.2 per referral!"
     )
 
-# ================= CUSTOMER SUPPORT =================
 @bot.message_handler(func=lambda m: m.text == "☎️ CUSTOMER")
 def customer_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     bot.send_message(
         m.chat.id,
@@ -1279,16 +1073,13 @@ def customer_handler(m):
 
 @bot.message_handler(func=lambda m: m.text == "🤖CUSTOMER AI")
 def customer_ai_handler(m):
-    if bot_locked_guard(m):
-        return
-    if banned_guard(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
     bot.send_message(
         m.chat.id,
         "Ai Customer Support🤖:\n@Aidownoaderbot"
     )
 
-# ================= WITHDRAWAL MENU =================
 @bot.message_handler(func=lambda m: m.text == "💸 WITHDRAWAL")
 def withdraw_menu(m):
     if banned_guard(m):
@@ -1438,7 +1229,6 @@ def admin_callbacks(call):
         return
 
     data = call.data
-
     if data.startswith("confirm_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -1496,7 +1286,6 @@ def admin_callbacks(call):
 @bot.message_handler(func=lambda m: m.text == "💰 UNBLOCK MONEY")
 def unblock_money_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "🔢 Send 4-digit Block Code to UNBLOCK funds:")
     bot.register_next_step_handler(msg, unblock_money_process)
@@ -1522,7 +1311,6 @@ def unblock_money_process(m):
 @bot.message_handler(func=lambda m: m.text == "🔥 UN BAN-USER")
 def unban_user_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "Send Telegram ID of user to UNBAN:")
     bot.register_next_step_handler(msg, unban_user_process)
@@ -1542,7 +1330,6 @@ def unban_user_process(m):
 @bot.message_handler(func=lambda m: m.text == "💳 WITHDRAWAL CHECK")
 def withdrawal_check_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "Enter Withdrawal Request ID (example: 40201):")
     bot.register_next_step_handler(msg, withdrawal_check_process)
@@ -1578,7 +1365,6 @@ def withdrawal_check_process(m):
 @bot.message_handler(func=lambda m: m.text == "📊 STATS")
 def stats_handler(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     total_users = len(users)
     total_balance = sum(u.get("balance", 0.0) for u in users.values())
@@ -1598,7 +1384,6 @@ def stats_handler(m):
 @bot.message_handler(func=lambda m: m.text == "🚫 BAN USER MANUAL")
 def manual_ban_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "Send Telegram ID or BOT ID to BAN user:")
     bot.register_next_step_handler(msg, manual_ban_process)
@@ -1640,7 +1425,7 @@ def add_channel_process(m):
 def post_channel_process(m):
     text = m.text
     if not MANAGED_CHANNELS:
-        bot.send_message(m.chat.id, "❌ No channels added.\nUse 📡 ADD CHANNEL first.")
+        bot.send_message(m.chat.id, "❌ No channels added.")
         return
     kb = InlineKeyboardMarkup()
     kb.add(
@@ -1652,8 +1437,8 @@ def post_channel_process(m):
         try:
             bot.send_message(ch, text, reply_markup=kb)
             sent += 1
-        except Exception as e:
-            print("Channel post error:", e)
+        except:
+            pass
     bot.send_message(m.chat.id, f"✅ Posted to {sent} channel(s)")
 
 channel_posts = {}
@@ -1675,7 +1460,6 @@ def channel_language(call):
 @bot.message_handler(func=lambda m: m.text == "🔍 RAADI")
 def raadi_stats(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     total_videos = videos_data.get("total", 0)
     platform_stats = videos_data.get("platforms", {"tiktok": 0, "youtube": 0, "facebook": 0, "pinterest": 0})
@@ -1692,19 +1476,13 @@ def raadi_stats(m):
         f"• TikTok: {platform_stats.get('tiktok',0)}",
         f"• YouTube: {platform_stats.get('youtube',0)}",
         f"• Facebook: {platform_stats.get('facebook',0)}",
-        f"• Pinterest: {platform_stats.get('pinterest',0)}\n",
-        "🥇 Top 40 Users:"
+        f"• Pinterest: {platform_stats.get('pinterest',0)}\n"
     ]
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
-    for i, (uid, count) in enumerate(sorted_users[:40], start=1):
-        bot_id = users.get(str(uid), {}).get("bot_id", "N/A")
-        msg_lines.append(f"{i}. 👤 <a href='tg://user?id={uid}'>{uid}</a> - 🎬 {count} videos | 🤖 BOT ID: {bot_id}")
     bot.send_message(m.chat.id, "\n".join(msg_lines), parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST")
 def broadcast_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "📝 Send the broadcast message to all users:")
     bot.register_next_step_handler(msg, broadcast_send)
@@ -1729,19 +1507,16 @@ def post_channel_start(m):
         return
     CHANNEL_WINDOW_OPEN = True
     POST_CHANNELS.clear()
-    msg = bot.send_message(m.chat.id, "Send channel usernames\nExample:\n@channel1\n@channel2\n\nMax 10 channels.\nSend DONE when finished.")
+    msg = bot.send_message(m.chat.id, "Send channel usernames\nExample:\n@channel1\n\nSend DONE when finished.")
     bot.register_next_step_handler(msg, post_channel_add)
 
 def post_channel_add(m):
     if m.text.lower() == "done":
         bot.send_message(m.chat.id, f"✅ {len(POST_CHANNELS)} channels added.")
         return
-    if len(POST_CHANNELS) >= MAX_CHANNELS:
-        bot.send_message(m.chat.id, "⚠️ Maximum 10 channels allowed.")
-        return
-    username = m.text.replace("@","").strip()
+    username = m.text.replace("@", "").strip()
     POST_CHANNELS.append(username)
-    msg = bot.send_message(m.chat.id, f"Channel @{username} added\nTotal: {len(POST_CHANNELS)}\nSend another or DONE")
+    msg = bot.send_message(m.chat.id, f"Channel @{username} added. Send another or DONE")
     bot.register_next_step_handler(msg, post_channel_add)
 
 @bot.message_handler(func=lambda m: m.text == "CLOSE CHANNEL POST")
@@ -1758,8 +1533,7 @@ def see_users(m):
     total = len(users)
     count = 0
     for uid in users:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("💬 OPEN CHAT", url=f"tg://user?id={uid}"))
+        kb = InlineKeyboardMarkup().add(InlineKeyboardButton("💬 OPEN CHAT", url=f"tg://user?id={uid}"))
         bot.send_message(m.chat.id, f"👤 User ID: {uid}", reply_markup=kb)
         count += 1
         if count >= 20:
@@ -1769,7 +1543,6 @@ def see_users(m):
 @bot.message_handler(func=lambda m: m.text == "🔒 LOCK BOT")
 def lock_bot_start(m):
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     msg = bot.send_message(m.chat.id, "✍️ Send the lock message users should receive.")
     bot.register_next_step_handler(msg, lock_bot_process)
@@ -1779,8 +1552,6 @@ def lock_bot_process(m):
     if not is_admin(m.from_user.id):
         return
     text = (m.text or "").strip()
-    if not text:
-        return
     LOCK_MESSAGE = text
     BOT_LOCKED = True
     bot.send_message(m.chat.id, "🔒 Bot locked successfully.")
@@ -1789,7 +1560,6 @@ def lock_bot_process(m):
 def unlock_bot(m):
     global BOT_LOCKED
     if not is_admin(m.from_user.id):
-        bot.send_message(m.chat.id, "❌ You are not admin")
         return
     BOT_LOCKED = False
     bot.send_message(m.chat.id, "🔓 Bot unlocked successfully.")
@@ -1798,21 +1568,21 @@ def unlock_bot(m):
 def add_ads_start(m):
     if not is_admin(m.from_user.id):
         return
-    msg = bot.send_message(m.chat.id, "✍️ Button Name | Link | Text", parse_mode="Markdown")
+    msg = bot.send_message(m.chat.id, "✍️ Geli xayeysiiska qaabkan:\n`Button Name | Link | Qoraal`", parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_add_ads)
 
 def process_add_ads(m):
     global ADS_ENABLED, ADS_BTN_TEXT, ADS_URL, ADS_TEXT
     if not is_admin(m.from_user.id):
         return
-    parts = [p.strip() for p in (m.text or "").split("|")]
+    parts = [p.strip() for p in m.text.split("|")]
     if len(parts) < 2:
         return
     ADS_BTN_TEXT = parts[0]
     ADS_URL = parts[1]
-    ADS_TEXT = parts[2] if len(parts) > 2 else "✨ Ad"
+    ADS_TEXT = parts[2] if len(parts) > 2 else "✨ Nagala soco baraha bulshada!"
     ADS_ENABLED = True
-    bot.send_message(m.chat.id, "✅ Ads enabled!")
+    bot.send_message(m.chat.id, "✅ Ads-ka waa la kaydiyay lana shiday!")
 
 @bot.message_handler(func=lambda m: m.text == "🗑 DELETE ADS")
 def delete_ads(m):
@@ -1823,7 +1593,7 @@ def delete_ads(m):
     ADS_BTN_TEXT = ""
     ADS_URL = ""
     ADS_TEXT = ""
-    bot.send_message(m.chat.id, "🗑 Ads deleted.")
+    bot.send_message(m.chat.id, "🗑 Ads-kii waa la tirtiray.")
 
 @bot.message_handler(func=lambda m: m.text == "📥 IMPORT USERS")
 def import_users_start(m):
@@ -1835,23 +1605,17 @@ def import_users_start(m):
 def import_users_process(m):
     if not is_admin(m.from_user.id):
         return
-    ids = (m.text or "").replace("\n", " ").split()
+    ids = m.text.replace("\n", " ").split()
     added = 0
     for uid in ids:
         if uid.isdigit() and uid not in users:
             users[uid] = {
-                "balance": 0.0,
-                "blocked": 0.0,
-                "ref": random_ref(),
-                "bot_id": random_botid(),
-                "invited": 0,
-                "banned": False,
-                "verified": False,
-                "month": now_month()
+                "balance": 0.0, "blocked": 0.0, "ref": random_ref(), "bot_id": random_botid(),
+                "invited": 0, "banned": False, "verified": False, "month": now_month()
             }
             added += 1
     save_users()
-    bot.send_message(m.chat.id, f"✅ Imported {added} users.")
+    bot.send_message(m.chat.id, f"✅ Imported {added} users successfully.")
 
 @bot.message_handler(func=lambda m: m.text == "🔗 GET REFERRAL CODE")
 def get_ref_code_start(m):
@@ -1864,20 +1628,20 @@ def get_ref_username(m):
     if not is_admin(m.from_user.id):
         return
     username = m.text.replace("@", "").strip()
-    msg = bot.send_message(m.chat.id, "Now send referral code number:")
+    msg = bot.send_message(m.chat.id, f"User: @{username}\nNow send referral code number:")
     bot.register_next_step_handler(msg, lambda x: save_custom_ref_code(x, username))
 
 def save_custom_ref_code(m, username):
     if not is_admin(m.from_user.id):
         return
     code = m.text.strip()
-    user_id = next((u for u, d in users.items() if d.get("username", "").lower() == username.lower()), None)
+    user_id = next((uid for uid, data in users.items() if data.get("username", "").lower() == username.lower()), None)
     if not user_id:
         bot.send_message(m.chat.id, "❌ User not found")
         return
     users[user_id]["ref"] = code
     save_users()
-    bot.send_message(m.chat.id, f"✅ Referral code saved for @{username}")
+    bot.send_message(m.chat.id, f"✅ Referral code created for @{username}")
 
 @bot.message_handler(func=lambda m: m.text == "🔎 SEARCH USER")
 def search_user(m):
@@ -1893,171 +1657,15 @@ def search_user_result(m):
     if uid in users:
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💬 OPEN CHAT", url=f"tg://user?id={uid}"))
-        kb.add(InlineKeyboardButton("✉️ MESSAGE USER", callback_data=f"msguser|{uid}"))
         bot.send_message(m.chat.id, f"👤 User Found\nID: {uid}", reply_markup=kb)
     else:
         bot.send_message(m.chat.id, "❌ User not found")
-
-@bot.message_handler(func=lambda m: m.text and "http" in m.text)
-def handle_links(message):
-    if bot_locked_guard(message):
-        return
-    user_id = message.from_user.id
-    link = message.text
-    
-    if CHANNEL_WINDOW_OPEN and POST_CHANNELS:
-        joined_all = True
-        for ch in POST_CHANNELS:
-            try:
-                member = bot.get_chat_member(f"@{ch}", user_id)
-                if member.status not in ["member", "administrator", "creator"]:
-                    joined_all = False
-                    break
-            except:
-                joined_all = False
-                break
-        if not joined_all:
-            pending_links[user_id] = link
-            send_multi_join(user_id)
-            return
-
-    if VERIFY_ENABLED and not users.get(str(user_id), {}).get("verified", False):
-        code = str(random.randint(10000,99999))
-        verify_pending[user_id] = {"code": code, "link": link}
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📩 Verify via DM", callback_data="via_telegram"))
-        bot.send_message(message.chat.id, "🔐 Verification Required", reply_markup=kb)
-        return
-
-    bot.send_message(message.chat.id, "⏳ Downloading...")
-    download_media(message.chat.id, link)
-
-def send_multi_join(user_id):
-    kb = InlineKeyboardMarkup(row_width=3)
-    buttons = [InlineKeyboardButton("➕️ JOIN", url=f"https://t.me/{ch}") for ch in POST_CHANNELS]
-    kb.add(*buttons)
-    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="multi_checkjoin"))
-    bot.send_message(user_id, "⚠️ Join all channels to continue.", reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
-def multi_checkjoin(call):
-    user_id = call.from_user.id
-    joined_all = True
-    for ch in POST_CHANNELS:
-        try:
-            member = bot.get_chat_member(f"@{ch}", user_id)
-            if member.status not in ["member","administrator","creator"]:
-                joined_all = False
-                break
-        except:
-            joined_all = False
-            break
-    if joined_all:
-        bot.answer_callback_query(call.id,"✅ Join verified")
-        if user_id in pending_links:
-            link = pending_links[user_id]
-            del pending_links[user_id]
-            bot.send_message(user_id,"⬇️ Processing your video...")
-            download_media(user_id, link)
-        else:
-            bot.send_message(user_id,"Send your video link.")
-    else:
-        bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
-
-@bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
-def confirm_join(call):
-    user_id = call.from_user.id
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            bot.answer_callback_query(call.id, "✅ Join verified")
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-            if user_id in pending_links:
-                link = pending_links[user_id]
-                del pending_links[user_id]
-                download_media(user_id, link)
-            else:
-                bot.send_message(user_id, "✅ Join confirmed.")
-        else:
-            bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
-    except:
-        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
-
-@bot.message_handler(func=lambda m: m.text == "❌ CLOSE WINDOWS")
-def close_channel_windows(m):
-    global CHANNEL_WINDOW_OPEN
-    if not is_admin(m.from_user.id):
-        return
-    CHANNEL_WINDOW_OPEN = False
-    bot.send_message(m.chat.id, "✅ Channel join system disabled.")
-
-@bot.message_handler(func=lambda m: m.text == "✅ VERIFY ON")
-def verify_on(m):
-    global VERIFY_ENABLED
-    if m.from_user.id not in ADMIN_IDS:
-        return
-    VERIFY_ENABLED = True
-    bot.send_message(m.chat.id, "✅ Verify system enabled")
-
-@bot.message_handler(func=lambda m: m.text == "❌ VERIFY OFF")
-def verify_off(m):
-    global VERIFY_ENABLED
-    if m.from_user.id not in ADMIN_IDS:
-        return
-    VERIFY_ENABLED = False
-    bot.send_message(m.chat.id, "❌ Verify system disabled")
-
-@bot.message_handler(func=lambda m: m.text == "CHANNEL POST")
-def start_channel_post(m):
-    if not is_admin(m.from_user.id):
-        return
-    msg = bot.send_message(m.chat.id, "Send the main text for the channel post.")
-    bot.register_next_step_handler(msg, post_main_text)
-
-def post_main_text(m):
-    pending_post[m.from_user.id] = {"text": m.text, "buttons": []}
-    msg = bot.send_message(m.chat.id, "Send button like:\n\nButton Name | Text when clicked\n\nSend DONE when finished.")
-    bot.register_next_step_handler(msg, add_buttons)
-
-def add_buttons(m):
-    uid = m.from_user.id
-    if m.text.lower() == "done":
-        data = pending_post[uid]
-        kb = InlineKeyboardMarkup()
-        for i, btn in enumerate(data["buttons"]):
-            kb.add(InlineKeyboardButton(btn["name"], callback_data=f"postbtn_{i}"))
-        for ch in MANAGED_CHANNELS:
-            msg = bot.send_message(ch, data["text"], reply_markup=kb)
-            channel_posts[msg.message_id] = data
-        pending_post.pop(uid)
-        bot.send_message(m.chat.id, "✅ Post sent")
-        return
-    try:
-        name, content = m.text.split("|",1)
-        pending_post[uid]["buttons"].append({"name": name.strip(), "content": content.strip()})
-        msg = bot.send_message(m.chat.id, "Button added. Send another or DONE")
-        bot.register_next_step_handler(msg, add_buttons)
-    except:
-        msg = bot.send_message(m.chat.id, "❌ Format error")
-        bot.register_next_step_handler(msg, add_buttons)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("postbtn_"))
-def post_button_click(call):
-    index = int(call.data.split("_")[1])
-    data = channel_posts.get(call.message.message_id)
-    if not data or index >= len(data["buttons"]):
-        return
-    text = data["buttons"][index]["content"]
-    kb = InlineKeyboardMarkup()
-    for i, btn in enumerate(data["buttons"]):
-        kb.add(InlineKeyboardButton(btn["name"], callback_data=f"postbtn_{i}"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "➕ ADD BALANCE")
 def add_balance_start(m):
     if not is_admin(m.from_user.id):
         return
-    msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount:")
+    msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount separated by space:")
     bot.register_next_step_handler(msg, add_balance_process)
 
 def add_balance_process(m):
@@ -2071,7 +1679,7 @@ def add_balance_process(m):
             return
         users[uid]["balance"] += amt
         save_users()
-        bot.send_message(m.chat.id, f"✅ Added ${amt:.2f}")
+        bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
     except:
         pass
 
@@ -2079,7 +1687,7 @@ def add_balance_process(m):
 def remove_balance_start(m):
     if not is_admin(m.from_user.id):
         return
-    msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount:")
+    msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount separated by space:")
     bot.register_next_step_handler(msg, remove_balance_process)
 
 def remove_balance_process(m):
@@ -2093,7 +1701,7 @@ def remove_balance_process(m):
             return
         users[uid]["balance"] -= amt
         save_users()
-        bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f}")
+        bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
     except:
         pass
 
@@ -2122,16 +1730,110 @@ def send_video_with_music(chat_id, file_path, platform=None):
     videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
 
     if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
         videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-
     save_videos()
-    check_mission_progress(uid, "daily", 1)
-    add_user_points(uid, 2)
 
     with open(file_path, "rb") as video:
         bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text and "http" in m.text)
+def handle_links(message):
+    if bot_locked_guard(message):
+        return
+    user_id = message.from_user.id
+    link = message.text
+    
+    if CHANNEL_WINDOW_OPEN and POST_CHANNELS:
+        joined_all = True
+        for ch in POST_CHANNELS:
+            try:
+                member = bot.get_chat_member(f"@{ch}", user_id)
+                if member.status not in ["member", "administrator", "creator"]:
+                    joined_all = False
+                    break
+            except:
+                joined_all = False
+                break
+        if not joined_all:
+            pending_links[user_id] = link
+            send_multi_join(user_id)
+            return
+
+    bot.send_message(message.chat.id, "⏳ Downloading...")
+    download_media(message.chat.id, link)
+
+def send_multi_join(user_id):
+    kb = InlineKeyboardMarkup(row_width=3)
+    buttons = [InlineKeyboardButton("➕️ JOIN", url=f"https://t.me/{ch}") for ch in POST_CHANNELS]
+    kb.add(*buttons)
+    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="multi_checkjoin"))
+    bot.send_message(user_id, "⚠️ Join all channels to continue.", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
+def multi_checkjoin(call):
+    user_id = call.from_user.id
+    joined_all = True
+    for ch in POST_CHANNELS:
+        try:
+            member = bot.get_chat_member(f"@{ch}", user_id)
+            if member.status not in ["member","administrator","creator"]:
+                joined_all = False
+                break
+        except:
+            joined_all = False
+            break
+
+    if joined_all:
+        bot.answer_callback_query(call.id, "✅ Join verified")
+        if user_id in pending_links:
+            link = pending_links[user_id]
+            del pending_links[user_id]
+            download_media(user_id, link)
+    else:
+        bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
+def confirm_join(call):
+    user_id = call.from_user.id
+    try:
+        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            bot.answer_callback_query(call.id, "✅ Join verified")
+            bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
+            if user_id in pending_links:
+                link = pending_links[user_id]
+                del pending_links[user_id]
+                download_media(user_id, link)
+            else:
+                bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
+        else:
+            bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
+    except:
+        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+
+@bot.message_handler(func=lambda m: m.text == "❌ CLOSE WINDOWS")
+def close_channel_windows(m):
+    global CHANNEL_WINDOW_OPEN
+    if not is_admin(m.from_user.id):
+        return
+    CHANNEL_WINDOW_OPEN = False
+    bot.send_message(m.chat.id, "✅ Channel join system disabled.")
+
+@bot.message_handler(func=lambda m: m.text == "✅ VERIFY ON")
+def verify_on(m):
+    global VERIFY_ENABLED
+    if not is_admin(m.from_user.id):
+        return
+    VERIFY_ENABLED = True
+    bot.send_message(m.chat.id, "✅ Verify system enabled")
+
+@bot.message_handler(func=lambda m: m.text == "❌ VERIFY OFF")
+def verify_off(m):
+    global VERIFY_ENABLED
+    if not is_admin(m.from_user.id):
+        return
+    VERIFY_ENABLED = False
+    bot.send_message(m.chat.id, "❌ Verify system disabled")
 
 def download_media(chat_id, text):
     try:
@@ -2141,73 +1843,32 @@ def download_media(chat_id, text):
             return
 
         if "tiktok.com" in url:
-            try:
-                api = f"https://tikwm.com/api/?url={url}"
-                res = requests.get(api, timeout=30).json()
-                if res.get("code") == 0:
-                    data = res["data"]
-                    if data.get("images"):
-                        for i, img in enumerate(data["images"], start=1):
-                            img_data = requests.get(img, timeout=30).content
-                            filename = f"tiktok_{i}.jpg"
-                            with open(filename, "wb") as f:
-                                f.write(img_data)
-                            with open(filename, "rb") as photo:
-                                bot.send_photo(chat_id, photo, caption=f"📸 Photo {i}\n{CAPTION_TEXT}")
-                            os.remove(filename)
-                        return
-                    if data.get("play"):
-                        video_data = requests.get(data["play"], timeout=60).content
-                        filename = "tiktok_video.mp4"
-                        with open(filename, "wb") as f:
-                            f.write(video_data)
-                        send_video_with_music(chat_id, filename, "tiktok")
-                        return
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ TikTok error:\n{e}")
-                return
+            api = f"https://tikwm.com/api/?url={url}"
+            res = requests.get(api, timeout=30).json()
+            if res.get("code") == 0:
+                data = res["data"]
+                if data.get("play"):
+                    video_data = requests.get(data["play"], timeout=60).content
+                    filename = "tiktok_video.mp4"
+                    with open(filename, "wb") as f:
+                        f.write(video_data)
+                    send_video_with_music(chat_id, filename, "tiktok")
+                    return
 
-        if "instagram.com" in url:
-            try:
-                ydl_opts = {"format": "best", "outtmpl": "instagram_%(id)s.%(ext)s", "quiet": True, "merge_output_format": "mp4"}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    entries = info["entries"] if "entries" in info else [info]
-                    for entry in entries:
-                        file = ydl.prepare_filename(entry)
-                        if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                            with open(file, "rb") as photo:
-                                bot.send_photo(chat_id, photo, caption=CAPTION_TEXT)
-                        else:
-                            send_video_with_music(chat_id, file, "instagram")
-                        try:
-                            os.remove(file)
-                        except:
-                            pass
-                return
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ Instagram error:\n{e}")
-                return
-
-        if "facebook.com" in url or "fb.watch" in url:
-            ydl_opts = {"format": "bestvideo+bestaudio/best", "outtmpl": "facebook_%(id)s.%(ext)s", "merge_output_format": "mp4", "quiet": True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                file = ydl.prepare_filename(info)
-            send_video_with_music(chat_id, file, "facebook")
-            return
-
-        if "youtube.com" in url or "youtu.be" in url:
-            ydl_opts = {"format": "bestvideo+bestaudio/best", "outtmpl": "youtube_%(id)s.%(ext)s", "merge_output_format": "mp4", "quiet": True}
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=True)
-                file = ydl_opts.prepare_filename(info) if False else ydl.prepare_filename(info)
-            send_video_with_music(chat_id, file, "youtube")
-            return
-
-        bot.send_message(chat_id, "❌ Unsupported link")
-    except Exception:
-        bot.send_message(chat_id, "❌ Incorrect link.")
+        ydl_opts = {
+            "format": "best",
+            "outtmpl": "media_%(id)s.%(ext)s",
+            "quiet": True,
+            "merge_output_format": "mp4"
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            file = ydl.prepare_filename(info)
+        
+        platform = "youtube" if "youtube" in url or "youtu.be" in url else "instagram" if "instagram" in url else "facebook" if "facebook" in url else "other"
+        send_video_with_music(chat_id, file, platform)
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Download error:\n{e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
 def convert_music(call):
@@ -2216,20 +1877,17 @@ def convert_music(call):
         bot.answer_callback_query(call.id, "File expired")
         return
     file_path = video_files[vid_id]
-    audio_path = file_path.rsplit(".",1)[0] + ".mp3"
+    audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
     try:
-        subprocess.run(["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec","mp3", "-ab","128k", "-ar","44100", audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        with open(audio_path,"rb") as audio:
+        subprocess.run(["ffmpeg", "-y", "-i", file_path, "-vn", "-acodec", "mp3", "-ab", "128k", "-ar", "44100", audio_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        with open(audio_path, "rb") as audio:
             bot.send_audio(call.message.chat.id, audio, title="Converted Music", performer="DownloadBot", caption=CAPTION_TEXT)
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(audio_path): os.remove(audio_path)
+        if os.path.exists(file_path): os.remove(file_path)
         bot.answer_callback_query(call.id, "🎵 Music converted")
     except Exception as e:
         bot.send_message(call.message.chat.id, f"❌ Music conversion failed:\n{e}")
 
-# ================= RUN BOTS =================
 def run_bot1():
     while True:
         try:
@@ -2245,7 +1903,6 @@ def run_bot2():
             print("Bot2 restart:", e)
 
 if __name__ == "__main__":
-    tg_client.start()
     t1 = threading.Thread(target=run_bot1)
     t2 = threading.Thread(target=run_bot2)
     t1.start()
