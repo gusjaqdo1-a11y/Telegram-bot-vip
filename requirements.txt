@@ -13,3 +13,4 @@ openai
 groq
 google-generativeai
 pillow
+aiohttp
