@@ -70,9 +70,7 @@ ADS_BTN_TEXT = ""
 ADS_URL = "" 
 
 # ================= MONGODB SETUP (DUAL DATABASE) =================
-# DB 1: Users & Withdraws
 MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
-# DB 2: Video Stats & Other Data
 MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
 
 try:
@@ -104,7 +102,6 @@ except Exception as e:
 
 # ================= MONGODB DATABASE FUNCTIONS =================
 
-# 1. USERS (DB 1)
 def load_users():
     users_dict = {}
     for user in users_col.find():
@@ -127,7 +124,6 @@ def save_users():
     for uid in users:
         save_user(uid)
 
-# 2. WITHDRAWS (DB 1)
 def load_withdraws():
     return list(withdraws_col.find({}, {"_id": False}))
 
@@ -139,7 +135,6 @@ def save_withdraws():
         clean_withdraws = [{**w} for w in withdraws]
         withdraws_col.insert_many(clean_withdraws)
 
-# 3. VIDEOS STATS (DB 2)
 def load_videos():
     v_data = videos_col.find_one({"_id": "stats"})
     if not v_data:
@@ -1613,9 +1608,17 @@ def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
 
+# ================= SEND VIDEO (OPTIMIZED & CHAT ACTION) =================
 def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     if not os.path.exists(file_path):
         return
+
+    # 🟢 SARE KU QOR "Sending a video..."
+    try:
+        bot.send_chat_action(chat_id, 'upload_video')
+    except:
+        pass
+
     vid_id = str(uuid.uuid4())[:8]
     video_files[vid_id] = file_path
 
@@ -1640,14 +1643,17 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
         videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
     save_videos()
 
+    # 🚀 DHAKHSO U DIR MUUQAALKA
     try:
+        with open(file_path, "rb") as video:
+            bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
+
+        # Muuqaalka ka dib tirtir fariintii "Processing..."
         if message_id:
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
-        with open(file_path, "rb") as video:
-            bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
     except Exception as e:
         print(f"Error sending video: {e}")
 
@@ -1691,6 +1697,12 @@ def download_media(chat_id, text, message_id=None):
             except:
                 pass
             return
+
+        # 🟢 ISLA MARKA DHAGAXA LA BILAABO SARE KU QOR "Sending a video..."
+        try:
+            bot.send_chat_action(chat_id, 'upload_video')
+        except:
+            pass
 
         # 1. TIKTOK (HYPER FAST API)
         if "tiktok.com" in url or "vt.tiktok.com" in url:
