@@ -31,8 +31,10 @@ PHONE = os.getenv("PHONE")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 
-MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
+
+http_session = requests.Session()
 
 tg_client = TelegramClient(
     "session",
@@ -67,23 +69,34 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = "" 
 
-# ================= MONGODB SETUP =================
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/") # Ku bedelo URL-kaaga MongoDB haddii aad server u isticmaaleyso
+# ================= MONGODB SETUP (DUAL DATABASE) =================
+# DB 1: Users & Withdraws
+MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
+# DB 2: Video Stats & Other Data
+MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
 
 try:
-    mongo_client = MongoClient(MONGO_URI)
-    db = mongo_client["video_downloader_bot"]
-    users_col = db["users"]
-    withdraws_col = db["withdraws"]
-    videos_col = db["videos"]
-    print("✅ MongoDB Connected Successfully")
+    mongo_client1 = MongoClient(MONGO_URI_1)
+    db1 = mongo_client1.get_database() if mongo_client1.get_default_database() is not None else mongo_client1["user_db"]
+    users_col = db1["users"]
+    withdraws_col = db1["withdraws"]
+    print("✅ MongoDB 1 (Users & Withdraws) Connected Successfully")
 except Exception as e:
-    print(f"❌ MongoDB Connection Error: {e}")
+    print(f"❌ MongoDB 1 Connection Error: {e}")
+    exit()
+
+try:
+    mongo_client2 = MongoClient(MONGO_URI_2)
+    db2 = mongo_client2.get_database() if mongo_client2.get_default_database() is not None else mongo_client2["stats_db"]
+    videos_col = db2["videos"]
+    print("✅ MongoDB 2 (Videos & Stats) Connected Successfully")
+except Exception as e:
+    print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
 
 # ================= MONGODB DATABASE FUNCTIONS =================
 
-# 1. USERS
+# 1. USERS (DB 1)
 def load_users():
     users_dict = {}
     for user in users_col.find():
@@ -97,7 +110,7 @@ def save_user(uid):
     uid_str = str(uid)
     if uid_str in users:
         data = users[uid_str].copy()
-        data.pop("_id", None) # Si looga hortago error ka yimaada update-ka _id
+        data.pop("_id", None)
         users_col.update_one({"_id": uid_str}, {"$set": data}, upsert=True)
 
 users = load_users()
@@ -106,7 +119,7 @@ def save_users():
     for uid in users:
         save_user(uid)
 
-# 2. WITHDRAWS
+# 2. WITHDRAWS (DB 1)
 def load_withdraws():
     return list(withdraws_col.find({}, {"_id": False}))
 
@@ -115,11 +128,10 @@ withdraws = load_withdraws()
 def save_withdraws():
     withdraws_col.delete_many({})
     if withdraws:
-        # Si aan u hubino inaysan dhibaato keenin object IDs
         clean_withdraws = [{**w} for w in withdraws]
         withdraws_col.insert_many(clean_withdraws)
 
-# 3. VIDEOS STATS
+# 3. VIDEOS STATS (DB 2)
 def load_videos():
     v_data = videos_col.find_one({"_id": "stats"})
     if not v_data:
@@ -516,7 +528,7 @@ def confirm_join(call):
                 link = pending_links[user_id]
                 del pending_links[user_id]
                 msg = bot.send_message(user_id, "⏳ Downloading...")
-                download_media(user_id, link, msg.message_id)
+                download_executor.submit(download_media, user_id, link, msg.message_id)
             else:
                 bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
         else:
@@ -956,52 +968,7 @@ def add_channel_process(m):
         except:
             pass
 
-@bot.message_handler(func=lambda m: m.text == "CHANNEL")
-def post_channel_process_text(m):
-    text = m.text
-    if not MANAGED_CHANNELS:
-        try:
-            bot.send_message(m.chat.id, "❌ No channels added.")
-        except:
-            pass
-        return
-
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("🇸🇴 Somali", callback_data="lang_so"),
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-    )
-    sent = 0
-    for ch in MANAGED_CHANNELS:
-        try:
-            bot.send_message(ch, text, reply_markup=kb)
-            sent += 1
-        except:
-            pass
-    try:
-        bot.send_message(m.chat.id, f"✅ Posted to {sent} channel(s)")
-    except:
-        pass
-
-channel_posts = {}
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("lang_"))
-def channel_language(call):
-    lang = call.data.split("_")[1]
-    if call.message.message_id not in channel_posts:
-        return
-    data = channel_posts[call.message.message_id]
-    text = data["so"] if lang == "so" else data["en"]
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("🇸🇴 Somali", callback_data="lang_so"),
-        InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-    )
-    try:
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
-    except:
-        pass
-
+# ================= EXACT RAADI LAYOUT =================
 @bot.message_handler(func=lambda m: m.text == "🔍 RAADI")
 def raadi_stats(m):
     if not is_admin(m.from_user.id):
@@ -1010,31 +977,38 @@ def raadi_stats(m):
     platform_stats = videos_data.get("platforms", {})
     users_stats = videos_data.get("users", {})
 
-    if not users_stats:
-        try:
-            bot.send_message(m.chat.id, "❌ No video data found yet.")
-        except:
-            pass
-        return
+    top_downloader = "None"
+    sorted_users = []
+    if users_stats:
+        sorted_users = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
+        top_uid, top_cnt = sorted_users[0]
+        top_downloader = f'<a href="tg://user?id={top_uid}">{top_uid}</a> ({top_cnt} videos)'
+
+    tt = platform_stats.get("tiktok", 0)
+    yt = platform_stats.get("youtube", 0)
+    fb = platform_stats.get("facebook", 0)
+    pin = platform_stats.get("pinterest", 0)
 
     msg_lines = [
         "🔍 DOWNLOAD ANALYTICS\n",
         f"🎬 Total Videos Downloaded: {total_videos}",
-        "📊 Downloads by Platform:"
+        f"🏆 Top Downloader: {top_downloader}\n",
+        "📊 Downloads by Platform:",
+        f"• TikTok: {tt}",
+        f"• YouTube: {yt}",
+        f"• Facebook: {fb}",
+        f"• Pinterest: {pin}\n",
+        "🥇 Top 40 Users:"
     ]
-    for p, c in platform_stats.items():
-        msg_lines.append(f"• {p.capitalize()}: {c}")
 
-    sorted_users = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
-    msg_lines.append("\n🥇 Top Users:")
-    for i, (uid, count) in enumerate(sorted_users[:20], start=1):
+    for i, (uid, count) in enumerate(sorted_users[:40], start=1):
         bot_id = users.get(str(uid), {}).get("bot_id", "N/A")
-        msg_lines.append(f"{i}. 👤 {uid} - 🎬 {count} videos")
+        msg_lines.append(f'{i}. 👤 <a href="tg://user?id={uid}">{uid}</a> - 🎬 {count} videos | 🤖 BOT ID: {bot_id}')
 
     try:
         bot.send_message(m.chat.id, "\n".join(msg_lines), parse_mode="HTML")
-    except:
-        pass
+    except Exception as e:
+        print(f"RAADI error: {e}")
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST")
 def broadcast_start(m):
@@ -1074,13 +1048,11 @@ def broadcast_media_process(m):
     if not is_admin(m.from_user.id):
         return
 
-    # Hubi inuu yahay video ama photo
     if not (m.video or m.photo):
         bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
         return
 
     count = 0
-    # Waxaan u isticmaalaynaa file_id si uu u noqdo mid degdeg ah
     file_id = m.video.file_id if m.video else m.photo[-1].file_id
     caption = m.caption or ""
 
@@ -1095,7 +1067,6 @@ def broadcast_media_process(m):
             continue
 
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
-
 
 @bot.message_handler(func=lambda m: m.text == "📌 POST CHANNEL")
 def post_channel_start(m):
@@ -1385,7 +1356,7 @@ def handle_links(message):
         return
 
     try:
-        msg = bot.send_message(message.chat.id, "⏳ Downloading...")
+        msg = bot.send_message(message.chat.id, "⚡ Processing...")
         download_executor.submit(download_media, message.chat.id, link, msg.message_id)
     except:
         pass
@@ -1650,7 +1621,9 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
         caption += f"\n\n📢 {ADS_TEXT}"
 
     uid = str(chat_id)
-    videos_data["total"] += 1
+    videos_data["total"] = videos_data.get("total", 0) + 1
+    if "users" not in videos_data:
+        videos_data["users"] = {}
     videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
 
     if platform:
@@ -1677,6 +1650,29 @@ def send_photo_safe(chat_id, photo_path, caption):
     except Exception as e:
         print(f"Error sending photo: {e}")
 
+# High-Speed Engine Downloader
+def ultra_fast_download(url, prefix, platform):
+    ydl_opts = {
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "outtmpl": f"{platform}_{prefix}_%(id)s.%(ext)s",
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "concurrent_fragment_downloads": 10,
+        "socket_timeout": 8,
+        "merge_output_format": "mp4"
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        entries = info["entries"] if "entries" in info else [info]
+        files = []
+        for entry in entries:
+            file_name = ydl.prepare_filename(entry)
+            if not os.path.exists(file_name) and os.path.exists(file_name.rsplit('.', 1)[0] + ".mp4"):
+                file_name = file_name.rsplit('.', 1)[0] + ".mp4"
+            files.append((file_name, entry.get("ext", "mp4")))
+        return files
+
 def download_media(chat_id, text, message_id=None):
     unique_prefix = str(uuid.uuid4())[:8]
     try:
@@ -1688,11 +1684,11 @@ def download_media(chat_id, text, message_id=None):
                 pass
             return
 
-        # TIKTOK
-        if "tiktok.com" in url:
+        # 1. TIKTOK (HYPER FAST API)
+        if "tiktok.com" in url or "vt.tiktok.com" in url:
             try:
                 api = f"https://tikwm.com/api/?url={url}"
-                res = requests.get(api, timeout=30).json()
+                res = http_session.get(api, timeout=10).json()
                 if res.get("code") == 0:
                     data = res["data"]
                     if data.get("images"):
@@ -1702,7 +1698,7 @@ def download_media(chat_id, text, message_id=None):
                             except:
                                 pass
                         for i, img in enumerate(data["images"], start=1):
-                            img_data = requests.get(img, timeout=30).content
+                            img_data = http_session.get(img, timeout=10).content
                             filename = f"tiktok_{unique_prefix}_{i}.jpg"
                             with open(filename, "wb") as f:
                                 f.write(img_data)
@@ -1714,7 +1710,7 @@ def download_media(chat_id, text, message_id=None):
                         return
 
                     if data.get("play"):
-                        video_data = requests.get(data["play"], timeout=60).content
+                        video_data = http_session.get(data["play"], timeout=15).content
                         filename = f"tiktok_{unique_prefix}.mp4"
                         with open(filename, "wb") as f:
                             f.write(video_data)
@@ -1725,139 +1721,110 @@ def download_media(chat_id, text, message_id=None):
                             pass
                         return
             except Exception as e:
-                print(f"TikTok error: {e}")
+                print(f"TikTok API fallback: {e}")
 
-        # SNAPCHAT
+        # 2. SNAPCHAT
         if "snapchat.com" in url or "snap.com" in url:
             try:
-                ydl_opts = {
-                    "format": "best",
-                    "outtmpl": f"snapchat_{unique_prefix}_%(id)s.%(ext)s",
-                    "quiet": True
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-                send_video_with_music(chat_id, file, "snapchat", message_id)
-                try:
-                    os.remove(file)
-                except:
-                    pass
+                files = ultra_fast_download(url, unique_prefix, "snapchat")
+                for f_path, _ in files:
+                    send_video_with_music(chat_id, f_path, "snapchat", message_id)
+                    try:
+                        os.remove(f_path)
+                    except:
+                        pass
                 return
             except Exception as e:
                 print(f"Snapchat error: {e}")
 
-        # PINTEREST
-        if "pin.it" in url:
+        # 3. PINTEREST
+        if "pin.it" in url or "pinterest.com" in url:
             try:
-                r = requests.head(url, allow_redirects=True, timeout=10)
-                url = r.url
-            except:
-                pass
+                if "pin.it" in url:
+                    r = http_session.head(url, allow_redirects=True, timeout=5)
+                    url = r.url
 
-        if "pinterest.com" in url:
-            try:
-                ydl_opts = {
-                    "format": "bv*+ba/b",
-                    "outtmpl": f"pinterest_{unique_prefix}_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "noplaylist": False,
-                    "merge_output_format": "mp4"
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    entries = info["entries"] if "entries" in info else [info]
-                    if message_id:
-                        try:
-                            bot.delete_message(chat_id, message_id)
-                        except:
-                            pass
-                    for entry in entries:
-                        file = ydl.prepare_filename(entry)
-                        if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                            send_photo_safe(chat_id, file, CAPTION_TEXT)
-                        else:
-                            send_video_with_music(chat_id, file, "pinterest", None)
-                        try:
-                            os.remove(file)
-                        except:
-                            pass
+                files = ultra_fast_download(url, unique_prefix, "pinterest")
+                if message_id:
+                    try:
+                        bot.delete_message(chat_id, message_id)
+                    except:
+                        pass
+                for f_path, ext in files:
+                    if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        send_photo_safe(chat_id, f_path, CAPTION_TEXT)
+                    else:
+                        send_video_with_music(chat_id, f_path, "pinterest", None)
+                    try:
+                        os.remove(f_path)
+                    except:
+                        pass
                 return
             except Exception as e:
                 print(f"Pinterest error: {e}")
 
-        # INSTAGRAM
+        # 4. INSTAGRAM
         if "instagram.com" in url:
             try:
-                ydl_opts = {
-                    "format": "best",
-                    "outtmpl": f"instagram_{unique_prefix}_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "merge_output_format": "mp4"
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    entries = info["entries"] if "entries" in info else [info]
-                    if message_id:
-                        try:
-                            bot.delete_message(chat_id, message_id)
-                        except:
-                            pass
-                    for entry in entries:
-                        file = ydl.prepare_filename(entry)
-                        if file.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                            send_photo_safe(chat_id, file, CAPTION_TEXT)
-                        else:
-                            send_video_with_music(chat_id, file, "instagram", None)
-                        try:
-                            os.remove(file)
-                        except:
-                            pass
+                files = ultra_fast_download(url, unique_prefix, "instagram")
+                if message_id:
+                    try:
+                        bot.delete_message(chat_id, message_id)
+                    except:
+                        pass
+                for f_path, ext in files:
+                    if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        send_photo_safe(chat_id, f_path, CAPTION_TEXT)
+                    else:
+                        send_video_with_music(chat_id, f_path, "instagram", None)
+                    try:
+                        os.remove(f_path)
+                    except:
+                        pass
                 return
             except Exception as e:
                 print(f"Instagram error: {e}")
 
-        # FACEBOOK
+        # 5. FACEBOOK
         if "facebook.com" in url or "fb.watch" in url:
             try:
-                ydl_opts = {
-                    "format": "bestvideo+bestaudio/best",
-                    "outtmpl": f"facebook_{unique_prefix}_%(id)s.%(ext)s",
-                    "merge_output_format": "mp4",
-                    "quiet": True
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-                send_video_with_music(chat_id, file, "facebook", message_id)
-                try:
-                    os.remove(file)
-                except:
-                    pass
+                files = ultra_fast_download(url, unique_prefix, "facebook")
+                for f_path, _ in files:
+                    send_video_with_music(chat_id, f_path, "facebook", message_id)
+                    try:
+                        os.remove(f_path)
+                    except:
+                        pass
                 return
             except Exception as e:
                 print(f"Facebook error: {e}")
 
-        # YOUTUBE
+        # 6. YOUTUBE
         if "youtube.com" in url or "youtu.be" in url:
             try:
-                ydl_opts = {
-                    "format": "bestvideo+bestaudio/best",
-                    "outtmpl": f"youtube_{unique_prefix}_%(id)s.%(ext)s",
-                    "merge_output_format": "mp4",
-                    "quiet": True
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-                send_video_with_music(chat_id, file, "youtube", message_id)
-                try:
-                    os.remove(file)
-                except:
-                    pass
+                files = ultra_fast_download(url, unique_prefix, "youtube")
+                for f_path, _ in files:
+                    send_video_with_music(chat_id, f_path, "youtube", message_id)
+                    try:
+                        os.remove(f_path)
+                    except:
+                        pass
                 return
             except Exception as e:
                 print(f"YouTube error: {e}")
+
+        # GENERAL FAST FALLBACK FOR ALL SITES
+        try:
+            files = ultra_fast_download(url, unique_prefix, "other")
+            for f_path, _ in files:
+                send_video_with_music(chat_id, f_path, "other", message_id)
+                try:
+                    os.remove(f_path)
+                except:
+                    pass
+            return
+        except Exception as e:
+            print(f"General fallback error: {e}")
 
         try:
             if message_id:
