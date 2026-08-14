@@ -77,7 +77,11 @@ MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
 
 try:
     mongo_client1 = MongoClient(MONGO_URI_1)
-    db1 = mongo_client1.get_database() if mongo_client1.get_default_database() is not None else mongo_client1["user_db"]
+    try:
+        db1 = mongo_client1.get_default_database()
+    except Exception:
+        db1 = mongo_client1["user_db"]
+        
     users_col = db1["users"]
     withdraws_col = db1["withdraws"]
     print("✅ MongoDB 1 (Users & Withdraws) Connected Successfully")
@@ -87,7 +91,11 @@ except Exception as e:
 
 try:
     mongo_client2 = MongoClient(MONGO_URI_2)
-    db2 = mongo_client2.get_database() if mongo_client2.get_default_database() is not None else mongo_client2["stats_db"]
+    try:
+        db2 = mongo_client2.get_default_database()
+    except Exception:
+        db2 = mongo_client2["stats_db"]
+        
     videos_col = db2["videos"]
     print("✅ MongoDB 2 (Videos & Stats) Connected Successfully")
 except Exception as e:
