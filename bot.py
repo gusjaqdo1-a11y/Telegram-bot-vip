@@ -1,4 +1,4 @@
-import telebot
+Import telebot
 from pymongo import MongoClient
 import requests
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -1619,7 +1619,10 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
         pass
 
     vid_id = str(uuid.uuid4())[:8]
-    video_files[vid_id] = file_path
+    # Copy file to permanent local storage for reliable audio conversion later
+    perm_file_path = f"saved_{vid_id}.mp4"
+    shutil.copy(file_path, perm_file_path)
+    video_files[vid_id] = perm_file_path
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎵 Convert Music", callback_data=f"music_{vid_id}"))
@@ -1996,7 +1999,7 @@ if __name__ == "__main__":
     try:
         tg_client.start()
     except Exception as e:
-        print(f"Telegram client start error: {e}")
+        print(f"Telegram client start error: ${e}")
 
     t1 = threading.Thread(target=run_bot1, daemon=True)
     t2 = threading.Thread(target=run_bot2, daemon=True)
