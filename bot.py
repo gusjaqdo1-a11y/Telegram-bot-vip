@@ -1359,7 +1359,7 @@ def handle_links(message):
         return
 
     try:
-        msg = bot.send_message(message.chat.id, "⚡ Processing...")
+        msg = bot.send_message(message.chat.id, "Sending a video...")
         download_executor.submit(download_media, message.chat.id, link, msg.message_id)
     except:
         pass
@@ -1387,7 +1387,7 @@ def multi_checkjoin(call):
             link = pending_links[user_id]
             del pending_links[user_id]
             try:
-                msg = bot.send_message(user_id, "⬇️ Processing your video...")
+                msg = bot.send_message(user_id, "Sending a video...")
                 download_executor.submit(download_media, user_id, link, msg.message_id)
             except:
                 pass
@@ -1594,7 +1594,7 @@ def verify_code_check(m):
         link = data["link"]
         del verify_pending[uid]
         try:
-            msg = bot.send_message(m.chat.id, "✅ Verification successful\n⬇️ Downloading video...")
+            msg = bot.send_message(m.chat.id, "✅ Verification successful\nSending a video...")
             download_executor.submit(download_media, m.chat.id, link, msg.message_id)
         except:
             pass
@@ -1622,7 +1622,6 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     video_files[vid_id] = file_path
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎵 Convert to Music", callback_data=f"music_{vid_id}"))
     if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
         kb.add(InlineKeyboardButton(ADS_BTN_TEXT, url=ADS_URL))
 
@@ -1902,71 +1901,6 @@ def send_user_message(m, uid):
     except:
         try:
             bot.send_message(m.chat.id, "❌ Failed to send message")
-        except:
-            pass
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
-def convert_music(call):
-    vid_id = call.data.split("_")[1]
-    if vid_id not in video_files:
-        try:
-            bot.answer_callback_query(call.id, "File expired or not found!", show_alert=True)
-        except:
-            pass
-        return
-
-    file_path = video_files[vid_id]
-    if not os.path.exists(file_path):
-        try:
-            bot.answer_callback_query(call.id, "Original video file no longer exists!", show_alert=True)
-        except:
-            pass
-        return
-
-    audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
-
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                file_path,
-                "-vn",
-                "-acodec", "mp3",
-                "-ab", "128k",
-                "-ar", "44100",
-                audio_path
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True
-        )
-
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📢 BOT CHANNEL", url="https://t.me/tiktokvediodownload"))
-
-        with open(audio_path, "rb") as audio:
-            bot.send_audio(
-                call.message.chat.id,
-                audio,
-                title="Converted Music",
-                performer="DownloadBot",
-                caption=CAPTION_TEXT,
-                reply_markup=kb
-            )
-
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-
-        try:
-            bot.answer_callback_query(call.id, "🎵 Music converted successfully")
-        except:
-            pass
-
-    except Exception as e:
-        try:
-            bot.send_message(call.message.chat.id, f"❌ Music conversion failed:\n{e}")
         except:
             pass
 
