@@ -1,4 +1,5 @@
 import telebot
+from pymongo import MongoClient
 import requests
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 import os, json, random
@@ -67,51 +68,76 @@ ADS_BTN_TEXT = ""
 ADS_URL = "" 
 
 # ================= DATABASE FILES =================
-USERS_FILE = "users.json"
-WITHDRAWS_FILE = "withdraws.json"
-VIDEOS_FILE = "videos.json"
+users_col = db["users"]
+withdraws_col = db["withdraws"]
+videos_col = db["videos"]
 
 # ================= JSON FUNCTIONS =================
-def load_json(path, default):
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except:
-        return default
+# ================= MONGODB DATABASE FUNCTIONS =================
 
-def save_json(path, data):
-    try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving {path}: {e}")
+# 1. USERS
+def load_users():
+    users_dict = {}
+    for user in users_col.find():
+        uid = str(user["_id"])
+        user_data = user.copy()
+        user_data.pop("_id", None)
+        users_dict[uid] = user_data
+    return users_dict
 
-users = load_json(USERS_FILE, {})
-withdraws = load_json(WITHDRAWS_FILE, [])
+def save_user(uid):
+    if uid in users:
+        data = users[uid].copy()
+        data["_id"] = str(uid)
+        users_col.update_one({"_id": str(uid)}, {"$set": data}, upsert=True)
+
+users = load_users()
 
 def save_users():
-    save_json(USERS_FILE, users)
+    for uid in users:
+        save_user(uid)
+
+# 2. WITHDRAWS
+def load_withdraws():
+    return list(withdraws_col.find({}, {"_id": False}))
+
+withdraws = load_withdraws()
 
 def save_withdraws():
-    save_json(WITHDRAWS_FILE, withdraws)
+    withdraws_col.delete_many({})
+    if withdraws:
+        # Si aan u hubino inaysan dhibaato keenin object IDs
+        clean_withdraws = [{**w} for w in withdraws]
+        withdraws_col.insert_many(clean_withdraws)
 
-videos_data = load_json(VIDEOS_FILE, {
-    "total": 0,
-    "platforms": {
-        "tiktok": 0,
-        "youtube": 0,
-        "facebook": 0,
-        "pinterest": 0,
-        "instagram": 0,
-        "snapchat": 0
-    },
-    "users": {}
-})
+# 3. VIDEOS STATS
+def load_videos():
+    v_data = videos_col.find_one({"_id": "stats"})
+    if not v_data:
+        default_data = {
+            "_id": "stats",
+            "total": 0,
+            "platforms": {
+                "tiktok": 0,
+                "youtube": 0,
+                "facebook": 0,
+                "pinterest": 0,
+                "instagram": 0,
+                "snapchat": 0
+            },
+            "users": {}
+        }
+        videos_col.insert_one(default_data)
+        return default_data
+    v_data.pop("_id", None)
+    return v_data
+
+videos_data = load_videos()
 
 def save_videos():
-    save_json(VIDEOS_FILE, videos_data)
+    data = videos_data.copy()
+    data["_id"] = "stats"
+    videos_col.update_one({"_id": "stats"}, {"$set": data}, upsert=True)
 
 # ================= HELPER FUNCTIONS =================
 def random_ref():
