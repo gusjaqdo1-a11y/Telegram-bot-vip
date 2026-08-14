@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice
 import os, json, random
 from datetime import datetime
 import yt_dlp
@@ -1077,7 +1077,7 @@ def send_pay_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        msg = bot.send_message(m.chat.id, "Send photo and description/caption for the payment prompt (Telegram Stars):")
+        msg = bot.send_message(m.chat.id, "Send payment details in this format:\n\nTitle | Description | Price in Stars\n\nExample:\nVIP Access | 1 Month VIP Subscription | 50")
         bot.register_next_step_handler(msg, send_pay_process)
     except:
         pass
@@ -1085,22 +1085,37 @@ def send_pay_start(m):
 def send_pay_process(m):
     if not is_admin(m.from_user.id):
         return
-    if not m.photo:
-        bot.send_message(m.chat.id, "❌ Please send a photo with caption.")
-        return
+    try:
+        parts = m.text.split("|")
+        if len(parts) != 3:
+            bot.send_message(m.chat.id, "❌ Invalid format. Use: Title | Description | Price")
+            return
+        
+        title = parts[0].strip()
+        desc = parts[1].strip()
+        price = int(parts[2].strip())
+        
+        prices = [LabeledPrice(label=title, amount=price)]
+        count = 0
+        
+        for uid in users:
+            try:
+                bot.send_invoice(
+                    int(uid),
+                    title=title,
+                    description=desc,
+                    invoice_payload=f"stars_pay_{price}",
+                    provider_token="", # Provider token is empty for Telegram Stars
+                    currency="XTR",
+                    prices=prices
+                )
+                count += 1
+            except Exception as e:
+                continue
 
-    photo_id = m.photo[-1].file_id
-    caption = m.caption or "⭐ Support us using Telegram Stars!"
-
-    count = 0
-    for uid in users:
-        try:
-            bot.send_photo(int(uid), photo_id, caption=caption)
-            count += 1
-        except:
-            continue
-
-    bot.send_message(m.chat.id, f"✅ Payment message sent to {count} users.")
+        bot.send_message(m.chat.id, f"✅ Telegram Stars payment sent to {count} users.")
+    except Exception as e:
+        bot.send_message(m.chat.id, f"❌ Error processing payment: {e}")
 
 @bot.message_handler(func=lambda m: m.text == "📌 POST CHANNEL")
 def post_channel_start(m):
@@ -1358,7 +1373,10 @@ def handle_links(message):
         return
 
     user_id = message.from_user.id
-    link = message.text
+    link = extract_url(message.text)
+
+    if not link:
+        return
 
     if CHANNEL_WINDOW_OPEN and POST_CHANNELS:
         joined_all = True
@@ -1651,7 +1669,13 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
 
     vid_id = str(uuid.uuid4())[:8]
     perm_file_path = f"saved_{vid_id}.mp4"
-    shutil.copy(file_path, perm_file_path)
+    
+    # Optimized moving operation for speed
+    try:
+        os.rename(file_path, perm_file_path)
+    except:
+        shutil.copy(file_path, perm_file_path)
+        
     video_files[vid_id] = perm_file_path
 
     kb = InlineKeyboardMarkup()
@@ -1676,7 +1700,7 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     save_videos()
 
     try:
-        with open(file_path, "rb") as video:
+        with open(perm_file_path, "rb") as video:
             bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
 
         if message_id:
@@ -1687,349 +1711,105 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     except Exception as e:
         print(f"Error sending video: {e}")
 
-def send_photo_group_safe(chat_id, image_paths, message_id=None):
-    try:
-        bot.send_chat_action(chat_id, 'upload_photo')
-    except:
-        pass
-
-    try:
-        if message_id:
-            try:
-                bot.delete_message(chat_id, message_id)
-            except:
-                pass
-
-        media_group = []
-        opened_files = []
-        for i, path in enumerate(image_paths):
-            if os.path.exists(path):
-                f = open(path, "rb")
-                opened_files.append(f)
-                if i == 0:
-                    media_group.append(InputMediaPhoto(f, caption=CAPTION_TEXT))
-                else:
-                    media_group.append(InputMediaPhoto(f))
-
-        if media_group:
-            bot.send_media_group(chat_id, media_group)
-
-        for f in opened_files:
-            try:
-                f.close()
-            except:
-                pass
-
-        for path in image_paths:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except:
-                pass
-    except Exception as e:
-        print(f"Error sending photo group: {e}")
-
-# High-Speed Engine Downloader
-def ultra_fast_download(url, prefix, platform):
-    ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": f"{platform}_{prefix}_%(id)s.%(ext)s",
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "concurrent_fragment_downloads": 10,
-        "socket_timeout": 8,
-        "merge_output_format": "mp4"
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        entries = info["entries"] if "entries" in info else [info]
-        files = []
-        for entry in entries:
-            file_name = ydl.prepare_filename(entry)
-            if not os.path.exists(file_name) and os.path.exists(file_name.rsplit('.', 1)[0] + ".mp4"):
-                file_name = file_name.rsplit('.', 1)[0] + ".mp4"
-            files.append((file_name, entry.get("ext", "mp4")))
-        return files
-
-def download_media(chat_id, text, message_id=None):
-    unique_prefix = str(uuid.uuid4())[:8]
-    try:
-        url = extract_url(text)
-        if not url:
-            try:
-                if message_id:
-                    bot.delete_message(chat_id, message_id)
-                bot.send_message(chat_id, "❌ Invalid link")
-            except:
-                pass
-            return
-
-        # 1. TIKTOK
-        if "tiktok.com" in url or "vt.tiktok.com" in url:
-            try:
-                api = f"https://tikwm.com/api/?url={url}"
-                res = http_session.get(api, timeout=10).json()
-                if res.get("code") == 0:
-                    data = res["data"]
-                    if data.get("images"):
-                        downloaded_images = []
-                        for i, img in enumerate(data["images"], start=1):
-                            img_data = http_session.get(img, timeout=10).content
-                            filename = f"tiktok_{unique_prefix}_{i}.jpg"
-                            with open(filename, "wb") as f:
-                                f.write(img_data)
-                            downloaded_images.append(filename)
-                        
-                        send_photo_group_safe(chat_id, downloaded_images, message_id)
-                        return
-
-                    if data.get("play"):
-                        video_data = http_session.get(data["play"], timeout=15).content
-                        filename = f"tiktok_{unique_prefix}.mp4"
-                        with open(filename, "wb") as f:
-                            f.write(video_data)
-                        send_video_with_music(chat_id, filename, "tiktok", message_id)
-                        try:
-                            os.remove(filename)
-                        except:
-                            pass
-                        return
-            except Exception as e:
-                print(f"TikTok API fallback: {e}")
-
-        # 2. SNAPCHAT
-        if "snapchat.com" in url or "snap.com" in url:
-            try:
-                files = ultra_fast_download(url, unique_prefix, "snapchat")
-                for f_path, _ in files:
-                    send_video_with_music(chat_id, f_path, "snapchat", message_id)
-                    try:
-                        os.remove(f_path)
-                    except:
-                        pass
-                return
-            except Exception as e:
-                print(f"Snapchat error: {e}")
-
-        # 3. PINTEREST
-        if "pin.it" in url or "pinterest.com" in url:
-            try:
-                if "pin.it" in url:
-                    r = http_session.head(url, allow_redirects=True, timeout=5)
-                    url = r.url
-
-                files = ultra_fast_download(url, unique_prefix, "pinterest")
-                for f_path, ext in files:
-                    if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                        send_photo_group_safe(chat_id, [f_path], message_id)
-                    else:
-                        send_video_with_music(chat_id, f_path, "pinterest", message_id)
-                    try:
-                        os.remove(f_path)
-                    except:
-                        pass
-                return
-            except Exception as e:
-                print(f"Pinterest error: {e}")
-
-        # 4. INSTAGRAM
-        if "instagram.com" in url:
-            try:
-                files = ultra_fast_download(url, unique_prefix, "instagram")
-                img_list = []
-                for f_path, ext in files:
-                    if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                        img_list.append(f_path)
-                    else:
-                        send_video_with_music(chat_id, f_path, "instagram", message_id)
-                if img_list:
-                    send_photo_group_safe(chat_id, img_list, message_id)
-                return
-            except Exception as e:
-                print(f"Instagram error: {e}")
-
-        # 5. FACEBOOK
-        if "facebook.com" in url or "fb.watch" in url:
-            try:
-                files = ultra_fast_download(url, unique_prefix, "facebook")
-                for f_path, _ in files:
-                    send_video_with_music(chat_id, f_path, "facebook", message_id)
-                    try:
-                        os.remove(f_path)
-                    except:
-                        pass
-                return
-            except Exception as e:
-                print(f"Facebook error: {e}")
-
-        # 6. YOUTUBE
-        if "youtube.com" in url or "youtu.be" in url:
-            try:
-                files = ultra_fast_download(url, unique_prefix, "youtube")
-                for f_path, _ in files:
-                    send_video_with_music(chat_id, f_path, "youtube", message_id)
-                    try:
-                        os.remove(f_path)
-                    except:
-                        pass
-                return
-            except Exception as e:
-                print(f"YouTube error: {e}")
-
-        # GENERAL FAST FALLBACK FOR ALL SITES
-        try:
-            files = ultra_fast_download(url, unique_prefix, "other")
-            for f_path, _ in files:
-                send_video_with_music(chat_id, f_path, "other", message_id)
-                try:
-                    os.remove(f_path)
-                except:
-                    pass
-            return
-        except Exception as e:
-            print(f"General fallback error: {e}")
-
-        try:
-            if message_id:
-                try:
-                    bot.delete_message(chat_id, message_id)
-                except:
-                    pass
-            bot.send_message(chat_id, "❌ Unsupported or incorrect link.")
-        except:
-            pass
-
-    except Exception as e:
-        print(f"Download error: {e}")
-        try:
-            if message_id:
-                try:
-                    bot.delete_message(chat_id, message_id)
-                except:
-                    pass
-            bot.send_message(chat_id, "❌ Error processing your request. Please try again.")
-        except:
-            pass
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("msguser|"))
-def message_user(call):
-    if not is_admin(call.from_user.id):
-        return
-    uid = call.data.split("|")[1]
-    try:
-        msg = bot.send_message(call.message.chat.id, "Send message for user")
-        bot.register_next_step_handler(msg, send_user_message, uid)
-    except:
-        pass
-
-def send_user_message(m, uid):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        bot.send_message(int(uid), m.text)
-        bot.send_message(m.chat.id, "✅ Message sent")
-    except:
-        try:
-            bot.send_message(m.chat.id, "❌ Failed to send message")
-        except:
-            pass
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
-def convert_music(call):
+def extract_music(call):
     vid_id = call.data.split("_")[1]
-    if vid_id not in video_files:
-        try:
-            bot.answer_callback_query(call.id, "File expired or not found!", show_alert=True)
-        except:
-            pass
+    video_path = video_files.get(vid_id)
+    
+    if not video_path or not os.path.exists(video_path):
+        bot.answer_callback_query(call.id, "❌ Audio expired.")
         return
 
-    file_path = video_files[vid_id]
-    if not os.path.exists(file_path):
-        try:
-            bot.answer_callback_query(call.id, "Original video file no longer exists!", show_alert=True)
-        except:
-            pass
-        return
-
-    audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
-
+    audio_path = f"audio_{vid_id}.mp3"
+    
     try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                file_path,
-                "-vn",
-                "-acodec", "mp3",
-                "-ab", "128k",
-                "-ar", "44100",
-                audio_path
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True
-        )
+        bot.send_chat_action(call.message.chat.id, 'upload_audio')
+        subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], 
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        with open(audio_path, 'rb') as audio:
+            bot.send_audio(call.message.chat.id, audio)
+            
+        os.remove(audio_path)
+    except Exception as e:
+        bot.answer_callback_query(call.id, "❌ Failed to convert music")
 
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📢 BOT CHANNEL", url="https://t.me/tiktokvediodownload"))
+# ================= DOWNLOAD MEDIA =================
+def download_media(chat_id, url, message_id):
+    try:
+        if "tiktok.com" in url:
+            platform = "tiktok"
+            api_url = f"https://www.tikwm.com/api/?url={url}"
+            res = requests.get(api_url).json()
+            if res.get("code") == 0:
+                data = res["data"]
+                if "images" in data:
+                    images = data["images"]
+                    media = [InputMediaPhoto(img) for img in images[:10]]
+                    bot.send_media_group(chat_id, media)
+                    if message_id:
+                        bot.delete_message(chat_id, message_id)
+                    return
+                elif "play" in data:
+                    vid_url = data["play"]
+                    file_path = f"tiktok_{uuid.uuid4().hex[:8]}.mp4"
+                    # Optimization: Just direct stream it or quick download
+                    with open(file_path, 'wb') as f:
+                        f.write(requests.get(vid_url).content)
+                    send_video_with_music(chat_id, file_path, platform, message_id)
+                    return
+            
+        # Optimization: use best pre-merged format for YouTube to bypass ffmpeg slowness
+        ydl_opts = {
+            "format": "b[ext=mp4]/best",
+            "outtmpl": f"dl_%(id)s.%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "socket_timeout": 15,
+        }
+        
+        platform = "youtube" if "youtube" in url or "youtu.be" in url else \
+                   "facebook" if "facebook" in url or "fb.watch" in url else \
+                   "instagram" if "instagram" in url else \
+                   "pinterest" if "pin.it" in url or "pinterest" in url else "other"
+                   
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if not filename.endswith('.mp4'):
+                new_filename = filename.rsplit('.', 1)[0] + '.mp4'
+                os.rename(filename, new_filename)
+                filename = new_filename
 
-        with open(audio_path, "rb") as audio:
-            bot.send_audio(
-                call.message.chat.id,
-                audio,
-                title="Converted Music",
-                performer="DownloadBot",
-                caption=CAPTION_TEXT,
-                reply_markup=kb
-            )
-
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-
-        try:
-            bot.answer_callback_query(call.id, "🎵 Music converted successfully")
-        except:
-            pass
+            send_video_with_music(chat_id, filename, platform, message_id)
 
     except Exception as e:
         try:
-            bot.send_message(call.message.chat.id, f"❌ Music conversion failed:\n{e}")
+            bot.send_message(chat_id, "❌ Error downloading media. Link might be private or invalid.")
+            if message_id:
+                bot.delete_message(chat_id, message_id)
         except:
             pass
 
-def run_bot1():
-    while True:
-        try:
-            bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            print("Bot1 restart:", e)
-            time.sleep(3)
-
-def run_bot2():
-    while True:
-        try:
-            bot2.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            print("Bot2 restart:", e)
-            time.sleep(3)
-
+# ================= RUN =================
 if __name__ == "__main__":
-    try:
-        tg_client.start()
-    except Exception as e:
-        print(f"Telegram client start error: ${e}")
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
 
-    t1 = threading.Thread(target=run_bot1, daemon=True)
-    t2 = threading.Thread(target=run_bot2, daemon=True)
+    print("🤖 Downloader Bot is running...")
+    
+    def run_bot1():
+        bot.infinity_polling(timeout=20, long_polling_timeout=20)
+        
+    def run_bot2():
+        bot2.infinity_polling(timeout=20, long_polling_timeout=20)
 
+    t1 = threading.Thread(target=run_bot1)
+    t2 = threading.Thread(target=run_bot2)
+    
     t1.start()
     t2.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
+    
+    t1.join()
+    t2.join()
