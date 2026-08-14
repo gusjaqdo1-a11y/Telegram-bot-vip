@@ -67,12 +67,20 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = "" 
 
-# ================= DATABASE FILES =================
-users_col = db["users"]
-withdraws_col = db["withdraws"]
-videos_col = db["videos"]
+# ================= MONGODB SETUP =================
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/") # Ku bedelo URL-kaaga MongoDB haddii aad server u isticmaaleyso
 
-# ================= JSON FUNCTIONS =================
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client["video_downloader_bot"]
+    users_col = db["users"]
+    withdraws_col = db["withdraws"]
+    videos_col = db["videos"]
+    print("✅ MongoDB Connected Successfully")
+except Exception as e:
+    print(f"❌ MongoDB Connection Error: {e}")
+    exit()
+
 # ================= MONGODB DATABASE FUNCTIONS =================
 
 # 1. USERS
@@ -86,10 +94,11 @@ def load_users():
     return users_dict
 
 def save_user(uid):
-    if uid in users:
-        data = users[uid].copy()
-        data["_id"] = str(uid)
-        users_col.update_one({"_id": str(uid)}, {"$set": data}, upsert=True)
+    uid_str = str(uid)
+    if uid_str in users:
+        data = users[uid_str].copy()
+        data.pop("_id", None) # Si looga hortago error ka yimaada update-ka _id
+        users_col.update_one({"_id": uid_str}, {"$set": data}, upsert=True)
 
 users = load_users()
 
@@ -136,7 +145,7 @@ videos_data = load_videos()
 
 def save_videos():
     data = videos_data.copy()
-    data["_id"] = "stats"
+    data.pop("_id", None)
     videos_col.update_one({"_id": "stats"}, {"$set": data}, upsert=True)
 
 # ================= HELPER FUNCTIONS =================
@@ -256,7 +265,7 @@ def start_handler(message):
                 except:
                     pass
 
-        save_users()
+        save_user(str(uid))
 
     check_membership(uid)
 
@@ -623,7 +632,7 @@ def withdraw_address_step(m):
             pass
         return
     users[uid]["temp_addr"] = text
-    save_users()
+    save_user(uid)
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 CANCEL")
     try:
@@ -679,7 +688,7 @@ def withdraw_amount_step(m):
     }
 
     withdraws.append(withdrawal)
-    save_users()
+    save_user(uid)
     save_withdraws()
 
     try:
@@ -719,7 +728,7 @@ def admin_callbacks(call):
             return
         w["status"] = "paid"
         users[w["user"]]["blocked"] -= w["blocked"]
-        save_users()
+        save_user(w["user"])
         save_withdraws()
         try:
             bot.answer_callback_query(call.id, "✅ Confirmed")
@@ -735,7 +744,7 @@ def admin_callbacks(call):
         w["status"] = "rejected"
         users[w["user"]]["balance"] += w["blocked"]
         users[w["user"]]["blocked"] -= w["blocked"]
-        save_users()
+        save_user(w["user"])
         save_withdraws()
         try:
             bot.answer_callback_query(call.id, "❌ Rejected")
@@ -747,7 +756,7 @@ def admin_callbacks(call):
         uid = data.split("_")[1]
         if uid in users:
             users[uid]["banned"] = True
-            save_users()
+            save_user(uid)
             try:
                 bot.answer_callback_query(call.id, "🚫 User banned")
                 bot.send_message(int(uid), "🚫 You have been banned by admin.")
@@ -765,7 +774,7 @@ def admin_callbacks(call):
         code = str(random.randint(1000, 9999))
         w["block_code"] = code
         users[uid]["blocked"] -= amt
-        save_users()
+        save_user(uid)
         save_withdraws()
         try:
             bot.answer_callback_query(call.id, "💰 Money Blocked")
@@ -800,7 +809,7 @@ def unblock_money_process(m):
     users[uid]["balance"] += amt
     w["status"] = "unblocked"
     w.pop("block_code", None)
-    save_users()
+    save_user(uid)
     save_withdraws()
 
     try:
@@ -830,7 +839,7 @@ def unban_user_process(m):
             pass
         return
     users[uid]["banned"] = False
-    save_users()
+    save_user(uid)
     try:
         bot.send_message(m.chat.id, f"✅ User {uid} unbanned")
         bot.send_message(int(uid), "✅ You have been unbanned by admin.")
@@ -914,7 +923,7 @@ def manual_ban_process(m):
             pass
         return
     users[uid]["banned"] = True
-    save_users()
+    save_user(uid)
     try:
         bot.send_message(m.chat.id, f"🚫 User {uid} banned")
         bot.send_message(int(uid), "🚫 You have been banned by admin.")
@@ -1259,8 +1268,8 @@ def import_users_process(m):
                 "verified": False,
                 "month": now_month()
             }
+            save_user(uid)
             added += 1
-    save_users()
     try:
         bot.send_message(m.chat.id, f"✅ Imported {added} users successfully.")
     except:
@@ -1304,7 +1313,7 @@ def save_custom_ref_code(m, username):
             pass
         return
     users[user_id]["ref"] = code
-    save_users()
+    save_user(user_id)
     try:
         bot.send_message(m.chat.id, f"✅ Referral code updated for @{username}")
     except:
@@ -1543,7 +1552,7 @@ def add_balance_process(m):
                 pass
             return
         users[uid]["balance"] += amt
-        save_users()
+        save_user(uid)
         try:
             bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
             bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f}")
@@ -1585,7 +1594,7 @@ def remove_balance_process(m):
                 pass
             return
         users[uid]["balance"] -= amt
-        save_users()
+        save_user(uid)
         try:
             bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
             bot.send_message(int(uid), f"💸 ${amt:.2f} removed from your balance")
@@ -1607,7 +1616,7 @@ def verify_code_check(m):
     data = verify_pending[uid]
     if m.text == data["code"]:
         users[str(uid)]["verified"] = True
-        save_users()
+        save_user(str(uid))
         link = data["link"]
         del verify_pending[uid]
         try:
