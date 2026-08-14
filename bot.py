@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 import os, json, random
 from datetime import datetime
 import yt_dlp
@@ -1608,12 +1608,11 @@ def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
 
-# ================= SEND VIDEO (OPTIMIZED & CHAT ACTION) =================
+# ================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
 def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     if not os.path.exists(file_path):
         return
 
-    # 🟢 SARE KU QOR "Sending a video..."
     try:
         bot.send_chat_action(chat_id, 'upload_video')
     except:
@@ -1643,12 +1642,10 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
         videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
     save_videos()
 
-    # 🚀 DHAKHSO U DIR MUUQAALKA
     try:
         with open(file_path, "rb") as video:
             bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
 
-        # Muuqaalka ka dib tirtir fariintii "Processing..."
         if message_id:
             try:
                 bot.delete_message(chat_id, message_id)
@@ -1657,12 +1654,47 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     except Exception as e:
         print(f"Error sending video: {e}")
 
-def send_photo_safe(chat_id, photo_path, caption):
+def send_photo_group_safe(chat_id, image_paths, message_id=None):
     try:
-        with open(photo_path, "rb") as photo:
-            bot.send_photo(chat_id, photo, caption=caption)
+        bot.send_chat_action(chat_id, 'upload_photo')
+    except:
+        pass
+
+    try:
+        media_group = []
+        opened_files = []
+        for i, path in enumerate(image_paths):
+            if os.path.exists(path):
+                f = open(path, "rb")
+                opened_files.append(f)
+                if i == 0:
+                    media_group.append(InputMediaPhoto(f, caption=CAPTION_TEXT))
+                else:
+                    media_group.append(InputMediaPhoto(f))
+
+        if media_group:
+            bot.send_media_group(chat_id, media_group)
+
+        for f in opened_files:
+            try:
+                f.close()
+            except:
+                pass
+
+        if message_id:
+            try:
+                bot.delete_message(chat_id, message_id)
+            except:
+                pass
+
+        for path in image_paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except:
+                pass
     except Exception as e:
-        print(f"Error sending photo: {e}")
+        print(f"Error sending photo group: {e}")
 
 # High-Speed Engine Downloader
 def ultra_fast_download(url, prefix, platform):
@@ -1698,13 +1730,12 @@ def download_media(chat_id, text, message_id=None):
                 pass
             return
 
-        # 🟢 ISLA MARKA DHAGAXA LA BILAABO SARE KU QOR "Sending a video..."
         try:
             bot.send_chat_action(chat_id, 'upload_video')
         except:
             pass
 
-        # 1. TIKTOK (HYPER FAST API)
+        # 1. TIKTOK
         if "tiktok.com" in url or "vt.tiktok.com" in url:
             try:
                 api = f"https://tikwm.com/api/?url={url}"
@@ -1712,21 +1743,15 @@ def download_media(chat_id, text, message_id=None):
                 if res.get("code") == 0:
                     data = res["data"]
                     if data.get("images"):
-                        if message_id:
-                            try:
-                                bot.delete_message(chat_id, message_id)
-                            except:
-                                pass
+                        downloaded_images = []
                         for i, img in enumerate(data["images"], start=1):
                             img_data = http_session.get(img, timeout=10).content
                             filename = f"tiktok_{unique_prefix}_{i}.jpg"
                             with open(filename, "wb") as f:
                                 f.write(img_data)
-                            send_photo_safe(chat_id, filename, f"📸 Photo {i}\n{CAPTION_TEXT}")
-                            try:
-                                os.remove(filename)
-                            except:
-                                pass
+                            downloaded_images.append(filename)
+                        
+                        send_photo_group_safe(chat_id, downloaded_images, message_id)
                         return
 
                     if data.get("play"):
@@ -1765,16 +1790,11 @@ def download_media(chat_id, text, message_id=None):
                     url = r.url
 
                 files = ultra_fast_download(url, unique_prefix, "pinterest")
-                if message_id:
-                    try:
-                        bot.delete_message(chat_id, message_id)
-                    except:
-                        pass
                 for f_path, ext in files:
                     if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                        send_photo_safe(chat_id, f_path, CAPTION_TEXT)
+                        send_photo_group_safe(chat_id, [f_path], message_id)
                     else:
-                        send_video_with_music(chat_id, f_path, "pinterest", None)
+                        send_video_with_music(chat_id, f_path, "pinterest", message_id)
                     try:
                         os.remove(f_path)
                     except:
@@ -1787,20 +1807,14 @@ def download_media(chat_id, text, message_id=None):
         if "instagram.com" in url:
             try:
                 files = ultra_fast_download(url, unique_prefix, "instagram")
-                if message_id:
-                    try:
-                        bot.delete_message(chat_id, message_id)
-                    except:
-                        pass
+                img_list = []
                 for f_path, ext in files:
                     if f_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-                        send_photo_safe(chat_id, f_path, CAPTION_TEXT)
+                        img_list.append(f_path)
                     else:
-                        send_video_with_music(chat_id, f_path, "instagram", None)
-                    try:
-                        os.remove(f_path)
-                    except:
-                        pass
+                        send_video_with_music(chat_id, f_path, "instagram", message_id)
+                if img_list:
+                    send_photo_group_safe(chat_id, img_list, message_id)
                 return
             except Exception as e:
                 print(f"Instagram error: {e}")
@@ -1896,12 +1910,19 @@ def convert_music(call):
     vid_id = call.data.split("_")[1]
     if vid_id not in video_files:
         try:
-            bot.answer_callback_query(call.id, "File expired")
+            bot.answer_callback_query(call.id, "File expired or not found!", show_alert=True)
         except:
             pass
         return
 
     file_path = video_files[vid_id]
+    if not os.path.exists(file_path):
+        try:
+            bot.answer_callback_query(call.id, "Original video file no longer exists!", show_alert=True)
+        except:
+            pass
+        return
+
     audio_path = file_path.rsplit(".", 1)[0] + ".mp3"
 
     try:
@@ -1937,11 +1958,9 @@ def convert_music(call):
 
         if os.path.exists(audio_path):
             os.remove(audio_path)
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
         try:
-            bot.answer_callback_query(call.id, "🎵 Music converted")
+            bot.answer_callback_query(call.id, "🎵 Music converted successfully")
         except:
             pass
 
