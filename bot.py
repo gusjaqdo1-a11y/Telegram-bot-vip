@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 import os, json, random
 from datetime import datetime
 import yt_dlp
@@ -225,7 +225,7 @@ def admin_menu():
     kb.add("CHANNEL POST", "📡 ADD CHANNEL")
     kb.add("🔒 LOCK BOT", "🔓 UNLOCK BOT")  
     kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
-    kb.add("📢 BROADCAST MEDIA")
+    kb.add("📢 BROADCAST MEDIA", "SEND PAY")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
     kb.add("🔙 BACK MAIN MENU")
@@ -1071,6 +1071,37 @@ def broadcast_media_process(m):
 
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
 
+# ================= SEND PAY (TELEGRAM STARS) =================
+@bot.message_handler(func=lambda m: m.text == "SEND PAY")
+def send_pay_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        msg = bot.send_message(m.chat.id, "Send photo and description/caption for the payment prompt (Telegram Stars):")
+        bot.register_next_step_handler(msg, send_pay_process)
+    except:
+        pass
+
+def send_pay_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    if not m.photo:
+        bot.send_message(m.chat.id, "❌ Please send a photo with caption.")
+        return
+
+    photo_id = m.photo[-1].file_id
+    caption = m.caption or "⭐ Support us using Telegram Stars!"
+
+    count = 0
+    for uid in users:
+        try:
+            bot.send_photo(int(uid), photo_id, caption=caption)
+            count += 1
+        except:
+            continue
+
+    bot.send_message(m.chat.id, f"✅ Payment message sent to {count} users.")
+
 @bot.message_handler(func=lambda m: m.text == "📌 POST CHANNEL")
 def post_channel_start(m):
     global CHANNEL_WINDOW_OPEN
@@ -1619,7 +1650,6 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
         pass
 
     vid_id = str(uuid.uuid4())[:8]
-    # Copy file to permanent local storage for reliable audio conversion later
     perm_file_path = f"saved_{vid_id}.mp4"
     shutil.copy(file_path, perm_file_path)
     video_files[vid_id] = perm_file_path
@@ -1666,7 +1696,7 @@ def send_photo_group_safe(chat_id, image_paths, message_id=None):
     try:
         if message_id:
             try:
-                bot.edit_message_text("Sending a photo", chat_id, message_id)
+                bot.delete_message(chat_id, message_id)
             except:
                 pass
 
@@ -1687,12 +1717,6 @@ def send_photo_group_safe(chat_id, image_paths, message_id=None):
         for f in opened_files:
             try:
                 f.close()
-            except:
-                pass
-
-        if message_id:
-            try:
-                bot.delete_message(chat_id, message_id)
             except:
                 pass
 
@@ -1734,15 +1758,12 @@ def download_media(chat_id, text, message_id=None):
         url = extract_url(text)
         if not url:
             try:
+                if message_id:
+                    bot.delete_message(chat_id, message_id)
                 bot.send_message(chat_id, "❌ Invalid link")
             except:
                 pass
             return
-
-        try:
-            bot.send_chat_action(chat_id, 'upload_video')
-        except:
-            pass
 
         # 1. TIKTOK
         if "tiktok.com" in url or "vt.tiktok.com" in url:
