@@ -175,6 +175,7 @@ def admin_menu():
     kb.add("CHANNEL POST", "📡 ADD CHANNEL")
     kb.add("🔒 LOCK BOT", "🔓 UNLOCK BOT")  
     kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
+    kb.add("📢 BROADCAST MEDIA")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
     kb.add("🔙 BACK MAIN MENU")
@@ -1025,6 +1026,41 @@ def broadcast_send(m):
         bot.send_message(m.chat.id, f"✅ Broadcast sent to {count} users")
     except:
         pass
+
+# ================= BROADCAST MEDIA =================
+@bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
+def broadcast_media_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    msg = bot.send_message(m.chat.id, "Send the Video or Photo with caption (or without):")
+    bot.register_next_step_handler(msg, broadcast_media_process)
+
+def broadcast_media_process(m):
+    if not is_admin(m.from_user.id):
+        return
+
+    # Hubi inuu yahay video ama photo
+    if not (m.video or m.photo):
+        bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
+        return
+
+    count = 0
+    # Waxaan u isticmaalaynaa file_id si uu u noqdo mid degdeg ah
+    file_id = m.video.file_id if m.video else m.photo[-1].file_id
+    caption = m.caption or ""
+
+    for uid in users:
+        try:
+            if m.video:
+                bot.send_video(int(uid), file_id, caption=caption)
+            else:
+                bot.send_photo(int(uid), file_id, caption=caption)
+            count += 1
+        except:
+            continue
+
+    bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
+
 
 @bot.message_handler(func=lambda m: m.text == "📌 POST CHANNEL")
 def post_channel_start(m):
