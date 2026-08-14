@@ -1,7 +1,7 @@
-Import telebot
+import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 import os, json, random
 from datetime import datetime
 import yt_dlp
