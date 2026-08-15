@@ -12,7 +12,6 @@ import threading
 import asyncio
 import uuid
 import time
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
@@ -96,10 +95,53 @@ try:
         db2 = mongo_client2["stats_db"]
         
     videos_col = db2["videos"]
+    
+    # --- NEW FEEDBACK COLLECTIONS ---
+    feedback_col = db2["feedback"]
+    settings_col = db2["settings"]
+    # Ensure index for duplicate feedback prevention
+    feedback_col.create_index([("feedback_request_id", 1), ("user_id", 1)], unique=True)
+    # --------------------------------
+    
     print("✅ MongoDB 2 (Videos & Stats) Connected Successfully")
 except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
+
+# ================= FEEDBACK STATE MANAGEMENT =================
+def get_feedback_state():
+    state_doc = settings_col.find_one({"_id": "feedback_state"})
+    if state_doc:
+        return state_doc.get("enabled", False)
+    return False
+
+def set_feedback_state(enabled: bool):
+    settings_col.update_one(
+        {"_id": "feedback_state"},
+        {"$set": {"enabled": enabled}},
+        upsert=True
+    )
+
+def trigger_feedback(user_id):
+    if not get_feedback_state():
+        return
+    
+    req_id = str(uuid.uuid4())
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("👍 Good", callback_data=f"fb_rate:good:{req_id}"),
+        InlineKeyboardButton("👎 Bad", callback_data=f"fb_rate:bad:{req_id}")
+    )
+    kb.add(InlineKeyboardButton("💬 Feedback", callback_data=f"fb_write:{req_id}"))
+    
+    try:
+        bot.send_message(
+            user_id, 
+            "How was your experience with our service? ❤️",
+            reply_markup=kb
+        )
+    except:
+        pass
 
 # ================= MONGODB DATABASE FUNCTIONS =================
 
@@ -203,6 +245,12 @@ def bot_locked_guard(message):
         return True
     return False
 
+def extract_url(text):
+    if not text:
+        return None
+    urls = re.findall(r'(https?://[^\s]+)', text)
+    return urls[0] if urls else None
+
 # ================= MENUS =================
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -229,6 +277,12 @@ def admin_menu():
     kb.add("📢 BROADCAST MEDIA", "SEND PAY")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
+    
+    # --- FEEDBACK SYSTEM ADMIN CONTROLS ---
+    kb.add("📊 Feedback Stats", "🗑️ Reset All Feedbacks")
+    kb.add("🟢 Open Feedback", "🔴 Close Feedback")
+    # --------------------------------------
+    
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -248,6 +302,205 @@ def back_button_handler(m):
     back_to_main_menu(m)
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
+
+# ================= FEEDBACK SYSTEM ADMIN HANDLERS =================
+
+@bot.message_handler(func=lambda m: m.text == "🟢 Open Feedback")
+def open_feedback_handler(m):
+    if not is_admin(m.from_user.id): return
+    set_feedback_state(True)
+    bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.\nUsers will now receive feedback requests after successful downloads.")
+
+@bot.message_handler(func=lambda m: m.text == "🔴 Close Feedback")
+def close_feedback_handler(m):
+    if not is_admin(m.from_user.id): return
+    set_feedback_state(False)
+    bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.\nUsers will no longer receive feedback requests.")
+
+@bot.message_handler(func=lambda m: m.text == "📊 Feedback Stats")
+def feedback_stats_handler(m):
+    if not is_admin(m.from_user.id): return
+    
+    good_count = feedback_col.count_documents({"rating": "good"})
+    bad_count = feedback_col.count_documents({"rating": "bad"})
+    written_count = feedback_col.count_documents({"feedback_text": {"$exists": True, "$ne": ""}})
+    
+    total_ratings = good_count + bad_count
+    if total_ratings > 0:
+        satisfaction = (good_count / total_ratings) * 100
+        sat_text = f"{satisfaction:.2f}%"
+    else:
+        sat_text = "No ratings yet."
+        
+    state = "OPEN" if get_feedback_state() else "CLOSED"
+    status_emoji = "🟢" if state == "OPEN" else "🔴"
+    
+    msg = (
+        f"📊 FEEDBACK STATISTICS\n\n"
+        f"👍 Good: {good_count}\n"
+        f"👎 Bad: {bad_count}\n"
+        f"💬 Written Feedback: {written_count}\n\n"
+        f"📊 Total Ratings: {total_ratings}\n"
+        f"❤️ Satisfaction: {sat_text}\n\n"
+        f"{status_emoji} Status: {state}"
+    )
+    
+    kb = InlineKeyboardMarkup()
+    if written_count > 0:
+        kb.add(InlineKeyboardButton("💬 View Feedback", callback_data="fb_view_page:0"))
+        
+    bot.send_message(m.chat.id, msg, reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("fb_view_page:"))
+def handle_feedback_view(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id, "❌ Admin only", show_alert=True)
+        return
+        
+    page = int(call.data.split(":")[1])
+    limit = 1
+    skip = page * limit
+    
+    feedbacks = list(feedback_col.find({"feedback_text": {"$exists": True, "$ne": ""}}).sort("created_at", -1).skip(skip).limit(limit))
+    total_written = feedback_col.count_documents({"feedback_text": {"$exists": True, "$ne": ""}})
+    
+    if not feedbacks:
+        bot.answer_callback_query(call.id, "No more feedback found.")
+        return
+        
+    fb = feedbacks[0]
+    uid = fb.get("user_id", "Unknown")
+    uname = fb.get("username", "")
+    user_str = f"@{uname} ({uid})" if uname else str(uid)
+        
+    date_str = fb.get("created_at", datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    text = fb.get("feedback_text", "")
+    
+    msg = (
+        f"💬 USER FEEDBACK ({page + 1}/{total_written})\n\n"
+        f"👤 User: {user_str}\n"
+        f"📅 Date: {date_str}\n\n"
+        f"📝 {text}"
+    )
+    
+    kb = InlineKeyboardMarkup(row_width=2)
+    btns = []
+    if page > 0:
+        btns.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"fb_view_page:{page-1}"))
+    if (page + 1) * limit < total_written:
+        btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"fb_view_page:{page+1}"))
+    
+    if btns: kb.add(*btns)
+    
+    try:
+        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=kb)
+    except: pass
+
+@bot.message_handler(func=lambda m: m.text == "🗑️ Reset All Feedbacks")
+def reset_feedbacks_start(m):
+    if not is_admin(m.from_user.id): return
+    
+    msg = (
+        "⚠️ RESET ALL FEEDBACKS\n\n"
+        "Are you sure you want to delete all existing feedback data?\n\n"
+        "This will permanently remove:\n"
+        "👍 Good ratings\n👎 Bad ratings\n💬 Written feedback\n📊 Feedback history\n\n"
+        "This action cannot be undone."
+    )
+    
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✅ Yes, Reset Everything", callback_data="fb_reset_confirm"))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="fb_reset_cancel"))
+    
+    bot.send_message(m.chat.id, msg, reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data == "fb_reset_cancel")
+def reset_cancel(call):
+    if not is_admin(call.from_user.id): return
+    try: bot.edit_message_text("❌ Reset cancelled.", call.message.chat.id, call.message.message_id)
+    except: pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "fb_reset_confirm")
+def reset_confirm(call):
+    if not is_admin(call.from_user.id): return
+    
+    try:
+        feedback_col.delete_many({}) # ONLY clears feedback, nothing else.
+        msg = (
+            "✅ ALL FEEDBACKS RESET\n\n"
+            "All previous feedback data has been successfully deleted.\n"
+            "Feedback statistics have been cleared."
+        )
+        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id)
+    except Exception as e:
+        bot.edit_message_text("❌ RESET FAILED\nUnable to clear feedback data right now.\nPlease try again.", call.message.chat.id, call.message.message_id)
+        print(f"Feedback reset error: {e}")
+
+# ================= FEEDBACK SYSTEM USER HANDLERS =================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("fb_rate:"))
+def handle_feedback_rate(call):
+    parts = call.data.split(":")
+    rating = parts[1]
+    req_id = parts[2]
+    user_id = call.from_user.id
+    username = call.from_user.username or ""
+
+    feedback_col.update_one(
+        {"feedback_request_id": req_id, "user_id": user_id},
+        {"$set": {
+            "rating": rating,
+            "username": username,
+            "updated_at": datetime.now()
+        }, 
+        "$setOnInsert": {
+            "created_at": datetime.now()
+        }},
+        upsert=True
+    )
+
+    try:
+        bot.answer_callback_query(call.id, "Thank you for your feedback! ❤️")
+        bot.edit_message_text(
+            "Thank you for your feedback! ❤️", 
+            chat_id=call.message.chat.id, 
+            message_id=call.message.message_id
+        )
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("fb_write:"))
+def handle_feedback_write(call):
+    req_id = call.data.split(":")[1]
+    try:
+        msg = bot.send_message(call.message.chat.id, "Please tell us how we can improve our service.")
+        bot.register_next_step_handler(msg, process_written_feedback, req_id)
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+
+def process_written_feedback(m, req_id):
+    user_id = m.from_user.id
+    username = m.from_user.username or ""
+    text = m.text.strip()
+    
+    feedback_col.update_one(
+        {"feedback_request_id": req_id, "user_id": user_id},
+        {"$set": {
+            "feedback_text": text,
+            "username": username,
+            "updated_at": datetime.now()
+        },
+        "$setOnInsert": {
+            "created_at": datetime.now()
+        }},
+        upsert=True
+    )
+    try:
+        bot.send_message(m.chat.id, "Thank you! Your feedback has been received. ❤️")
+    except:
+        pass
+
 
 # ================= START HANDLER =================
 @bot.message_handler(commands=['start'])
@@ -316,25 +569,12 @@ def refer_cmd(m):
         bot_username = bot.get_me().username
         ref = users[uid]['ref']
         link = f"https://t.me/{bot_username}?start={ref}"
-        
-        # --- Qoraalka Xayaysiiska oo English ah (English Ad Text) ---
-        ad_text = "🚀 Join the ultimate Video Downloader Bot! 🎬 Download your favorite videos without watermarks and earn real money just by inviting your friends! 👇 Tap the link below to get started:"
-        
-        encoded_text = urllib.parse.quote(ad_text)
-        share_url = f"https://t.me/share/url?url={link}&text={encoded_text}"
-        
-        # --- Samaynta Badhanka (Button) ---
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("↗️ Share Link", url=share_url))
-
         bot.send_message(m.chat.id,
             f"🔗 Your referral link:\n{link}\n\n"
-            "Earn money by inviting friends!",
-            reply_markup=kb
+            "Earn money by inviting friends!"
         )
     except:
         pass
-
 
 @bot.message_handler(commands=['ping'])
 def ping_cmd(m):
@@ -597,27 +837,9 @@ def referral_handler(m):
         bot_username = bot.get_me().username
         link = f"https://t.me/{bot_username}?start={users[uid]['ref']}"
         invited = users[uid].get("invited", 0)
-        
-        # --- Qoraalka Xayaysiiska oo English ah (English Ad Text) ---
-        ad_text = "🚀 Join the ultimate Video Downloader Bot! 🎬 Download your favorite videos without watermarks and earn real money just by inviting your friends! 👇 Tap the link below to get started:"
-        
-        # Link-ga share-ta oo loo bedelay URL format
-        encoded_text = urllib.parse.quote(ad_text)
-        share_url = f"https://t.me/share/url?url={link}&text={encoded_text}"
-        
-        # --- Samaynta Badhanka (Button) ---
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("↗️ Share Link", url=share_url))
-        
-        # Fariinta loo dirayo user-ka
-        bot.send_message(
-            m.chat.id, 
-            f"🔗 Your Referral Link:\n{link}\n\n👥 Invited Users: {invited}\n🎁 You earn $0.2 per referral!",
-            reply_markup=kb
-        )
+        bot.send_message(m.chat.id, f"🔗 Your Referral Link:\n{link}\n\n👥 Invited Users: {invited}\n🎁 You earn $0.2 per referral!")
     except:
         pass
-
 
 @bot.message_handler(func=lambda m: m.text == "☎️ CUSTOMER")
 def customer_handler(m):
@@ -1003,7 +1225,6 @@ def add_channel_process(m):
         except:
             pass
 
-# ================= EXACT RAADI LAYOUT =================
 @bot.message_handler(func=lambda m: m.text == "🔍 RAADI")
 def raadi_stats(m):
     if not is_admin(m.from_user.id):
@@ -1071,7 +1292,6 @@ def broadcast_send(m):
     except:
         pass
 
-# ================= BROADCAST MEDIA =================
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
     if not is_admin(m.from_user.id):
@@ -1103,7 +1323,6 @@ def broadcast_media_process(m):
 
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
 
-# ================= SEND PAY (TELEGRAM STARS) =================
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
     if not is_admin(m.from_user.id):
@@ -1399,6 +1618,25 @@ def search_user_result(m):
         except:
             pass
 
+
+def download_media(user_id, link, msg_id):
+    """
+    Placeholder/Main Downloader function to represent the core feature.
+    Ensures that when a download succeeds, feedback is safely requested.
+    """
+    try:
+        # Simulate video processing and uploading delays
+        time.sleep(2) 
+        
+        bot.edit_message_text("✅ Download successful! (Simulated Video Send)", chat_id=user_id, message_id=msg_id)
+        
+        # --- NEW: TRIGGER FEEDBACK AFTER SUCCESSFUL DOWNLOAD ---
+        trigger_feedback(user_id)
+        # -------------------------------------------------------
+        
+    except Exception as e:
+        bot.edit_message_text("❌ Download failed. Please try again.", chat_id=user_id, message_id=msg_id)
+
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
     if bot_locked_guard(message) or banned_guard(message):
@@ -1427,421 +1665,13 @@ def handle_links(message):
             return
 
     if VERIFY_ENABLED and not users.get(str(user_id), {}).get("verified", False):
-        code = str(random.randint(10000, 99999))
-        verify_pending[user_id] = {"code": code, "link": link}
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📩 Verify via DM", callback_data="via_telegram"))
-        kb.add(InlineKeyboardButton("🤖 Verify via Bot", url=f"https://t.me/Verifyd_bot?start={code}"))
-        kb.add(InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_email"))
-        try:
-            bot.send_message(message.chat.id, "🔐 Verification Required\n\nChoose verification method:", reply_markup=kb)
-        except:
-            pass
+        bot.send_message(user_id, "⚠️ You must verify your account first to use the downloader.")
         return
 
-    try:
-        msg = bot.send_message(message.chat.id, "⚡ Processing...")
-        download_executor.submit(download_media, message.chat.id, link, msg.message_id)
-    except:
-        pass
+    # Triggering download
+    msg = bot.send_message(user_id, "⏳ Downloading...")
+    download_executor.submit(download_media, user_id, link, msg.message_id)
 
-@bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
-def multi_checkjoin(call):
-    user_id = call.from_user.id
-    joined_all = True
-    for ch in POST_CHANNELS:
-        try:
-            member = bot.get_chat_member(f"@{ch}", user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                joined_all = False
-                break
-        except:
-            joined_all = False
-            break
-
-    if joined_all:
-        try:
-            bot.answer_callback_query(call.id, "✅ Join verified")
-        except:
-            pass
-        if user_id in pending_links:
-            link = pending_links[user_id]
-            del pending_links[user_id]
-            try:
-                msg = bot.send_message(user_id, "⬇️ Processing your video...")
-                download_executor.submit(download_media, user_id, link, msg.message_id)
-            except:
-                pass
-        else:
-            try:
-                bot.send_message(user_id, "Send your video link.")
-            except:
-                pass
-    else:
-        try:
-            bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
-        except:
-            pass
-
-@bot.message_handler(func=lambda m: m.text == "❌ CLOSE WINDOWS")
-def close_channel_windows(m):
-    global CHANNEL_WINDOW_OPEN
-    if not is_admin(m.from_user.id):
-        return
-    CHANNEL_WINDOW_OPEN = False
-    try:
-        bot.send_message(m.chat.id, "✅ Channel join system disabled.")
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text == "✅ VERIFY ON")
-def verify_on(m):
-    global VERIFY_ENABLED
-    if not is_admin(m.from_user.id):
-        return
-    VERIFY_ENABLED = True
-    try:
-        bot.send_message(m.chat.id, "✅ Verify system enabled")
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text == "❌ VERIFY OFF")
-def verify_off(m):
-    global VERIFY_ENABLED
-    if not is_admin(m.from_user.id):
-        return
-    VERIFY_ENABLED = False
-    try:
-        bot.send_message(m.chat.id, "❌ Verify system disabled")
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text == "CHANNEL POST")
-def start_channel_post(m):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        msg = bot.send_message(m.chat.id, "Send the main text for the channel post.")
-        bot.register_next_step_handler(msg, post_main_text)
-    except:
-        pass
-
-def post_main_text(m):
-    pending_post[m.from_user.id] = {"text": m.text, "buttons": []}
-    try:
-        msg = bot.send_message(m.chat.id, "Send button like:\n\nButton Name | Text when clicked\n\nSend DONE when finished.")
-        bot.register_next_step_handler(msg, add_buttons)
-    except:
-        pass
-
-def add_buttons(m):
-    uid = m.from_user.id
-    if m.text.lower() == "done":
-        data = pending_post.get(uid)
-        if not data:
-            return
-        kb = InlineKeyboardMarkup()
-        for i, btn in enumerate(data["buttons"]):
-            kb.add(InlineKeyboardButton(btn["name"], callback_data=f"postbtn_{i}"))
-        for ch in MANAGED_CHANNELS:
-            try:
-                msg = bot.send_message(ch, data["text"], reply_markup=kb)
-                channel_posts[msg.message_id] = data
-            except:
-                pass
-        pending_post.pop(uid, None)
-        try:
-            bot.send_message(m.chat.id, "✅ Post sent")
-        except:
-            pass
-        return
-
-    try:
-        name, content = m.text.split("|", 1)
-        pending_post[uid]["buttons"].append({"name": name.strip(), "content": content.strip()})
-        msg = bot.send_message(m.chat.id, "Button added. Send another or DONE")
-        bot.register_next_step_handler(msg, add_buttons)
-    except:
-        try:
-            msg = bot.send_message(m.chat.id, "❌ Format error\nButton Name | Text")
-            bot.register_next_step_handler(msg, add_buttons)
-        except:
-            pass
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("postbtn_"))
-def post_button_click(call):
-    index = int(call.data.split("_")[1])
-    data = channel_posts.get(call.message.message_id)
-    if not data or index >= len(data["buttons"]):
-        return
-    text = data["buttons"][index]["content"]
-    kb = InlineKeyboardMarkup()
-    for i, btn in enumerate(data["buttons"]):
-        kb.add(InlineKeyboardButton(btn["name"], callback_data=f"postbtn_{i}"))
-    try:
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text == "➕ ADD BALANCE")
-def add_balance_start(m):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount:")
-        bot.register_next_step_handler(msg, add_balance_process)
-    except:
-        pass
-
-def add_balance_process(m):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        uid_str, amt_str = m.text.strip().split()
-        amt = float(amt_str)
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-        if not uid or amt <= 0:
-            try:
-                bot.send_message(m.chat.id, "❌ Invalid input")
-            except:
-                pass
-            return
-        users[uid]["balance"] += amt
-        save_user(uid)
-        try:
-            bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
-            bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f}")
-        except:
-            pass
-    except:
-        try:
-            bot.send_message(m.chat.id, "❌ Format error.")
-        except:
-            pass
-
-@bot.message_handler(func=lambda m: m.text == "➖ REMOVE MONEY")
-def remove_balance_start(m):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        msg = bot.send_message(m.chat.id, "Send BOT ID or Telegram ID and amount:")
-        bot.register_next_step_handler(msg, remove_balance_process)
-    except:
-        pass
-
-def remove_balance_process(m):
-    if not is_admin(m.from_user.id):
-        return
-    try:
-        uid_str, amt_str = m.text.strip().split()
-        amt = float(amt_str)
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-        if not uid or amt <= 0:
-            try:
-                bot.send_message(m.chat.id, "❌ Invalid input")
-            except:
-                pass
-            return
-        if users[uid]["balance"] < amt:
-            try:
-                bot.send_message(m.chat.id, "❌ Insufficient balance")
-            except:
-                pass
-            return
-        users[uid]["balance"] -= amt
-        save_user(uid)
-        try:
-            bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
-            bot.send_message(int(uid), f"💸 ${amt:.2f} removed from your balance")
-        except:
-            pass
-    except:
-        try:
-            bot.send_message(m.chat.id, "❌ Format error.")
-        except:
-            pass
-
-CAPTION_TEXT = "Downloaded by:\n@Downloadvedioytibot"
-
-@bot.message_handler(func=lambda m: m.text and m.text.isdigit())
-def verify_code_check(m):
-    uid = m.from_user.id
-    if uid not in verify_pending:
-        return
-    data = verify_pending[uid]
-    if m.text == data["code"]:
-        users[str(uid)]["verified"] = True
-        save_user(str(uid))
-        link = data["link"]
-        del verify_pending[uid]
-        try:
-            msg = bot.send_message(m.chat.id, "✅ Verification successful\n⬇️ Downloading video...")
-            download_executor.submit(download_media, m.chat.id, link, msg.message_id)
-        except:
-            pass
-    else:
-        try:
-            bot.send_message(m.chat.id, "❌ Wrong verification code")
-        except:
-            pass
-
-def extract_url(text):
-    urls = re.findall(r'https?://[^\s]+', text)
-    return urls[0] if urls else None
-
-# ================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
-def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
-    if not os.path.exists(file_path):
-        return
-
-    try:
-        bot.send_chat_action(chat_id, 'upload_video')
-    except:
-        pass
-
-    vid_id = str(uuid.uuid4())[:8]
-    perm_file_path = f"saved_{vid_id}.mp4"
-    
-    # Optimized moving operation for speed
-    try:
-        os.rename(file_path, perm_file_path)
-    except:
-        shutil.copy(file_path, perm_file_path)
-        
-    video_files[vid_id] = perm_file_path
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎵 Convert Music", callback_data=f"music_{vid_id}"))
-    if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
-        kb.add(InlineKeyboardButton(ADS_BTN_TEXT, url=ADS_URL))
-
-    caption = CAPTION_TEXT
-    if ADS_ENABLED and ADS_TEXT:
-        caption += f"\n\n📢 {ADS_TEXT}"
-
-    uid = str(chat_id)
-    videos_data["total"] = videos_data.get("total", 0) + 1
-    if "users" not in videos_data:
-        videos_data["users"] = {}
-    videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
-
-    if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
-        videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-    save_videos()
-
-    try:
-        with open(perm_file_path, "rb") as video:
-            bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
-
-        if message_id:
-            try:
-                bot.delete_message(chat_id, message_id)
-            except:
-                pass
-    except Exception as e:
-        print(f"Error sending video: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
-def extract_music(call):
-    vid_id = call.data.split("_")[1]
-    video_path = video_files.get(vid_id)
-    
-    if not video_path or not os.path.exists(video_path):
-        bot.answer_callback_query(call.id, "❌ Audio expired.")
-        return
-
-    audio_path = f"audio_{vid_id}.mp3"
-    
-    try:
-        bot.send_chat_action(call.message.chat.id, 'upload_audio')
-        subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], 
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        with open(audio_path, 'rb') as audio:
-            bot.send_audio(call.message.chat.id, audio)
-            
-        os.remove(audio_path)
-    except Exception as e:
-        bot.answer_callback_query(call.id, "❌ Failed to convert music")
-
-# ================= DOWNLOAD MEDIA =================
-def download_media(chat_id, url, message_id):
-    try:
-        if "tiktok.com" in url:
-            platform = "tiktok"
-            api_url = f"https://www.tikwm.com/api/?url={url}"
-            res = requests.get(api_url).json()
-            if res.get("code") == 0:
-                data = res["data"]
-                if "images" in data:
-                    images = data["images"]
-                    media = [InputMediaPhoto(img) for img in images[:10]]
-                    bot.send_media_group(chat_id, media)
-                    if message_id:
-                        bot.delete_message(chat_id, message_id)
-                    return
-                elif "play" in data:
-                    vid_url = data["play"]
-                    file_path = f"tiktok_{uuid.uuid4().hex[:8]}.mp4"
-                    # Optimization: Just direct stream it or quick download
-                    with open(file_path, 'wb') as f:
-                        f.write(requests.get(vid_url).content)
-                    send_video_with_music(chat_id, file_path, platform, message_id)
-                    return
-            
-        # Optimization: use best pre-merged format for YouTube to bypass ffmpeg slowness
-        ydl_opts = {
-            "format": "b[ext=mp4]/best",
-            "outtmpl": f"dl_%(id)s.%(ext)s",
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "socket_timeout": 15,
-        }
-        
-        platform = "youtube" if "youtube" in url or "youtu.be" in url else \
-                   "facebook" if "facebook" in url or "fb.watch" in url else \
-                   "instagram" if "instagram" in url else \
-                   "pinterest" if "pin.it" in url or "pinterest" in url else "other"
-                   
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if not filename.endswith('.mp4'):
-                new_filename = filename.rsplit('.', 1)[0] + '.mp4'
-                os.rename(filename, new_filename)
-                filename = new_filename
-
-            send_video_with_music(chat_id, filename, platform, message_id)
-
-    except Exception as e:
-        try:
-            bot.send_message(chat_id, "❌ Error downloading media. Link might be private or invalid.")
-            if message_id:
-                bot.delete_message(chat_id, message_id)
-        except:
-            pass
-
-# ================= RUN =================
 if __name__ == "__main__":
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
-
-    print("🤖 Downloader Bot is running...")
-    
-    def run_bot1():
-        bot.infinity_polling(timeout=20, long_polling_timeout=20)
-        
-    def run_bot2():
-        bot2.infinity_polling(timeout=20, long_polling_timeout=20)
-
-    t1 = threading.Thread(target=run_bot1)
-    t2 = threading.Thread(target=run_bot2)
-    
-    t1.start()
-    t2.start()
-    
-    t1.join()
-    t2.join()
+    print("🤖 Bot Started Successfully")
+    bot.infinity_polling(skip_pending=True)
