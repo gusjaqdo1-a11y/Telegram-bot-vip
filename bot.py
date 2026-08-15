@@ -315,12 +315,25 @@ def refer_cmd(m):
         bot_username = bot.get_me().username
         ref = users[uid]['ref']
         link = f"https://t.me/{bot_username}?start={ref}"
+        
+        # --- Qoraalka Xayaysiiska oo English ah (English Ad Text) ---
+        ad_text = "🚀 Join the ultimate Video Downloader Bot! 🎬 Download your favorite videos without watermarks and earn real money just by inviting your friends! 👇 Tap the link below to get started:"
+        
+        encoded_text = urllib.parse.quote(ad_text)
+        share_url = f"https://t.me/share/url?url={link}&text={encoded_text}"
+        
+        # --- Samaynta Badhanka (Button) ---
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("↗️ Share Link", url=share_url))
+
         bot.send_message(m.chat.id,
             f"🔗 Your referral link:\n{link}\n\n"
-            "Earn money by inviting friends!"
+            "Earn money by inviting friends!",
+            reply_markup=kb
         )
     except:
         pass
+
 
 @bot.message_handler(commands=['ping'])
 def ping_cmd(m):
@@ -583,9 +596,27 @@ def referral_handler(m):
         bot_username = bot.get_me().username
         link = f"https://t.me/{bot_username}?start={users[uid]['ref']}"
         invited = users[uid].get("invited", 0)
-        bot.send_message(m.chat.id, f"🔗 Your Referral Link:\n{link}\n\n👥 Invited Users: {invited}\n🎁 You earn $0.2 per referral!")
+        
+        # --- Qoraalka Xayaysiiska oo English ah (English Ad Text) ---
+        ad_text = "🚀 Join the ultimate Video Downloader Bot! 🎬 Download your favorite videos without watermarks and earn real money just by inviting your friends! 👇 Tap the link below to get started:"
+        
+        # Link-ga share-ta oo loo bedelay URL format
+        encoded_text = urllib.parse.quote(ad_text)
+        share_url = f"https://t.me/share/url?url={link}&text={encoded_text}"
+        
+        # --- Samaynta Badhanka (Button) ---
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("↗️ Share Link", url=share_url))
+        
+        # Fariinta loo dirayo user-ka
+        bot.send_message(
+            m.chat.id, 
+            f"🔗 Your Referral Link:\n{link}\n\n👥 Invited Users: {invited}\n🎁 You earn $0.2 per referral!",
+            reply_markup=kb
+        )
     except:
         pass
+
 
 @bot.message_handler(func=lambda m: m.text == "☎️ CUSTOMER")
 def customer_handler(m):
