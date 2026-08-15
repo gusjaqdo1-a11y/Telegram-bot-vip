@@ -59,6 +59,7 @@ BOT_LOCKED = False
 LOCK_MESSAGE = "🔒 Bot is temporarily locked by admin."
 
 pending_post = {}
+channel_posts = {}
 
 VERIFY_ENABLED = False
 verify_pending = {}
@@ -95,7 +96,8 @@ try:
         db2 = mongo_client2["stats_db"]
         
     videos_col = db2["videos"]
-    print("✅ MongoDB 2 (Videos & Stats) Connected Successfully")
+    feedback_col = db2["feedback"] # Feedback System Collection
+    print("✅ MongoDB 2 (Videos, Stats & Feedback) Connected Successfully")
 except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
@@ -141,6 +143,7 @@ def load_videos():
         default_data = {
             "_id": "stats",
             "total": 0,
+            "feedback_enabled": False, # Feedback State
             "platforms": {
                 "tiktok": 0,
                 "youtube": 0,
@@ -228,6 +231,9 @@ def admin_menu():
     kb.add("📢 BROADCAST MEDIA", "SEND PAY")
     kb.add("📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE")
+    # Feedback Admin Buttons
+    kb.add("📊 Feedback Stats", "🟢 Open Feedback")
+    kb.add("🔴 Close Feedback", "🗑️ Reset All Feedbacks")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -245,6 +251,147 @@ def back_to_main_menu(m):
 @bot.message_handler(func=lambda m: m.text == "🔙 BACK MAIN MENU")
 def back_button_handler(m):
     back_to_main_menu(m)
+
+# ================= FEEDBACK LOGIC =================
+
+def send_feedback_request(chat_id, platform, download_id):
+    feedback_request_id = str(uuid.uuid4())
+    kb = InlineKeyboardMarkup()
+    kb.row(
+        InlineKeyboardButton("👍 Good", callback_data=f"rate_good_{feedback_request_id}_{platform}"),
+        InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{feedback_request_id}_{platform}")
+    )
+    kb.add(InlineKeyboardButton("💬 Feedback", callback_data=f"rate_text_{feedback_request_id}"))
+    
+    try:
+        bot.send_message(chat_id, "How was your experience with our service? ❤️", reply_markup=kb)
+    except Exception as e:
+        print(f"Feedback send error: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("rate_good_", "rate_bad_")))
+def handle_rating(call):
+    parts = call.data.split("_")
+    rating = parts[1] # good/bad
+    req_id = parts[2]
+    platform = parts[3]
+    user_id = call.from_user.id
+    
+    # Save/Update
+    feedback_col.update_one(
+        {"user_id": user_id, "feedback_request_id": req_id},
+        {"$set": {
+            "username": call.from_user.username or "N/A",
+            "rating": rating,
+            "platform": platform,
+            "updated_at": datetime.now()
+        }, "$setOnInsert": {"created_at": datetime.now()}},
+        upsert=True
+    )
+    
+    bot.answer_callback_query(call.id, "Thank you for your feedback! ❤️")
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.edit_message_text("Thank you for your feedback! ❤️", call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rate_text_"))
+def ask_written_feedback(call):
+    req_id = call.data.split("_")[2]
+    msg = bot.send_message(call.message.chat.id, "Please tell us how we can improve our service.")
+    bot.register_next_step_handler(msg, save_written_feedback, req_id)
+
+def save_written_feedback(m, req_id):
+    if not m.text:
+        bot.send_message(m.chat.id, "Please send text feedback.")
+        return
+        
+    feedback_col.update_one(
+        {"user_id": m.from_user.id, "feedback_request_id": req_id},
+        {"$set": {
+            "username": m.from_user.username or "N/A",
+            "feedback_text": m.text,
+            "updated_at": datetime.now()
+        }, "$setOnInsert": {"created_at": datetime.now()}},
+        upsert=True
+    )
+    bot.send_message(m.chat.id, "Thank you! Your feedback has been received. ❤️")
+
+# Admin Feedback Handlers
+@bot.message_handler(func=lambda m: m.text in ["📊 Feedback Stats", "🟢 Open Feedback", "🔴 Close Feedback", "🗑️ Reset All Feedbacks"])
+def feedback_admin_manager(m):
+    if not is_admin(m.from_user.id): return
+    
+    if m.text == "🟢 Open Feedback":
+        videos_data["feedback_enabled"] = True
+        save_videos()
+        bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.")
+        
+    elif m.text == "🔴 Close Feedback":
+        videos_data["feedback_enabled"] = False
+        save_videos()
+        bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.")
+        
+    elif m.text == "📊 Feedback Stats":
+        goods = feedback_col.count_documents({"rating": "good"})
+        bads = feedback_col.count_documents({"rating": "bad"})
+        written = feedback_col.count_documents({"feedback_text": {"$exists": True}})
+        total = goods + bads
+        
+        sat = "No ratings yet."
+        if total > 0:
+            pct = (goods / total) * 100
+            sat = f"{pct:.2f}%"
+            
+        status = "OPEN" if videos_data.get("feedback_enabled") else "CLOSED"
+        
+        text = f"📊 FEEDBACK STATISTICS\n\n👍 Good: {goods}\n👎 Bad: {bads}\n💬 Written Feedback: {written}\n📊 Total Ratings: {total}\n❤️ Satisfaction: {sat}\n\n🟢 Status: {status}"
+        
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("💬 View Feedback", callback_data="view_fb_0"))
+        bot.send_message(m.chat.id, text, reply_markup=kb)
+        
+    elif m.text == "🗑️ Reset All Feedbacks":
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("✅ Yes, Reset Everything", callback_data="reset_fb_confirm"))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="reset_fb_cancel"))
+        bot.send_message(m.chat.id, "⚠️ Are you sure you want to delete all existing feedback data? This action cannot be undone.", reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("view_fb_"))
+def view_feedback_pagination(call):
+    if not is_admin(call.from_user.id): return
+    page = int(call.data.split("_")[2])
+    all_fb = list(feedback_col.find({"feedback_text": {"$exists": True}}).sort("created_at", -1))
+    
+    if not all_fb:
+        bot.answer_callback_query(call.id, "No feedback yet.")
+        return
+        
+    item = all_fb[page]
+    text = f"💬 USER FEEDBACK\n\n👤 User: @{item.get('username', 'N/A')}\n📅 Date: {item.get('created_at').strftime('%Y-%m-%d')}\n\n📝 {item.get('feedback_text')}"
+    
+    kb = InlineKeyboardMarkup()
+    btns = []
+    if page > 0: btns.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"view_fb_{page-1}"))
+    if page < len(all_fb) - 1: btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"view_fb_{page+1}"))
+    kb.row(*btns)
+    kb.add(InlineKeyboardButton("🔙 Back", callback_data="close_fb"))
+    
+    try: bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
+    except: pass
+
+@bot.callback_query_handler(func=lambda call: call.data in ["reset_fb_confirm", "reset_fb_cancel", "close_fb"])
+def reset_callback_handler(call):
+    if not is_admin(call.from_user.id): return
+    if call.data == "reset_fb_confirm":
+        try:
+            feedback_col.delete_many({})
+            bot.edit_message_text("✅ ALL FEEDBACKS RESET. All previous feedback data has been successfully deleted.", call.message.chat.id, call.message.message_id)
+        except: bot.edit_message_text("❌ RESET FAILED", call.message.chat.id, call.message.message_id)
+    elif call.data == "reset_fb_cancel":
+        bot.edit_message_text("❌ Reset cancelled.", call.message.chat.id, call.message.message_id)
+    elif call.data == "close_fb":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
 
@@ -1708,6 +1855,11 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
+        
+        # Trigger Feedback Request
+        if videos_data.get("feedback_enabled"):
+            send_feedback_request(chat_id, platform or "other", vid_id)
+            
     except Exception as e:
         print(f"Error sending video: {e}")
 
