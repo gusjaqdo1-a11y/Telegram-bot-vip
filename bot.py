@@ -31,8 +31,12 @@ PHONE = os.getenv("PHONE")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 
+MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "600"))  # 10 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
-download_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
+
+# Dual executors for Priority (Quick Access) & Normal
+vip_executor = ThreadPoolExecutor(max_workers=5)
+normal_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
 
 http_session = requests.Session()
 
@@ -96,7 +100,7 @@ try:
         db2 = mongo_client2["stats_db"]
         
     videos_col = db2["videos"]
-    feedback_col = db2["feedback"] # Feedback System Collection
+    feedback_col = db2["feedback"]
     print("✅ MongoDB 2 (Videos, Stats & Feedback) Connected Successfully")
 except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
@@ -143,14 +147,15 @@ def load_videos():
         default_data = {
             "_id": "stats",
             "total": 0,
-            "feedback_enabled": False, # Feedback State
+            "feedback_enabled": False,
             "platforms": {
                 "tiktok": 0,
                 "youtube": 0,
                 "facebook": 0,
                 "pinterest": 0,
                 "instagram": 0,
-                "snapchat": 0
+                "snapchat": 0,
+                "twitter": 0
             },
             "users": {}
         }
@@ -178,6 +183,9 @@ def now_month():
 
 def is_admin(uid):
     return int(uid) in ADMIN_IDS
+
+def is_quick_access(uid):
+    return users.get(str(uid), {}).get("quick_access", False)
 
 def find_user_by_botid(bid):
     for u, data in users.items():
@@ -218,23 +226,21 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
     kb.add("💰 UNBLOCK MONEY", "🔍 RAADI")
     kb.add("🔥 UN BAN-USER", "📌 POST CHANNEL")
-    kb.add("👥 SEE LIST", "🔎 SEARCH USER")
-    kb.add("📢 ADD ADS", "🗑 DELETE ADS")
-    kb.add("✅ VERIFY ON", "❌ VERIFY OFF")
-    kb.add("CHANNEL POST", "📡 ADD CHANNEL")
-    kb.add("🔒 LOCK BOT", "🔓 UNLOCK BOT")  
-    kb.add("❌ CLOSE WINDOWS", "CLOSE CHANNEL POST")
-    kb.add("📢 BROADCAST MEDIA", "SEND PAY")
-    kb.add("📥 IMPORT USERS")
-    kb.add("🔗 GET REFERRAL CODE")
-    # Feedback Admin Buttons
-    kb.add("📊 Feedback Stats", "🟢 Open Feedback")
-    kb.add("🔴 Close Feedback", "🗑️ Reset All Feedbacks")
-    kb.add("🔙 BACK MAIN MENU")
+    kb.add("🔎 SEARCH USER", "📢 ADD ADS")
+    kb.add("🗑 DELETE ADS", "✅ VERIFY ON")
+    kb.add("❌ VERIFY OFF", "CHANNEL POST")
+    kb.add("📡 ADD CHANNEL", "🔒 LOCK BOT")
+    kb.add("🔓 UNLOCK BOT", "❌ CLOSE WINDOWS")
+    kb.add("CLOSE CHANNEL POST", "📢 BROADCAST MEDIA")
+    kb.add("SEND PAY", "📥 IMPORT USERS")
+    kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
+    kb.add("🟢 Open Feedback", "🔴 Close Feedback")
+    kb.add("🗑️ Reset All Feedbacks", "🔙 BACK MAIN MENU")
     return kb
 
 def back_to_main_menu(m):
@@ -251,6 +257,54 @@ def back_to_main_menu(m):
 @bot.message_handler(func=lambda m: m.text == "🔙 BACK MAIN MENU")
 def back_button_handler(m):
     back_to_main_menu(m)
+
+# ================= QUICK ACCESS ADMIN CONTROLS =================
+@bot.message_handler(func=lambda m: m.text == "⚡ QUICK ACCESS")
+def quick_access_admin(m):
+    if not is_admin(m.from_user.id):
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("➕ Add User Access", callback_data="qa_add"))
+    kb.add(InlineKeyboardButton("🔴 Remove User Access", callback_data="qa_remove"))
+    try:
+        bot.send_message(m.chat.id, "⚡ Quick Access Management", reply_markup=kb)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("qa_"))
+def handle_qa_callbacks(call):
+    if not is_admin(call.from_user.id):
+        return
+    if call.data == "qa_add":
+        try:
+            msg = bot.send_message(call.message.chat.id, "Send User ID or BOT ID to grant Quick Access:")
+            bot.register_next_step_handler(msg, lambda m: grant_qa(m, True))
+        except:
+            pass
+    elif call.data == "qa_remove":
+        try:
+            msg = bot.send_message(call.message.chat.id, "Send User ID or BOT ID to remove Quick Access:")
+            bot.register_next_step_handler(msg, lambda m: grant_qa(m, False))
+        except:
+            pass
+
+def grant_qa(m, status):
+    if not is_admin(m.from_user.id):
+        return
+    text_input = (m.text or "").strip()
+    uid = text_input if text_input in users else find_user_by_botid(text_input)
+    if uid and uid in users:
+        users[uid]["quick_access"] = status
+        save_user(uid)
+        try:
+            bot.send_message(m.chat.id, f"✅ Quick Access for user {uid} set to {status}")
+        except:
+            pass
+    else:
+        try:
+            bot.send_message(m.chat.id, "❌ User not found.")
+        except:
+            pass
 
 # ================= FEEDBACK LOGIC =================
 
@@ -271,12 +325,11 @@ def send_feedback_request(chat_id, platform, download_id):
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("rate_good_", "rate_bad_")))
 def handle_rating(call):
     parts = call.data.split("_")
-    rating = parts[1] # good/bad
+    rating = parts[1]
     req_id = parts[2]
     platform = parts[3]
     user_id = call.from_user.id
     
-    # Save/Update
     feedback_col.update_one(
         {"user_id": user_id, "feedback_request_id": req_id},
         {"$set": {
@@ -298,12 +351,18 @@ def handle_rating(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("rate_text_"))
 def ask_written_feedback(call):
     req_id = call.data.split("_")[2]
-    msg = bot.send_message(call.message.chat.id, "Please tell us how we can improve our service.")
-    bot.register_next_step_handler(msg, save_written_feedback, req_id)
+    try:
+        msg = bot.send_message(call.message.chat.id, "Please tell us how we can improve our service.")
+        bot.register_next_step_handler(msg, save_written_feedback, req_id)
+    except:
+        pass
 
 def save_written_feedback(m, req_id):
     if not m.text:
-        bot.send_message(m.chat.id, "Please send text feedback.")
+        try:
+            bot.send_message(m.chat.id, "Please send text feedback.")
+        except:
+            pass
         return
         
     feedback_col.update_one(
@@ -315,9 +374,11 @@ def save_written_feedback(m, req_id):
         }, "$setOnInsert": {"created_at": datetime.now()}},
         upsert=True
     )
-    bot.send_message(m.chat.id, "Thank you! Your feedback has been received. ❤️")
+    try:
+        bot.send_message(m.chat.id, "Thank you! Your feedback has been received. ❤️")
+    except:
+        pass
 
-# Admin Feedback Handlers
 @bot.message_handler(func=lambda m: m.text in ["📊 Feedback Stats", "🟢 Open Feedback", "🔴 Close Feedback", "🗑️ Reset All Feedbacks"])
 def feedback_admin_manager(m):
     if not is_admin(m.from_user.id): return
@@ -325,12 +386,18 @@ def feedback_admin_manager(m):
     if m.text == "🟢 Open Feedback":
         videos_data["feedback_enabled"] = True
         save_videos()
-        bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.")
+        try:
+            bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.")
+        except:
+            pass
         
     elif m.text == "🔴 Close Feedback":
         videos_data["feedback_enabled"] = False
         save_videos()
-        bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.")
+        try:
+            bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.")
+        except:
+            pass
         
     elif m.text == "📊 Feedback Stats":
         goods = feedback_col.count_documents({"rating": "good"})
@@ -349,13 +416,19 @@ def feedback_admin_manager(m):
         
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💬 View Feedback", callback_data="view_fb_0"))
-        bot.send_message(m.chat.id, text, reply_markup=kb)
+        try:
+            bot.send_message(m.chat.id, text, reply_markup=kb)
+        except:
+            pass
         
     elif m.text == "🗑️ Reset All Feedbacks":
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("✅ Yes, Reset Everything", callback_data="reset_fb_confirm"))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data="reset_fb_cancel"))
-        bot.send_message(m.chat.id, "⚠️ Are you sure you want to delete all existing feedback data? This action cannot be undone.", reply_markup=kb)
+        try:
+            bot.send_message(m.chat.id, "⚠️ Are you sure you want to delete all existing feedback data? This action cannot be undone.", reply_markup=kb)
+        except:
+            pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("view_fb_"))
 def view_feedback_pagination(call):
@@ -415,6 +488,7 @@ def start_handler(message):
             "invited": 0,
             "banned": False,
             "verified": False,
+            "quick_access": False,
             "month": now_month()
         }
         if ref:
@@ -439,7 +513,7 @@ def view_cmd(message):
             "🤖 BOT INFO\n\n"
             "📌 Name: Video Downloader Bot\n"
             "⚡ Features:\n"
-            "• TikTok, Instagram, Facebook, Pinterest, YouTube, Snapchat support\n"
+            "• TikTok, Instagram, Facebook, Pinterest, YouTube, Snapchat, X/Twitter support\n"
             "• Referral system\n"
             "• Withdrawal system"
         )
@@ -456,15 +530,37 @@ def balance_cmd(m):
         pass
 
 @bot.message_handler(commands=['refer'])
+@bot.message_handler(func=lambda m: m.text == "👥 REFERRAL")
 def refer_cmd(m):
+    if bot_locked_guard(m) or banned_guard(m):
+        return
     uid = str(m.from_user.id)
     try:
         bot_username = bot.get_me().username
         ref = users[uid]['ref']
         link = f"https://t.me/{bot_username}?start={ref}"
-        bot.send_message(m.chat.id,
-            f"🔗 Your referral link:\n{link}\n\n"
-            "Earn money by inviting friends!"
+        invited = users[uid].get("invited", 0)
+        
+        promo = (
+            "🚀 Download videos instantly with DownloadVedioYTBot!\n\n"
+            "Supports:\n"
+            "🎬 TikTok | ▶️ YouTube | 📘 Facebook | 📸 Instagram | 👻 Snapchat | 📌 Pinterest | 🐦 X / Twitter\n\n"
+            "⚡ Fast downloads\n"
+            "🎵 Video to MP3\n"
+            "💎 Premium features\n"
+            "🔥 Easy & free to use\n\n"
+            f"{link}"
+        )
+        
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("📤 Share", switch_inline_query=promo))
+        
+        bot.send_message(
+            m.chat.id,
+            f"🔗 Your Referral Link:\n{link}\n\n"
+            f"👥 Invited Users: {invited}\n"
+            f"🎁 You earn $0.2 per referral!",
+            reply_markup=kb
         )
     except:
         pass
@@ -677,8 +773,11 @@ def confirm_join(call):
             if user_id in pending_links:
                 link = pending_links[user_id]
                 del pending_links[user_id]
-                msg = bot.send_message(user_id, "⏳ Downloading...")
-                download_executor.submit(download_media, user_id, link, msg.message_id)
+                msg = bot.send_message(user_id, "⏳ Processing...")
+                if is_quick_access(user_id):
+                    vip_executor.submit(download_media, user_id, link, msg.message_id)
+                else:
+                    normal_executor.submit(download_media, user_id, link, msg.message_id)
             else:
                 bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
         else:
@@ -718,19 +817,6 @@ def get_id_handler(m):
     uid = str(m.from_user.id)
     try:
         bot.send_message(m.chat.id, f"🆔 BOT ID: <code>{users[uid]['bot_id']}</code>\n👤 Telegram ID: <code>{uid}</code>")
-    except:
-        pass
-
-@bot.message_handler(func=lambda m: m.text == "👥 REFERRAL")
-def referral_handler(m):
-    if bot_locked_guard(m) or banned_guard(m):
-        return
-    uid = str(m.from_user.id)
-    try:
-        bot_username = bot.get_me().username
-        link = f"https://t.me/{bot_username}?start={users[uid]['ref']}"
-        invited = users[uid].get("invited", 0)
-        bot.send_message(m.chat.id, f"🔗 Your Referral Link:\n{link}\n\n👥 Invited Users: {invited}\n🎁 You earn $0.2 per referral!")
     except:
         pass
 
@@ -1138,6 +1224,9 @@ def raadi_stats(m):
     yt = platform_stats.get("youtube", 0)
     fb = platform_stats.get("facebook", 0)
     pin = platform_stats.get("pinterest", 0)
+    ig = platform_stats.get("instagram", 0)
+    snap = platform_stats.get("snapchat", 0)
+    tw = platform_stats.get("twitter", 0)
 
     msg_lines = [
         "🔍 DOWNLOAD ANALYTICS\n",
@@ -1147,7 +1236,10 @@ def raadi_stats(m):
         f"• TikTok: {tt}",
         f"• YouTube: {yt}",
         f"• Facebook: {fb}",
-        f"• Pinterest: {pin}\n",
+        f"• Instagram: {ig}",
+        f"• Pinterest: {pin}",
+        f"• Snapchat: {snap}",
+        f"• X/Twitter: {tw}\n",
         "🥇 Top 40 Users:"
     ]
 
@@ -1252,7 +1344,7 @@ def send_pay_process(m):
                     title=title,
                     description=desc,
                     invoice_payload=f"stars_pay_{price}",
-                    provider_token="", # Provider token is empty for Telegram Stars
+                    provider_token="",
                     currency="XTR",
                     prices=prices
                 )
@@ -1317,8 +1409,9 @@ def see_users(m):
     for uid in users:
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💬 OPEN CHAT", url=f"tg://user?id={uid}"))
+        qa_status = "⚡ Quick Access: YES" if users[str(uid)].get("quick_access") else "Quick Access: NO"
         try:
-            bot.send_message(m.chat.id, f"👤 User ID: {uid}", reply_markup=kb)
+            bot.send_message(m.chat.id, f"👤 User ID: {uid} | {qa_status}", reply_markup=kb)
         except:
             pass
         count += 1
@@ -1433,6 +1526,7 @@ def import_users_process(m):
                 "invited": 0,
                 "banned": False,
                 "verified": False,
+                "quick_access": False,
                 "month": now_month()
             }
             save_user(uid)
@@ -1556,7 +1650,10 @@ def handle_links(message):
 
     try:
         msg = bot.send_message(message.chat.id, "⚡ Processing...")
-        download_executor.submit(download_media, message.chat.id, link, msg.message_id)
+        if is_quick_access(user_id):
+            vip_executor.submit(download_media, message.chat.id, link, msg.message_id)
+        else:
+            normal_executor.submit(download_media, message.chat.id, link, msg.message_id)
     except:
         pass
 
@@ -1584,7 +1681,10 @@ def multi_checkjoin(call):
             del pending_links[user_id]
             try:
                 msg = bot.send_message(user_id, "⬇️ Processing your video...")
-                download_executor.submit(download_media, user_id, link, msg.message_id)
+                if is_quick_access(user_id):
+                    vip_executor.submit(download_media, user_id, link, msg.message_id)
+                else:
+                    normal_executor.submit(download_media, user_id, link, msg.message_id)
             except:
                 pass
         else:
@@ -1791,7 +1891,10 @@ def verify_code_check(m):
         del verify_pending[uid]
         try:
             msg = bot.send_message(m.chat.id, "✅ Verification successful\n⬇️ Downloading video...")
-            download_executor.submit(download_media, m.chat.id, link, msg.message_id)
+            if is_quick_access(uid):
+                vip_executor.submit(download_media, m.chat.id, link, msg.message_id)
+            else:
+                normal_executor.submit(download_media, m.chat.id, link, msg.message_id)
         except:
             pass
     else:
@@ -1817,7 +1920,6 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     vid_id = str(uuid.uuid4())[:8]
     perm_file_path = f"saved_{vid_id}.mp4"
     
-    # Optimized moving operation for speed
     try:
         os.rename(file_path, perm_file_path)
     except:
@@ -1856,7 +1958,6 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
             except:
                 pass
         
-        # Trigger Feedback Request
         if videos_data.get("feedback_enabled"):
             send_feedback_request(chat_id, platform or "other", vid_id)
             
@@ -1889,6 +1990,7 @@ def extract_music(call):
 # ================= DOWNLOAD MEDIA =================
 def download_media(chat_id, url, message_id):
     try:
+        platform = "other"
         if "tiktok.com" in url:
             platform = "tiktok"
             api_url = f"https://www.tikwm.com/api/?url={url}"
@@ -1905,44 +2007,65 @@ def download_media(chat_id, url, message_id):
                 elif "play" in data:
                     vid_url = data["play"]
                     file_path = f"tiktok_{uuid.uuid4().hex[:8]}.mp4"
-                    # Optimization: Just direct stream it or quick download
                     with open(file_path, 'wb') as f:
                         f.write(requests.get(vid_url).content)
                     send_video_with_music(chat_id, file_path, platform, message_id)
                     return
-            
-        # Optimization: use best pre-merged format for YouTube to bypass ffmpeg slowness
+
+        elif "youtube.com" in url or "youtu.be" in url:
+            platform = "youtube"
+            # Metadata check for duration up to 10 minutes
+            ydl_info_opts = {"quiet": True, "no_warnings": True}
+            with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_meta:
+                try:
+                    info_meta = ydl_meta.extract_info(url, download=False)
+                    duration = info_meta.get('duration', 0)
+                    if duration and duration > MAX_YOUTUBE_DURATION:
+                        bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(MAX_YOUTUBE_DURATION/60)} minutes.", chat_id, message_id)
+                        return
+                except Exception:
+                    pass
+
+        elif "facebook.com" in url or "fb.watch" in url:
+            platform = "facebook"
+        elif "instagram.com" in url:
+            platform = "instagram"
+        elif "pin.it" in url or "pinterest.com" in url:
+            platform = "pinterest"
+        elif "snapchat.com" in url:
+            platform = "snapchat"
+        elif "x.com" in url or "twitter.com" in url:
+            platform = "twitter"
+
         ydl_opts = {
             "format": "b[ext=mp4]/best",
-            "outtmpl": f"dl_%(id)s.%(ext)s",
+            "outtmpl": f"downloads/dl_%(id)s.%(ext)s",
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "socket_timeout": 15,
         }
-        
-        platform = "youtube" if "youtube" in url or "youtu.be" in url else \
-                   "facebook" if "facebook" in url or "fb.watch" in url else \
-                   "instagram" if "instagram" in url else \
-                   "pinterest" if "pin.it" in url or "pinterest" in url else "other"
                    
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             if not filename.endswith('.mp4'):
                 new_filename = filename.rsplit('.', 1)[0] + '.mp4'
-                os.rename(filename, new_filename)
+                if os.path.exists(filename):
+                    os.rename(filename, new_filename)
                 filename = new_filename
 
             send_video_with_music(chat_id, filename, platform, message_id)
 
     except Exception as e:
+        print(f"Download Error: {e}")
         try:
-            bot.send_message(chat_id, "❌ Error downloading media. Link might be private or invalid.")
-            if message_id:
-                bot.delete_message(chat_id, message_id)
+            bot.edit_message_text("❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.", chat_id, message_id)
         except:
-            pass
+            try:
+                bot.send_message(chat_id, "❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.")
+            except:
+                pass
 
 # ================= RUN =================
 if __name__ == "__main__":
