@@ -12,6 +12,7 @@ import threading
 import asyncio
 import uuid
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
