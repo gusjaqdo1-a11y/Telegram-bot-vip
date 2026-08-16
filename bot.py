@@ -2173,7 +2173,7 @@ def download_media(chat_id, url, message_id):
 
         output_template = os.path.join(
             download_dir,
-            "%(id)s.%(ext)s"
+            "%(id)s_%(autonumber)s.%(ext)s"
         )
 
         # =====================================================
@@ -2181,9 +2181,6 @@ def download_media(chat_id, url, message_id):
         # =====================================================
 
         ydl_opts = {
-            # Safer format selector.
-            # Avoids forcing a video+audio combination
-            # that some Pinterest/other sites don't provide.
             "format": (
                 "best[ext=mp4]/"
                 "bestvideo[ext=mp4]+bestaudio/"
@@ -2194,7 +2191,8 @@ def download_media(chat_id, url, message_id):
 
             "merge_output_format": "mp4",
 
-            "noplaylist": True,
+            # TikTok wuxuu u baahan yahay False si uu u soo dejiyo sawirrada badan (slideshow)
+            "noplaylist": False if platform == "tiktok" else True,
 
             "quiet": False,
             "no_warnings": False,
@@ -2267,93 +2265,75 @@ def download_media(chat_id, url, message_id):
         print("[DOWNLOAD] Starting yt-dlp...")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-            info = ydl.extract_info(
-                url,
-                download=True
-            )
-
-            filename = ydl.prepare_filename(info)
+            ydl.download([url])
 
         # =====================================================
-        # FIND DOWNLOADED FILE
+        # FIND DOWNLOADED FILES
         # =====================================================
 
-        base = os.path.splitext(filename)[0]
+        files_to_send = []
 
-        possible_files = [
-            filename,
-            base + ".mp4",
-            base + ".mkv",
-            base + ".webm",
-            base + ".mov",
-            base + ".m4v"
-        ]
+        for root, dirs, files in os.walk(download_dir):
+            for name in sorted(files):
+                if name.lower().endswith(
+                    (
+                        ".mp4",
+                        ".mkv",
+                        ".webm",
+                        ".mov",
+                        ".m4v",
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".webp"
+                    )
+                ):
+                    files_to_send.append(os.path.join(root, name))
 
-        for path in possible_files:
-
-            if os.path.exists(path):
-                file_path = path
-                break
-
-        # Scan directory if exact filename wasn't found
-        if not file_path:
-
-            for root, dirs, files in os.walk(
-                download_dir
-            ):
-
-                for name in files:
-
-                    if name.lower().endswith(
-                        (
-                            ".mp4",
-                            ".mkv",
-                            ".webm",
-                            ".mov",
-                            ".m4v"
-                        )
-                    ):
-
-                        file_path = os.path.join(
-                            root,
-                            name
-                        )
-
-                        break
-
-                if file_path:
-                    break
-
-        # =====================================================
-        # FILE NOT FOUND
-        # =====================================================
-
-        if not file_path:
-
+        if not files_to_send:
             raise FileNotFoundError(
-                "yt-dlp finished but downloaded file "
-                "was not found."
+                "yt-dlp finished but downloaded files "
+                "were not found."
             )
 
         print(
-            f"[DOWNLOAD] File found: {file_path}"
+            f"[DOWNLOAD] Files found: {len(files_to_send)}"
         )
 
         # =====================================================
-        # SEND VIDEO
+        # SEND MEDIA (TikTok Photos as Album vs Single File)
         # =====================================================
 
-        send_video_with_music(
-            chat_id,
-            file_path,
-            platform,
-            message_id
-        )
+        if platform == "tiktok" and len(files_to_send) > 1:
+            # U dir sida album (MediaGroup) haddii ay yihiin sawirro badan oo TikTok ah
+            media_group = []
+            for path in files_to_send[:10]: # Telegram wuxuu ogol yahay ugu badnaan 10 sawir
+                media_group.append(telebot.types.InputMediaPhoto(open(path, 'rb')))
 
-        print(
-            "[DOWNLOAD] Sent successfully."
-        )
+            bot.send_media_group(chat_id, media_group, reply_to_message_id=message_id)
+            print("[DOWNLOAD] TikTok photo album sent successfully.")
+
+        else:
+            # Haddii uu yahay hal fayl (Video ama hal sawir)
+            file_path = files_to_send[0]
+
+            if file_path.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v')):
+                send_video_with_music(
+                    chat_id,
+                    file_path,
+                    platform,
+                    message_id
+                )
+            else:
+                bot.send_photo(
+                    chat_id,
+                    open(file_path, 'rb'),
+                    reply_to_message_id=message_id
+                )
+
+            print(
+                "[DOWNLOAD] Single file sent successfully."
+            )
 
     # =========================================================
     # ERROR
@@ -2419,7 +2399,8 @@ def download_media(chat_id, url, message_id):
 
             print(
                 f"[CLEANUP ERROR] {e}"
-                )
+            )
+
 
 # ================= RUN =================
 if __name__ == "__main__":
