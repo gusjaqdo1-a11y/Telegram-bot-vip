@@ -2176,32 +2176,34 @@ def download_media(chat_id, url, message_id):
             "%(id)s_%(autonumber)s.%(ext)s"
         )
 
-                # =====================================================
+        # =====================================================
         # YT-DLP OPTIONS
         # =====================================================
 
-        # Format-ka TikTok waa inaan lagu qasbin mp4 si sawirada ay u soo degaan
-        format_string = (
-            "best" if platform == "tiktok" 
-            else "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best"
-        )
-
         ydl_opts = {
-            "format": format_string,
+            "format": (
+                "best[ext=mp4]/"
+                "bestvideo[ext=mp4]+bestaudio/"
+                "best"
+            ),
+
             "outtmpl": output_template,
-            
-            # Jooji isku-darka (merge) haddii ay tahay TikTok si sawiradu aysan u kharribmin
-            "merge_output_format": "mp4" if platform != "tiktok" else None,
+
+            "merge_output_format": "mp4",
 
             # TikTok wuxuu u baahan yahay False si uu u soo dejiyo sawirrada badan (slideshow)
             "noplaylist": False if platform == "tiktok" else True,
 
             "quiet": False,
             "no_warnings": False,
+
             "socket_timeout": 30,
+
             "retries": 5,
             "fragment_retries": 5,
+
             "continuedl": True,
+
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2211,91 +2213,6 @@ def download_media(chat_id, url, message_id):
                 )
             }
         }
-
-        # XALKA INSTAGRAM: Instagram wuxuu inta badan u baahan yahay Cookies
-        if platform == "instagram":
-            # FIIRO GAAR AH: Haddii Instagram uu wali ku siiyo Error, ka saar calaamadda # ee hoose 
-            # si bot-ku u isticmaalo cookies-ka browser-kaaga (tusaale chrome), ama u isticmaal 'cookies.txt'.
-            
-            # ydl_opts['cookiesfrombrowser'] = ('chrome',) 
-            # ydl_opts['cookiefile'] = 'cookies.txt'
-            pass
-
-        # ... [Halkan waxaa galaya qeybta DENO iyo FFMPEG ee koodhkaagii hore] ...
-
-        # =====================================================
-        # DOWNLOAD
-        # =====================================================
-
-        print("[DOWNLOAD] Starting yt-dlp...")
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        # =====================================================
-        # FIND DOWNLOADED FILES
-        # =====================================================
-
-        files_to_send = []
-
-        for root, dirs, files in os.walk(download_dir):
-            for name in sorted(files):
-                if name.lower().endswith(
-                    (
-                        ".mp4", ".mkv", ".webm", ".mov", ".m4v",
-                        ".jpg", ".jpeg", ".png", ".webp"
-                    )
-                ):
-                    files_to_send.append(os.path.join(root, name))
-
-        if not files_to_send:
-            raise FileNotFoundError("yt-dlp finished but downloaded files were not found.")
-
-        print(f"[DOWNLOAD] Files found: {len(files_to_send)}")
-
-        # =====================================================
-        # SEND MEDIA (TikTok Photos as Album vs Single File)
-        # =====================================================
-
-        # Hubi haddii uu yahay TikTok oo ay jiraan sawirro la soo dejiyay
-        image_files = [f for f in files_to_send if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-
-        if platform == "tiktok" and len(image_files) > 0:
-            # U dir sida album (MediaGroup) sidii ku cad sawirka 1000015957.jpg
-            media_group = []
-            
-            for path in image_files[:10]: # Telegram wuxuu ogol yahay ugu badnaan 10 sawir markiiba
-                with open(path, 'rb') as img_file:
-                    # Akhri faylka (img_file.read()) si aysan u dhicin "Closed file error"
-                    media_group.append(telebot.types.InputMediaPhoto(img_file.read()))
-
-            bot.send_media_group(chat_id, media_group, reply_to_message_id=message_id)
-            print("[DOWNLOAD] TikTok photo album sent successfully.")
-
-        else:
-            # Haddii uu yahay hal fayl (Video ama hal sawir)
-            # Hubi inaan soo qaadano video-ga ugu muhiimsan haddii faylal badan jiraan
-            video_files = [f for f in files_to_send if f.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v'))]
-            file_path = video_files[0] if video_files else files_to_send[0]
-
-            if file_path.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v')):
-                send_video_with_music(
-                    chat_id,
-                    file_path,
-                    platform,
-                    message_id
-                )
-            else:
-                with open(file_path, 'rb') as f:
-                    bot.send_photo(
-                        chat_id,
-                        f.read(),
-                        reply_to_message_id=message_id
-                    )
-
-            print("[DOWNLOAD] Single file sent successfully.")
-
-
 
         # =====================================================
         # DENO
@@ -2341,6 +2258,14 @@ def download_media(chat_id, url, message_id):
                 "[FFMPEG] WARNING: FFmpeg not found."
             )
 
+        # =====================================================
+        # DOWNLOAD
+        # =====================================================
+
+        print("[DOWNLOAD] Starting yt-dlp...")
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
         # =====================================================
         # FIND DOWNLOADED FILES
@@ -2375,6 +2300,40 @@ def download_media(chat_id, url, message_id):
             f"[DOWNLOAD] Files found: {len(files_to_send)}"
         )
 
+        # =====================================================
+        # SEND MEDIA (TikTok Photos as Album vs Single File)
+        # =====================================================
+
+        if platform == "tiktok" and len(files_to_send) > 1:
+            # U dir sida album (MediaGroup) haddii ay yihiin sawirro badan oo TikTok ah
+            media_group = []
+            for path in files_to_send[:10]: # Telegram wuxuu ogol yahay ugu badnaan 10 sawir
+                media_group.append(telebot.types.InputMediaPhoto(open(path, 'rb')))
+
+            bot.send_media_group(chat_id, media_group, reply_to_message_id=message_id)
+            print("[DOWNLOAD] TikTok photo album sent successfully.")
+
+        else:
+            # Haddii uu yahay hal fayl (Video ama hal sawir)
+            file_path = files_to_send[0]
+
+            if file_path.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v')):
+                send_video_with_music(
+                    chat_id,
+                    file_path,
+                    platform,
+                    message_id
+                )
+            else:
+                bot.send_photo(
+                    chat_id,
+                    open(file_path, 'rb'),
+                    reply_to_message_id=message_id
+                )
+
+            print(
+                "[DOWNLOAD] Single file sent successfully."
+            )
 
     # =========================================================
     # ERROR
