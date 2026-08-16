@@ -2019,13 +2019,14 @@ def extract_music(call):
 # ================= DOWNLOAD MEDIA =================
 def download_media(chat_id, url, message_id):
     file_path = None
+    download_dir = None
 
     try:
         os.makedirs("downloads", exist_ok=True)
 
         url = url.strip()
 
-        # Detect platform
+        # ================= DETECT PLATFORM =================
         if "youtube.com" in url or "youtu.be" in url:
             platform = "youtube"
 
@@ -2053,140 +2054,263 @@ def download_media(chat_id, url, message_id):
         print(f"[DOWNLOAD] Platform: {platform}")
         print(f"[DOWNLOAD] URL: {url}")
 
-# ================= YOUTUBE 10 MIN LIMIT =================
-if platform == "youtube":
+        # ==================================================
+        # YOUTUBE - MAXIMUM 10 MINUTES
+        # ==================================================
 
-    try:
-        deno_path = shutil.which("deno")
-
-        info_opts = {
-            "quiet": False,
-            "no_warnings": False,
-            "noplaylist": True,
-            "socket_timeout": 30,
-        }
-
-        # Use Deno for YouTube JavaScript challenges
-        if deno_path:
-            info_opts["js_runtimes"] = {
-                "deno": {
-                    "path": deno_path
-                }
-            }
-
-            print(f"[YOUTUBE] Deno found: {deno_path}")
-        else:
-            print("[YOUTUBE] WARNING: Deno not found")
-
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(
-                url,
-                download=False
-            )
-
-        duration = info.get("duration") or 0
-
-        print(
-            f"[YOUTUBE] Duration: {duration} seconds"
-        )
-
-        # Maximum 10 minutes
-        if duration > 600:
+        if platform == "youtube":
 
             try:
-                bot.edit_message_text(
-                    "❌ YouTube video is longer than 10 minutes.\n\n"
-                    "⏱ Maximum allowed: 10 minutes.",
-                    chat_id,
-                    message_id
+                deno_path = shutil.which("deno")
+
+                info_opts = {
+                    "quiet": False,
+                    "no_warnings": False,
+                    "noplaylist": True,
+                    "socket_timeout": 30,
+                }
+
+                if deno_path:
+                    info_opts["js_runtimes"] = {
+                        "deno": {
+                            "path": deno_path
+                        }
+                    }
+
+                    print(
+                        f"[YOUTUBE] Deno found: {deno_path}"
+                    )
+                else:
+                    print(
+                        "[YOUTUBE] WARNING: Deno not found"
+                    )
+
+                with yt_dlp.YoutubeDL(info_opts) as ydl:
+                    info = ydl.extract_info(
+                        url,
+                        download=False
+                    )
+
+                duration = info.get("duration") or 0
+
+                print(
+                    f"[YOUTUBE] Duration: "
+                    f"{duration} seconds"
                 )
-            except:
-                pass
 
-            return
+                # Maximum 10 minutes
+                if duration > 600:
 
-    except Exception as e:
+                    try:
+                        bot.edit_message_text(
+                            "❌ YouTube video is longer than 10 minutes.\n\n"
+                            "⏱ Maximum allowed: 10 minutes.",
+                            chat_id,
+                            message_id
+                        )
+                    except Exception:
+                        pass
 
-        print(
-            f"[YOUTUBE INFO ERROR] "
-            f"{type(e).__name__}: {e}"
-        )
+                    return
 
-        try:
-            bot.edit_message_text(
-                "❌ YouTube could not be processed right now.",
-                chat_id,
-                message_id
-            )
-        except:
-            pass
+            except Exception as e:
 
-        return
+                print(
+                    f"[YOUTUBE INFO ERROR] "
+                    f"{type(e).__name__}: {e}"
+                )
 
-        # ================= PINTEREST =================
-        if "pin.it" in url:
+                try:
+                    bot.edit_message_text(
+                        "❌ YouTube could not be processed right now.",
+                        chat_id,
+                        message_id
+                    )
+                except Exception:
+                    pass
+
+                return
+
+        # ==================================================
+        # PINTEREST
+        # ==================================================
+
+        if platform == "pinterest":
 
             try:
-                r = requests.head(url, allow_redirects=True, timeout=10)
-                url = r.url
-            except:
-                pass
+                # Do NOT force Pinterest to use
+                # video+audio combination.
+                # Many Pinterest pins provide one usable format.
 
+                deno_path = shutil.which("deno")
 
-        if "pinterest.com" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "bv*+ba/b",
-                    "outtmpl": "pinterest_%(id)s.%(ext)s",
-                    "quiet": True,
-                    "merge_output_format": "mp4"
+                pinterest_opts = {
+                    "format": "best",
+                    "outtmpl": (
+                        "downloads/"
+                        "pinterest_%(id)s.%(ext)s"
+                    ),
+                    "quiet": False,
+                    "no_warnings": False,
+                    "noplaylist": True,
+                    "socket_timeout": 30,
+                    "retries": 5,
+                    "fragment_retries": 5,
+                    "merge_output_format": "mp4",
+                    "http_headers": {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) "
+                            "Chrome/131.0.0.0 Safari/537.36"
+                    }
                 }
 
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                if deno_path:
+                    pinterest_opts["js_runtimes"] = {
+                        "deno": {
+                            "path": deno_path
+                        }
+                    }
 
-                    info = ydl.extract_info(url, download=True)
+                print(
+                    "[PINTEREST] Starting download..."
+                )
 
-                    if "entries" in info:
-                        entries = info["entries"]
-                    else:
-                        entries = [info]
+                with yt_dlp.YoutubeDL(
+                    pinterest_opts
+                ) as ydl:
 
-                    for entry in entries:
+                    info = ydl.extract_info(
+                        url,
+                        download=True
+                    )
 
-                        file = ydl.prepare_filename(entry)
+                    filename = ydl.prepare_filename(
+                        info
+                    )
 
-                        if file.lower().endswith((".jpg",".jpeg",".png",".webp")):
+                # Check possible output extensions
+                base = os.path.splitext(
+                    filename
+                )[0]
 
-                            with open(file,"rb") as photo:
-                                bot.send_photo(chat_id, photo, caption=CAPTION_TEXT)
+                possible_files = [
+                    filename,
+                    base + ".mp4",
+                    base + ".mkv",
+                    base + ".webm",
+                    base + ".mov",
+                    base + ".jpg",
+                    base + ".jpeg",
+                    base + ".png",
+                    base + ".webp"
+                ]
 
-                        else:
+                for path in possible_files:
+                    if os.path.exists(path):
+                        file_path = path
+                        break
 
-                            send_video_with_music(chat_id, file, "pinterest")
+                if not file_path:
+                    raise FileNotFoundError(
+                        "Pinterest file was not found."
+                    )
+
+                print(
+                    f"[PINTEREST] File: {file_path}"
+                )
+
+                # Send photo or video
+                if file_path.lower().endswith(
+                    (".jpg", ".jpeg", ".png", ".webp")
+                ):
+
+                    with open(
+                        file_path,
+                        "rb"
+                    ) as photo:
+
+                        bot.send_photo(
+                            chat_id,
+                            photo,
+                            caption=CAPTION_TEXT
+                        )
+
+                else:
+
+                    send_video_with_music(
+                        chat_id,
+                        file_path,
+                        "pinterest",
+                        message_id
+                    )
 
                 return
 
             except Exception as e:
 
-                bot.send_message(chat_id, f"❌ Download error:\n{e}")
+                print(
+                    f"[PINTEREST ERROR] "
+                    f"{type(e).__name__}: {e}"
+                )
+
+                try:
+                    bot.edit_message_text(
+                        "❌ Pinterest download failed.",
+                        chat_id,
+                        message_id
+                    )
+                except Exception:
+                    try:
+                        bot.send_message(
+                            chat_id,
+                            "❌ Pinterest download failed."
+                        )
+                    except Exception:
+                        pass
+
                 return
 
+        # ==================================================
+        # GENERAL MEDIA DOWNLOAD
+        # ==================================================
 
-        # ================= DOWNLOAD OPTIONS =================
+        download_id = uuid.uuid4().hex[:10]
+
+        download_dir = os.path.join(
+            "downloads",
+            download_id
+        )
+
+        os.makedirs(
+            download_dir,
+            exist_ok=True
+        )
+
+        output_template = os.path.join(
+            download_dir,
+            "%(extractor)s_%(id)s.%(ext)s"
+        )
+
+        # ==================================================
+        # FORMAT
+        # ==================================================
+
+        if platform == "youtube":
+            format_selector = "bv*+ba/b"
+
+        else:
+            format_selector = "bv*+ba/b"
+
+        # ==================================================
+        # YT-DLP OPTIONS
+        # ==================================================
 
         ydl_opts = {
-            "format": (
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-                "best[ext=mp4]/best"
-            ),
+            "format": format_selector,
 
-            "outtmpl": (
-                "downloads/"
-                "%(extractor)s_"
-                "%(id)s.%(ext)s"
-            ),
+            "outtmpl": output_template,
 
             "merge_output_format": "mp4",
 
@@ -2211,42 +2335,135 @@ if platform == "youtube":
             }
         }
 
-        print("[DOWNLOAD] Starting yt-dlp...")
+        # ================= DENO =================
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        deno_path = shutil.which("deno")
+
+        if deno_path:
+
+            ydl_opts["js_runtimes"] = {
+                "deno": {
+                    "path": deno_path
+                }
+            }
+
+            print(
+                f"[YT-DLP] Deno found: {deno_path}"
+            )
+
+        else:
+
+            print(
+                "[YT-DLP] WARNING: Deno not found"
+            )
+
+        # ================= FFMPEG =================
+
+        ffmpeg_path = shutil.which("ffmpeg")
+
+        if ffmpeg_path:
+
+            ydl_opts["ffmpeg_location"] = (
+                ffmpeg_path
+            )
+
+            print(
+                f"[FFMPEG] Found: {ffmpeg_path}"
+            )
+
+        else:
+
+            print(
+                "[FFMPEG] WARNING: FFmpeg not found"
+            )
+
+        # ==================================================
+        # DOWNLOAD
+        # ==================================================
+
+        print(
+            "[DOWNLOAD] Starting yt-dlp..."
+        )
+
+        with yt_dlp.YoutubeDL(
+            ydl_opts
+        ) as ydl:
 
             info = ydl.extract_info(
                 url,
                 download=True
             )
 
-            filename = ydl.prepare_filename(info)
+            filename = ydl.prepare_filename(
+                info
+            )
 
-            base = os.path.splitext(filename)[0]
+        # ==================================================
+        # FIND FINAL FILE
+        # ==================================================
 
-            possible_files = [
-                filename,
-                base + ".mp4",
-                base + ".mkv",
-                base + ".webm",
-                base + ".mov"
-            ]
+        base = os.path.splitext(
+            filename
+        )[0]
 
-            file_path = None
+        possible_files = [
+            filename,
+            base + ".mp4",
+            base + ".mkv",
+            base + ".webm",
+            base + ".mov",
+            base + ".m4v"
+        ]
 
-            for path in possible_files:
-                if os.path.exists(path):
-                    file_path = path
+        for path in possible_files:
+
+            if os.path.exists(path):
+
+                file_path = path
+                break
+
+        # If not found, scan directory
+        if not file_path:
+
+            for root, dirs, files in os.walk(
+                download_dir
+            ):
+
+                for name in files:
+
+                    if name.endswith(
+                        (
+                            ".mp4",
+                            ".mkv",
+                            ".webm",
+                            ".mov",
+                            ".m4v"
+                        )
+                    ):
+
+                        file_path = os.path.join(
+                            root,
+                            name
+                        )
+
+                        break
+
+                if file_path:
                     break
 
         if not file_path:
+
             raise FileNotFoundError(
-                "yt-dlp finished but output file was not found."
+                "Downloaded file was not found."
             )
 
-        print(f"[DOWNLOAD] File: {file_path}")
+        print(
+            f"[DOWNLOAD] Final file: {file_path}"
+        )
 
-        # ================= SEND =================
+        # ==================================================
+        # SEND
+        # ==================================================
 
         send_video_with_music(
             chat_id,
@@ -2255,46 +2472,96 @@ if platform == "youtube":
             message_id
         )
 
-        print("[DOWNLOAD] Sent successfully.")
+        print(
+            "[DOWNLOAD] Media sent successfully."
+        )
+
+    # ======================================================
+    # MAIN ERROR
+    # ======================================================
 
     except Exception as e:
 
-        # IMPORTANT:
-        # Don't hide the real error
+        print(
+            "=" * 60
+        )
+
         print(
             f"[DOWNLOAD ERROR] "
             f"{type(e).__name__}: {e}"
         )
 
+        print(
+            "=" * 60
+        )
+
         try:
+
             bot.edit_message_text(
                 "❌ Download failed.\n\n"
-                "The link could not be processed.",
+                "Please make sure the link is public "
+                "and try again.",
                 chat_id,
                 message_id
             )
+
         except Exception:
+
             try:
+
                 bot.send_message(
                     chat_id,
                     "❌ Download failed."
                 )
+
             except Exception:
                 pass
 
+    # ======================================================
+    # CLEANUP
+    # ======================================================
+
     finally:
 
-        # Cleanup
-        if file_path:
+        if download_dir:
+
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(
-                        f"[CLEANUP] Deleted: {file_path}"
+
+                if os.path.exists(
+                    download_dir
+                ):
+
+                    shutil.rmtree(
+                        download_dir,
+                        ignore_errors=True
                     )
+
+                    print(
+                        "[CLEANUP] Download folder deleted."
+                    )
+
             except Exception as e:
+
                 print(
                     f"[CLEANUP ERROR] {e}"
+                )
+
+        elif file_path:
+
+            try:
+
+                if os.path.exists(
+                    file_path
+                ):
+
+                    os.remove(
+                        file_path
+                    )
+
+            except Exception as e:
+
+                print(
+                    f"[FILE CLEANUP ERROR] {e}"
                 )
 
 
