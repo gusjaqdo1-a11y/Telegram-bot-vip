@@ -2277,55 +2277,6 @@ def download_media(chat_id, url, message_id):
             except Exception:
                 pass
 
-
-    # ======================================================
-    # CLEANUP
-    # ======================================================
-
-    finally:
-
-        if download_dir:
-
-            try:
-
-                if os.path.exists(
-                    download_dir
-                ):
-
-                    shutil.rmtree(
-                        download_dir,
-                        ignore_errors=True
-                    )
-
-                    print(
-                        "[CLEANUP] Download folder deleted."
-                    )
-
-            except Exception as e:
-
-                print(
-                    f"[CLEANUP ERROR] {e}"
-                )
-
-        elif file_path:
-
-            try:
-
-                if os.path.exists(
-                    file_path
-                ):
-
-                    os.remove(
-                        file_path
-                    )
-
-            except Exception as e:
-
-                print(
-                    f"[FILE CLEANUP ERROR] {e}"
-                )
-
-
 # ================= RUN =================
 if __name__ == "__main__":
     if not os.path.exists("downloads"):
