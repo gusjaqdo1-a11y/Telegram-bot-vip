@@ -2053,48 +2053,75 @@ def download_media(chat_id, url, message_id):
         print(f"[DOWNLOAD] Platform: {platform}")
         print(f"[DOWNLOAD] URL: {url}")
 
-        # ================= YOUTUBE 10 MIN LIMIT =================
-        if platform == "youtube":
-            try:
-                info_opts = {
-                    "quiet": True,
-                    "no_warnings": False,
-                    "noplaylist": True,
+# ================= YOUTUBE 10 MIN LIMIT =================
+if platform == "youtube":
+
+    try:
+        deno_path = shutil.which("deno")
+
+        info_opts = {
+            "quiet": False,
+            "no_warnings": False,
+            "noplaylist": True,
+            "socket_timeout": 30,
+        }
+
+        # Use Deno for YouTube JavaScript challenges
+        if deno_path:
+            info_opts["js_runtimes"] = {
+                "deno": {
+                    "path": deno_path
                 }
+            }
 
-                with yt_dlp.YoutubeDL(info_opts) as ydl:
-                    info = ydl.extract_info(
-                        url,
-                        download=False
-                    )
+            print(f"[YOUTUBE] Deno found: {deno_path}")
+        else:
+            print("[YOUTUBE] WARNING: Deno not found")
 
-                duration = info.get("duration") or 0
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(
+                url,
+                download=False
+            )
 
-                print(
-                    f"[YOUTUBE] Duration: "
-                    f"{duration} seconds"
-                )
+        duration = info.get("duration") or 0
 
-                if duration > 600:
-                    bot.edit_message_text(
-                        "❌ YouTube videos must be 10 minutes or less.",
-                        chat_id,
-                        message_id
-                    )
-                    return
+        print(
+            f"[YOUTUBE] Duration: {duration} seconds"
+        )
 
-            except Exception as e:
-                print(
-                    f"[YOUTUBE INFO ERROR] "
-                    f"{type(e).__name__}: {e}"
-                )
+        # Maximum 10 minutes
+        if duration > 600:
 
+            try:
                 bot.edit_message_text(
-                    "❌ YouTube could not be processed right now.",
+                    "❌ YouTube video is longer than 10 minutes.\n\n"
+                    "⏱ Maximum allowed: 10 minutes.",
                     chat_id,
                     message_id
                 )
-                return
+            except:
+                pass
+
+            return
+
+    except Exception as e:
+
+        print(
+            f"[YOUTUBE INFO ERROR] "
+            f"{type(e).__name__}: {e}"
+        )
+
+        try:
+            bot.edit_message_text(
+                "❌ YouTube could not be processed right now.",
+                chat_id,
+                message_id
+            )
+        except:
+            pass
+
+        return
 
         # ================= PINTEREST =================
         if "pin.it" in url:
@@ -2145,45 +2172,6 @@ def download_media(chat_id, url, message_id):
 
                 bot.send_message(chat_id, f"❌ Download error:\n{e}")
                 return
-
-        # ================= YOUTUBE =================
-        if "youtube.com" in url or "youtu.be" in url:
-
-            try:
-
-                ydl_opts = {
-                    "format": "bestvideo+bestaudio/best",
-                    "outtmpl": "youtube_%(id)s.%(ext)s",
-                    "merge_output_format": "mp4",
-                    "quiet": True
-                }
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
-                    info = ydl.extract_info(url, download=True)
-                    file = ydl.prepare_filename(info)
-
-                send_video_with_music(chat_id, file, "youtube")
-
-                return
-
-            except Exception as e:
-
-                bot.send_message(chat_id, f"❌ YouTube download error:\n{e}")
-                return
-
-
-        bot.send_message(chat_id, "❌ Unsupported link")
-
-
-    except Exception:
-
-        bot.send_message(
-            chat_id,
-            "❌ Incorrect link.\n\n"
-            "Send a valid link from TikTok, Snapchat, Pinterest, Facebook, or YouTube."
-        )
-
 
 
         # ================= DOWNLOAD OPTIONS =================
