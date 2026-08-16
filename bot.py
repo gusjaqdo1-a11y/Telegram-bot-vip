@@ -2018,118 +2018,157 @@ def extract_music(call):
 # ================= DOWNLOAD MEDIA =================
 def download_media(chat_id, url, message_id):
     try:
+        os.makedirs("downloads", exist_ok=True)
+
         platform = "other"
-        
-        # Twitter / X Fixes
-        if "x.com" in url or "twitter.com" in url:
-            platform = "twitter"
+
+        # Detect platform
+        if "youtube.com" in url or "youtu.be" in url:
+            platform = "youtube"
+
+            # YouTube maximum = 10 minutes
             try:
-                # Try via vxtwitter API first, highly reliable
-                tweet_id_match = re.search(r'(?:twitter\.com|x\.com)/[^/]+/status/(\d+)', url)
-                if tweet_id_match:
-                    tweet_id = tweet_id_match.group(1)
-                    api_url = f"https://api.vxtwitter.com/Twitter/status/{tweet_id}"
-                    res = requests.get(api_url).json()
-                    if 'media_extended' in res and len(res['media_extended']) > 0:
-                        vid_url = None
-                        for media in res['media_extended']:
-                            if media['type'] == 'video':
-                                vid_url = media['url']
-                                break
-                        if vid_url:
-                            file_path = f"downloads/tw_{uuid.uuid4().hex[:8]}.mp4"
-                            with open(file_path, 'wb') as f:
-                                f.write(requests.get(vid_url).content)
-                            send_video_with_music(chat_id, file_path, platform, message_id)
-                            return
+                with yt_dlp.YoutubeDL({
+                    "quiet": True,
+                    "no_warnings": True
+                }) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    duration = info.get("duration") or 0
+
+                    if duration > 600:
+                        bot.edit_message_text(
+                            "❌ YouTube video must be 10 minutes or less.",
+                            chat_id,
+                            message_id
+                        )
+                        return
             except Exception as e:
-                print(f"VxTwitter API failed: {e}")
-            # Fallback for yt-dlp
-            url = url.replace("x.com", "twitter.com")
+                print(f"YouTube info error: {e}")
+
+        elif "pinterest.com" in url or "pin.it" in url:
+            platform = "pinterest"
+
+            # Resolve Pinterest short URL
+            try:
+                r = requests.get(
+                    url,
+                    allow_redirects=True,
+                    timeout=20,
+                    headers={
+                        "User-Agent": "Mozilla/5.0"
+                    }
+                )
+                url = r.url
+            except Exception as e:
+                print(f"Pinterest redirect error: {e}")
 
         elif "tiktok.com" in url:
             platform = "tiktok"
-            api_url = f"https://www.tikwm.com/api/?url={url}"
-            res = requests.get(api_url).json()
-            if res.get("code") == 0:
-                data = res["data"]
-                if "images" in data:
-                    images = data["images"]
-                    media = [InputMediaPhoto(img) for img in images[:10]]
-                    bot.send_media_group(chat_id, media)
-                    if message_id:
-                        bot.delete_message(chat_id, message_id)
-                    return
-                elif "play" in data:
-                    vid_url = data["play"]
-                    file_path = f"tiktok_{uuid.uuid4().hex[:8]}.mp4"
-                    with open(file_path, 'wb') as f:
-                        f.write(requests.get(vid_url).content)
-                    send_video_with_music(chat_id, file_path, platform, message_id)
-                    return
-
-        # Pinterest Fixes
-        elif "pin.it" in url or "pinterest.com" in url:
-            platform = "pinterest"
-            try:
-                if "pin.it" in url:
-                    url = requests.head(url, allow_redirects=True).url
-            except Exception:
-                pass
-
-        # Youtube Fixes
-        elif "youtube.com" in url or "youtu.be" in url:
-            platform = "youtube"
-            ydl_info_opts = {"quiet": True, "no_warnings": True}
-            with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_meta:
-                try:
-                    info_meta = ydl_meta.extract_info(url, download=False)
-                    duration = info_meta.get('duration', 0)
-                    user_max_duration = 1800 if users.get(str(chat_id), {}).get("youtube_30m") else MAX_YOUTUBE_DURATION
-                    if duration and duration > user_max_duration:
-                        bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(user_max_duration/60)} minutes.", chat_id, message_id)
-                        return
-                except Exception:
-                    pass
 
         elif "facebook.com" in url or "fb.watch" in url:
             platform = "facebook"
+
         elif "instagram.com" in url:
             platform = "instagram"
+
+        elif "x.com" in url or "twitter.com" in url:
+            platform = "twitter"
+
         elif "snapchat.com" in url:
             platform = "snapchat"
 
+        # ================= YT-DLP =================
+
         ydl_opts = {
-            "format": "b[ext=mp4]/best",
-            "outtmpl": f"downloads/dl_%(id)s.%(ext)s",
+            "format": (
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+                "best[ext=mp4]/best"
+            ),
+
+            "outtmpl": "downloads/%(id)s.%(ext)s",
+
+            "merge_output_format": "mp4",
+
             "quiet": True,
             "no_warnings": True,
+
             "noplaylist": True,
-            "socket_timeout": 15,
+
+            "socket_timeout": 30,
+
+            "retries": 3,
+            "fragment_retries": 3,
+
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
             }
         }
-                   
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if not filename.endswith('.mp4'):
-                new_filename = filename.rsplit('.', 1)[0] + '.mp4'
-                if os.path.exists(filename):
-                    os.rename(filename, new_filename)
-                filename = new_filename
 
-            send_video_with_music(chat_id, filename, platform, message_id)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+            info = ydl.extract_info(url, download=True)
+
+            filename = ydl.prepare_filename(info)
+
+            # FFmpeg may change the final extension
+            possible_files = [
+                filename,
+                os.path.splitext(filename)[0] + ".mp4",
+                os.path.splitext(filename)[0] + ".mkv",
+                os.path.splitext(filename)[0] + ".webm"
+            ]
+
+            final_file = None
+
+            for file in possible_files:
+                if os.path.exists(file):
+                    final_file = file
+                    break
+
+            if not final_file:
+                raise FileNotFoundError(
+                    "Downloaded file was not found."
+                )
+
+            # Send media
+            send_video_with_music(
+                chat_id,
+                final_file,
+                platform,
+                message_id
+            )
+
+            # Delete local file after sending
+            try:
+                if os.path.exists(final_file):
+                    os.remove(final_file)
+            except Exception as e:
+                print(f"File cleanup error: {e}")
 
     except Exception as e:
+
         print(f"Download Error: {e}")
+
         try:
-            bot.edit_message_text("❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.", chat_id, message_id)
-        except:
+            bot.edit_message_text(
+                "❌ Download failed.\n"
+                "Please make sure the link is public and try again.",
+                chat_id,
+                message_id
+            )
+        except Exception:
+
             try:
-                bot.send_message(chat_id, "❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.")
-            except:
+                bot.send_message(
+                    chat_id,
+                    "❌ Download failed.\n"
+                    "Please make sure the link is public and try again."
+                )
+            except Exception:
                 pass
 
 # ================= RUN =================
