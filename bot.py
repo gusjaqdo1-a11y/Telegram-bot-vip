@@ -2146,6 +2146,46 @@ def download_media(chat_id, url, message_id):
                 bot.send_message(chat_id, f"❌ Download error:\n{e}")
                 return
 
+        # ================= YOUTUBE =================
+        if "youtube.com" in url or "youtu.be" in url:
+
+            try:
+
+                ydl_opts = {
+                    "format": "bestvideo+bestaudio/best",
+                    "outtmpl": "youtube_%(id)s.%(ext)s",
+                    "merge_output_format": "mp4",
+                    "quiet": True
+                }
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+                    info = ydl.extract_info(url, download=True)
+                    file = ydl.prepare_filename(info)
+
+                send_video_with_music(chat_id, file, "youtube")
+
+                return
+
+            except Exception as e:
+
+                bot.send_message(chat_id, f"❌ YouTube download error:\n{e}")
+                return
+
+
+        bot.send_message(chat_id, "❌ Unsupported link")
+
+
+    except Exception:
+
+        bot.send_message(
+            chat_id,
+            "❌ Incorrect link.\n\n"
+            "Send a valid link from TikTok, Snapchat, Pinterest, Facebook, or YouTube."
+        )
+
+
+
         # ================= DOWNLOAD OPTIONS =================
 
         ydl_opts = {
