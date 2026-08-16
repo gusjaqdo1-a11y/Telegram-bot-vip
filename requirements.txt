@@ -14,4 +14,3 @@ groq
 google-generativeai
 pillow
 aiohttp
-pymongo
