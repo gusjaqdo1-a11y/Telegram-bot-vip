@@ -2254,20 +2254,28 @@ def download_media(chat_id, url, message_id):
             except Exception:
                 pass
 
-    finally:
+        except Exception as e:
 
-        # Cleanup
-        if file_path:
+        print(
+            f"[DOWNLOAD ERROR] "
+            f"{type(e).__name__}: {e}"
+        )
+
+        try:
+            bot.edit_message_text(
+                "❌ Download failed.\n\n"
+                "The link could not be processed.",
+                chat_id,
+                message_id
+            )
+        except Exception:
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    print(
-                        f"[CLEANUP] Deleted: {file_path}"
-                    )
-            except Exception as e:
-                print(
-                    f"[CLEANUP ERROR] {e}"
+                bot.send_message(
+                    chat_id,
+                    "❌ Download failed."
                 )
+            except Exception:
+                pass
 
 
     # ======================================================
