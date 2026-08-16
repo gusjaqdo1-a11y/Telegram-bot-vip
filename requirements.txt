@@ -1,7 +1,7 @@
 flask
 flask_cors
 requests
-yt-dlp
+yt-dlp[default]
 beautifulsoup4
 pyTelegramBotAPI
 pymongo[srv]==3.11
