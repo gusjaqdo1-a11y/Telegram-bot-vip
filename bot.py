@@ -31,7 +31,7 @@ PHONE = os.getenv("PHONE")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 
-MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "600"))  # 10 Minutes in seconds
+MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900"))  # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
 # Dual executors for Priority (Quick Access) & Normal
@@ -240,7 +240,8 @@ def admin_menu():
     kb.add("SEND PAY", "📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
-    kb.add("🗑️ Reset All Feedbacks", "🔙 BACK MAIN MENU")
+    kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
+    kb.add("🔙 BACK MAIN MENU")
     return kb
 
 def back_to_main_menu(m):
@@ -257,6 +258,32 @@ def back_to_main_menu(m):
 @bot.message_handler(func=lambda m: m.text == "🔙 BACK MAIN MENU")
 def back_button_handler(m):
     back_to_main_menu(m)
+
+# ================= YOUTUBE 30 MIN ADMIN CONTROL =================
+@bot.message_handler(func=lambda m: m.text == "🔓 OPEN 30 MIN")
+def open_30_min_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send User ID or BOT ID to grant 30-min YouTube access:")
+        bot.register_next_step_handler(msg, open_30_min_process)
+    except: pass
+
+def open_30_min_process(m):
+    if not is_admin(m.from_user.id): return
+    uid_str = (m.text or "").strip()
+    uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
+    
+    if not uid or uid not in users:
+        try: bot.send_message(m.chat.id, "❌ User not found.")
+        except: pass
+        return
+        
+    users[uid]["youtube_30m"] = True
+    save_user(uid)
+    try: 
+        bot.send_message(m.chat.id, f"✅ User {uid} can now download YouTube videos up to 30 minutes.")
+        bot.send_message(int(uid), "🎉 Congratulations! You have been granted special access to download YouTube videos up to 30 minutes long!")
+    except: pass
 
 # ================= QUICK ACCESS ADMIN CONTROLS =================
 @bot.message_handler(func=lambda m: m.text == "⚡ QUICK ACCESS")
@@ -307,7 +334,6 @@ def grant_qa(m, status):
             pass
 
 # ================= FEEDBACK LOGIC =================
-
 def send_feedback_request(chat_id, platform, download_id):
     feedback_request_id = str(uuid.uuid4())
     kb = InlineKeyboardMarkup()
@@ -489,6 +515,7 @@ def start_handler(message):
             "banned": False,
             "verified": False,
             "quick_access": False,
+            "youtube_30m": False,
             "month": now_month()
         }
         if ref:
@@ -1527,6 +1554,7 @@ def import_users_process(m):
                 "banned": False,
                 "verified": False,
                 "quick_access": False,
+                "youtube_30m": False,
                 "month": now_month()
             }
             save_user(uid)
@@ -1991,7 +2019,35 @@ def extract_music(call):
 def download_media(chat_id, url, message_id):
     try:
         platform = "other"
-        if "tiktok.com" in url:
+        
+        # Twitter / X Fixes
+        if "x.com" in url or "twitter.com" in url:
+            platform = "twitter"
+            try:
+                # Try via vxtwitter API first, highly reliable
+                tweet_id_match = re.search(r'(?:twitter\.com|x\.com)/[^/]+/status/(\d+)', url)
+                if tweet_id_match:
+                    tweet_id = tweet_id_match.group(1)
+                    api_url = f"https://api.vxtwitter.com/Twitter/status/{tweet_id}"
+                    res = requests.get(api_url).json()
+                    if 'media_extended' in res and len(res['media_extended']) > 0:
+                        vid_url = None
+                        for media in res['media_extended']:
+                            if media['type'] == 'video':
+                                vid_url = media['url']
+                                break
+                        if vid_url:
+                            file_path = f"downloads/tw_{uuid.uuid4().hex[:8]}.mp4"
+                            with open(file_path, 'wb') as f:
+                                f.write(requests.get(vid_url).content)
+                            send_video_with_music(chat_id, file_path, platform, message_id)
+                            return
+            except Exception as e:
+                print(f"VxTwitter API failed: {e}")
+            # Fallback for yt-dlp
+            url = url.replace("x.com", "twitter.com")
+
+        elif "tiktok.com" in url:
             platform = "tiktok"
             api_url = f"https://www.tikwm.com/api/?url={url}"
             res = requests.get(api_url).json()
@@ -2012,16 +2068,26 @@ def download_media(chat_id, url, message_id):
                     send_video_with_music(chat_id, file_path, platform, message_id)
                     return
 
+        # Pinterest Fixes
+        elif "pin.it" in url or "pinterest.com" in url:
+            platform = "pinterest"
+            try:
+                if "pin.it" in url:
+                    url = requests.head(url, allow_redirects=True).url
+            except Exception:
+                pass
+
+        # Youtube Fixes
         elif "youtube.com" in url or "youtu.be" in url:
             platform = "youtube"
-            # Metadata check for duration up to 10 minutes
             ydl_info_opts = {"quiet": True, "no_warnings": True}
             with yt_dlp.YoutubeDL(ydl_info_opts) as ydl_meta:
                 try:
                     info_meta = ydl_meta.extract_info(url, download=False)
                     duration = info_meta.get('duration', 0)
-                    if duration and duration > MAX_YOUTUBE_DURATION:
-                        bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(MAX_YOUTUBE_DURATION/60)} minutes.", chat_id, message_id)
+                    user_max_duration = 1800 if users.get(str(chat_id), {}).get("youtube_30m") else MAX_YOUTUBE_DURATION
+                    if duration and duration > user_max_duration:
+                        bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(user_max_duration/60)} minutes.", chat_id, message_id)
                         return
                 except Exception:
                     pass
@@ -2030,12 +2096,8 @@ def download_media(chat_id, url, message_id):
             platform = "facebook"
         elif "instagram.com" in url:
             platform = "instagram"
-        elif "pin.it" in url or "pinterest.com" in url:
-            platform = "pinterest"
         elif "snapchat.com" in url:
             platform = "snapchat"
-        elif "x.com" in url or "twitter.com" in url:
-            platform = "twitter"
 
         ydl_opts = {
             "format": "b[ext=mp4]/best",
@@ -2044,6 +2106,9 @@ def download_media(chat_id, url, message_id):
             "no_warnings": True,
             "noplaylist": True,
             "socket_timeout": 15,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+            }
         }
                    
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
