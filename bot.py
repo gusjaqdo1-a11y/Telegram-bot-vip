@@ -2,8 +2,9 @@ import telebot
 from pymongo import MongoClient
 import requests
 from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice
+from telebot.apihelper import ApiTelegramException
 import os, json, random
-from datetime import datetime
+from datetime import datetime, timedelta
 import yt_dlp
 import subprocess
 import re
@@ -214,11 +215,13 @@ def bot_locked_guard(message):
     return False
 
 # ================= MENUS =================
-def user_menu(show_admin=False):
+def user_menu(show_admin=False, uid=None):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
     kb.add("👥 REFERRAL", "🆔 GET ID")
     kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
+    if uid is not None and can_create_bot(uid):
+        kb.add("🤖 BOT BUILDER")
     if show_admin:
         kb.add("👑 ADMIN PANEL")
     return kb
@@ -240,6 +243,8 @@ def admin_menu():
     kb.add("SEND PAY", "📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
+    kb.add("👥 Send Users To Create", "📢 Broadcast All Bots")
+    kb.add("🤖 All Created Bots", "⚙️ Bot Creation Access")
     kb.add("🗑️ Reset All Feedbacks", "🔙 BACK MAIN MENU")
     return kb
 
@@ -249,7 +254,7 @@ def back_to_main_menu(m):
         bot.send_message(
             m.chat.id,
             "🔙 Returning to main menu",
-            reply_markup=user_menu(is_admin(uid))
+            reply_markup=user_menu(is_admin(uid), uid)
         )
     except:
         pass
@@ -633,7 +638,7 @@ This bot helps you easily download videos and music from many popular platforms 
 3. The bot will automatically download the video for you.
 
 👇 Send any video link to begin downloading.""",
-                reply_markup=user_menu(is_admin(user_id))
+                reply_markup=user_menu(is_admin(user_id), user_id)
             )
         else:
             send_join_message(user_id)
@@ -909,14 +914,14 @@ def withdraw_amount_step(m):
 
     if amt < 1:
         try:
-            bot.send_message(m.chat.id, "❌ Minimum withdrawal is $1", reply_markup=user_menu(is_admin(uid)))
+            bot.send_message(m.chat.id, "❌ Minimum withdrawal is $1", reply_markup=user_menu(is_admin(uid), uid))
         except:
             pass
         return
 
     if amt > users[uid]["balance"]:
         try:
-            bot.send_message(m.chat.id, "❌ Insufficient balance", reply_markup=user_menu(is_admin(uid)))
+            bot.send_message(m.chat.id, "❌ Insufficient balance", reply_markup=user_menu(is_admin(uid), uid))
         except:
             pass
         return
@@ -1908,12 +1913,14 @@ def extract_url(text):
     return urls[0] if urls else None
 
 # ================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
-def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
+def send_video_with_music(chat_id, file_path, platform=None, message_id=None, bot_instance=None, bot_id=None):
+    active_bot = bot_instance or bot
+
     if not os.path.exists(file_path):
         return
 
     try:
-        bot.send_chat_action(chat_id, 'upload_video')
+        active_bot.send_chat_action(chat_id, 'upload_video')
     except:
         pass
 
@@ -1929,36 +1936,42 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
 
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🎵 Convert Music", callback_data=f"music_{vid_id}"))
-    if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
+    if bot_id is None and ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
         kb.add(InlineKeyboardButton(ADS_BTN_TEXT, url=ADS_URL))
 
     caption = CAPTION_TEXT
-    if ADS_ENABLED and ADS_TEXT:
+    if bot_id is None and ADS_ENABLED and ADS_TEXT:
         caption += f"\n\n📢 {ADS_TEXT}"
 
-    uid = str(chat_id)
-    videos_data["total"] = videos_data.get("total", 0) + 1
-    if "users" not in videos_data:
-        videos_data["users"] = {}
-    videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
+    if bot_id:
+        # Managed (created) bot - track stats separately, isolated per bot
+        increment_bot_downloads(bot_id, platform)
+        increment_bot_user_downloads(bot_id, chat_id)
+    else:
+        # Main bot - existing stats logic (unchanged)
+        uid = str(chat_id)
+        videos_data["total"] = videos_data.get("total", 0) + 1
+        if "users" not in videos_data:
+            videos_data["users"] = {}
+        videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
 
-    if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
-        videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-    save_videos()
+        if platform:
+            if "platforms" not in videos_data:
+                videos_data["platforms"] = {}
+            videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
+        save_videos()
 
     try:
         with open(perm_file_path, "rb") as video:
-            bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
+            active_bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
 
         if message_id:
             try:
-                bot.delete_message(chat_id, message_id)
+                active_bot.delete_message(chat_id, message_id)
             except:
                 pass
         
-        if videos_data.get("feedback_enabled"):
+        if bot_id is None and videos_data.get("feedback_enabled"):
             send_feedback_request(chat_id, platform or "other", vid_id)
             
     except Exception as e:
@@ -1988,7 +2001,8 @@ def extract_music(call):
         bot.answer_callback_query(call.id, "❌ Failed to convert music")
 
 # ================= DOWNLOAD MEDIA =================
-def download_media(chat_id, url, message_id):
+def download_media(chat_id, url, message_id, bot_instance=None, bot_id=None):
+    active_bot = bot_instance or bot
     try:
         platform = "other"
         if "tiktok.com" in url:
@@ -2000,16 +2014,16 @@ def download_media(chat_id, url, message_id):
                 if "images" in data:
                     images = data["images"]
                     media = [InputMediaPhoto(img) for img in images[:10]]
-                    bot.send_media_group(chat_id, media)
+                    active_bot.send_media_group(chat_id, media)
                     if message_id:
-                        bot.delete_message(chat_id, message_id)
+                        active_bot.delete_message(chat_id, message_id)
                     return
                 elif "play" in data:
                     vid_url = data["play"]
                     file_path = f"tiktok_{uuid.uuid4().hex[:8]}.mp4"
                     with open(file_path, 'wb') as f:
                         f.write(requests.get(vid_url).content)
-                    send_video_with_music(chat_id, file_path, platform, message_id)
+                    send_video_with_music(chat_id, file_path, platform, message_id, bot_instance=active_bot, bot_id=bot_id)
                     return
 
         elif "youtube.com" in url or "youtu.be" in url:
@@ -2021,7 +2035,7 @@ def download_media(chat_id, url, message_id):
                     info_meta = ydl_meta.extract_info(url, download=False)
                     duration = info_meta.get('duration', 0)
                     if duration and duration > MAX_YOUTUBE_DURATION:
-                        bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(MAX_YOUTUBE_DURATION/60)} minutes.", chat_id, message_id)
+                        active_bot.edit_message_text(f"❌ Sorry, video is too long ({int(duration/60)} mins). Maximum limit is {int(MAX_YOUTUBE_DURATION/60)} minutes.", chat_id, message_id)
                         return
                 except Exception:
                     pass
@@ -2055,17 +2069,684 @@ def download_media(chat_id, url, message_id):
                     os.rename(filename, new_filename)
                 filename = new_filename
 
-            send_video_with_music(chat_id, filename, platform, message_id)
+            send_video_with_music(chat_id, filename, platform, message_id, bot_instance=active_bot, bot_id=bot_id)
 
     except Exception as e:
         print(f"Download Error: {e}")
         try:
-            bot.edit_message_text("❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.", chat_id, message_id)
+            active_bot.edit_message_text("❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.", chat_id, message_id)
         except:
             try:
-                bot.send_message(chat_id, "❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.")
+                active_bot.send_message(chat_id, "❌ Sorry, I couldn't download this media. Please make sure the link is public and try again.")
             except:
                 pass
+
+# ================= BOT BUILDER SYSTEM (MULTI-BOT MANAGEMENT) =================
+# NOTE ON "MANAGED BOTS": Telegram does not provide a public API that lets one
+# bot programmatically create another bot and receive its token automatically.
+# The only official way to create a bot is a human talking to @BotFather.
+# This system therefore uses the real-world flow every legitimate "bot builder"
+# service uses: the user creates the bot themselves via @BotFather, then pastes
+# the resulting token here. We validate it (getMe), store it securely, and spin
+# it up as an independent downloader bot instance reusing the shared engine above.
+
+managed_bots_col = db1["managed_bots"]
+bot_users_col = db1["bot_users"]
+builder_settings_col = db1["bot_builder_settings"]
+
+managed_bot_instances = {}   # bot_id -> telebot.TeleBot instance (in-memory, this process only)
+managed_bot_threads = {}     # bot_id -> Thread
+
+def load_builder_settings():
+    doc = builder_settings_col.find_one({"_id": "config"})
+    if not doc:
+        doc = {"_id": "config", "creation_enabled": True}
+        builder_settings_col.insert_one(doc)
+    return doc
+
+_builder_settings_doc = load_builder_settings()
+BOT_CREATION_ENABLED = _builder_settings_doc.get("creation_enabled", True)
+
+def save_builder_settings():
+    builder_settings_col.update_one({"_id": "config"}, {"$set": {"creation_enabled": BOT_CREATION_ENABLED}}, upsert=True)
+
+def can_create_bot(uid):
+    uid = str(uid)
+    if is_admin(uid):
+        return True
+    if BOT_CREATION_ENABLED:
+        return not users.get(uid, {}).get("bot_creation_blocked", False)
+    return users.get(uid, {}).get("bot_creation_allowed", False)
+
+def get_user_bots(owner_id):
+    return list(managed_bots_col.find({"owner_id": str(owner_id), "status": {"$ne": "deleted"}}))
+
+def get_all_bots():
+    return list(managed_bots_col.find({"status": {"$ne": "deleted"}}))
+
+def get_bot_owner(bot_id):
+    doc = managed_bots_col.find_one({"_id": bot_id})
+    return str(doc.get("owner_id")) if doc else None
+
+def track_bot_user(bot_id, tg_user):
+    uid = str(tg_user.id)
+    existing = bot_users_col.find_one({"bot_id": bot_id, "user_id": uid})
+    if not existing:
+        bot_users_col.insert_one({
+            "bot_id": bot_id,
+            "user_id": uid,
+            "username": tg_user.username or "",
+            "first_name": tg_user.first_name or "",
+            "joined_at": datetime.now(),
+            "last_active": datetime.now(),
+            "downloads": 0
+        })
+    else:
+        bot_users_col.update_one({"_id": existing["_id"]}, {"$set": {"last_active": datetime.now()}})
+
+def increment_bot_downloads(bot_id, platform=None):
+    managed_bots_col.update_one({"_id": bot_id}, {"$inc": {"downloads": 1}})
+
+def increment_bot_user_downloads(bot_id, user_id):
+    bot_users_col.update_one({"bot_id": bot_id, "user_id": str(user_id)}, {"$inc": {"downloads": 1}})
+
+def send_broadcast_item(target_bot, chat_id, m):
+    """Send one broadcast message (text/photo/video/document) to a single chat_id using target_bot."""
+    if m.content_type == "text":
+        target_bot.send_message(chat_id, m.text)
+    elif m.content_type == "photo":
+        target_bot.send_photo(chat_id, m.photo[-1].file_id, caption=m.caption or "")
+    elif m.content_type == "video":
+        target_bot.send_video(chat_id, m.video.file_id, caption=m.caption or "")
+    elif m.content_type == "document":
+        target_bot.send_document(chat_id, m.document.file_id, caption=m.caption or "")
+    else:
+        raise ValueError("unsupported content type")
+
+def broadcast_to_bot_users(target_bot, bot_id, m, progress_cb=None):
+    """Broadcast m to all users of one managed bot. Returns (sent, failed)."""
+    recipients = list(bot_users_col.find({"bot_id": bot_id}))
+    sent = 0
+    failed = 0
+    for i, r in enumerate(recipients):
+        uid = r["user_id"]
+        try:
+            send_broadcast_item(target_bot, int(uid), m)
+            sent += 1
+        except ApiTelegramException as e:
+            if e.error_code == 429:
+                retry_after = 5
+                try:
+                    retry_after = e.result_json.get("parameters", {}).get("retry_after", 5)
+                except:
+                    pass
+                time.sleep(retry_after)
+                try:
+                    send_broadcast_item(target_bot, int(uid), m)
+                    sent += 1
+                except:
+                    failed += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+        time.sleep(0.05)
+        if progress_cb:
+            progress_cb(i + 1, len(recipients))
+    return sent, failed
+
+def owner_broadcast_process(bi, bot_id, m):
+    if not (m.text or m.photo or m.video or m.document):
+        try:
+            bi.send_message(m.chat.id, "❌ Please send text, a photo, a video, or a document.")
+        except:
+            pass
+        return
+    sent, failed = broadcast_to_bot_users(bi, bot_id, m)
+    try:
+        bi.send_message(m.chat.id, f"✅ Broadcast Completed\n\nSent: {sent}\nFailed: {failed}")
+    except:
+        pass
+
+def register_downloader_handlers(bi, bot_id):
+    """Attach the shared downloader engine + per-bot admin panel to a managed bot instance."""
+
+    @bi.message_handler(commands=['start'])
+    def mb_start(message):
+        track_bot_user(bot_id, message.from_user)
+        doc = managed_bots_col.find_one({"_id": bot_id})
+        kb = None
+        if doc and str(message.from_user.id) == str(doc.get("owner_id")):
+            kb = ReplyKeyboardMarkup(resize_keyboard=True)
+            kb.add("👑 Admin Panel")
+        try:
+            bi.send_message(
+                message.chat.id,
+                "🎬 Welcome!\n\nSend any video link (TikTok, YouTube, Facebook, Instagram, Pinterest, Snapchat, X/Twitter) to download it.",
+                reply_markup=kb
+            )
+        except:
+            pass
+
+    @bi.message_handler(func=lambda m: m.text == "👑 Admin Panel")
+    def mb_admin_panel(message):
+        owner_id = get_bot_owner(bot_id)
+        if owner_id != str(message.from_user.id):
+            try:
+                bi.send_message(message.chat.id, "❌ You are not the owner of this bot.")
+            except:
+                pass
+            return
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("📊 Stats", callback_data=f"bld_ownstats_{bot_id}"))
+        kb.add(InlineKeyboardButton("📢 Broadcast", callback_data=f"bld_ownbc_{bot_id}"))
+        kb.add(InlineKeyboardButton("⚙️ Bot Settings", callback_data=f"bld_ownset_{bot_id}"))
+        try:
+            bi.send_message(message.chat.id, "👑 Admin Panel", reply_markup=kb)
+        except:
+            pass
+
+    @bi.callback_query_handler(func=lambda call: call.data.startswith("bld_own"))
+    def mb_owner_callbacks(call):
+        owner_id = get_bot_owner(bot_id)
+        if owner_id != str(call.from_user.id):
+            try:
+                bi.answer_callback_query(call.id, "❌ Not authorized")
+            except:
+                pass
+            return
+
+        if call.data.startswith("bld_ownstats_"):
+            doc = managed_bots_col.find_one({"_id": bot_id}) or {}
+            users_count = bot_users_col.count_documents({"bot_id": bot_id})
+            downloads = doc.get("downloads", 0)
+            active_cutoff = datetime.now() - timedelta(days=7)
+            active_count = bot_users_col.count_documents({"bot_id": bot_id, "last_active": {"$gte": active_cutoff}})
+            text = f"📊 Bot Statistics\n\n👥 Users: {users_count}\n📥 Downloads: {downloads}\n🟢 Active Users (7d): {active_count}"
+            try:
+                bi.answer_callback_query(call.id)
+                bi.send_message(call.message.chat.id, text)
+            except:
+                pass
+
+        elif call.data.startswith("bld_ownbc_"):
+            try:
+                bi.answer_callback_query(call.id)
+                msg = bi.send_message(call.message.chat.id, "📝 Send the text / photo / video / document to broadcast to your bot's users:")
+                bi.register_next_step_handler(msg, lambda m: owner_broadcast_process(bi, bot_id, m))
+            except:
+                pass
+
+        elif call.data.startswith("bld_ownset_"):
+            doc = managed_bots_col.find_one({"_id": bot_id}) or {}
+            text = (
+                f"⚙️ Bot Settings\n\n"
+                f"🤖 Username: @{doc.get('bot_username')}\n"
+                f"📛 Name: {doc.get('bot_name')}\n"
+                f"📅 Created: {doc.get('created_at')}\n"
+                f"📊 Status: {doc.get('status', 'active')}"
+            )
+            try:
+                bi.answer_callback_query(call.id)
+                bi.send_message(call.message.chat.id, text)
+            except:
+                pass
+
+    @bi.callback_query_handler(func=lambda call: call.data.startswith("music_"))
+    def mb_extract_music(call):
+        vid_id = call.data.split("_")[1]
+        video_path = video_files.get(vid_id)
+        if not video_path or not os.path.exists(video_path):
+            try:
+                bi.answer_callback_query(call.id, "❌ Audio expired.")
+            except:
+                pass
+            return
+        audio_path = f"audio_{vid_id}.mp3"
+        try:
+            bi.send_chat_action(call.message.chat.id, 'upload_audio')
+            subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with open(audio_path, 'rb') as audio:
+                bi.send_audio(call.message.chat.id, audio)
+            os.remove(audio_path)
+        except Exception:
+            try:
+                bi.answer_callback_query(call.id, "❌ Failed to convert music")
+            except:
+                pass
+
+    @bi.message_handler(func=lambda m: m.text and "http" in m.text)
+    def mb_handle_link(message):
+        track_bot_user(bot_id, message.from_user)
+        link = extract_url(message.text)
+        if not link:
+            return
+        try:
+            msg = bi.send_message(message.chat.id, "⚡ Processing...")
+            normal_executor.submit(download_media, message.chat.id, link, msg.message_id, bi, bot_id)
+        except:
+            pass
+
+def start_managed_bot(bot_id, token):
+    if bot_id in managed_bot_instances:
+        return
+    try:
+        bi = telebot.TeleBot(token, parse_mode="HTML")
+        register_downloader_handlers(bi, bot_id)
+        managed_bot_instances[bot_id] = bi
+
+        def run():
+            try:
+                bi.infinity_polling(timeout=20, long_polling_timeout=20)
+            except Exception as e:
+                print(f"Managed bot {bot_id} stopped: {e}")
+
+        t = threading.Thread(target=run, daemon=True)
+        managed_bot_threads[bot_id] = t
+        t.start()
+    except Exception as e:
+        print(f"Failed to start managed bot {bot_id}: {e}")
+
+def stop_managed_bot(bot_id):
+    bi = managed_bot_instances.get(bot_id)
+    if bi:
+        try:
+            bi.stop_polling()
+        except:
+            pass
+        managed_bot_instances.pop(bot_id, None)
+    managed_bot_threads.pop(bot_id, None)
+
+def show_bot_builder_menu(chat_id):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("➕ Create New Bot", callback_data="bld_create"))
+    kb.add(InlineKeyboardButton("🤖 My Bots", callback_data="bld_mybots"))
+    kb.add(InlineKeyboardButton("🗑 Delete Bot", callback_data="bld_delete"))
+    try:
+        bot.send_message(chat_id, "🤖 Bot Creation System", reply_markup=kb)
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text == "👥 Send Users To Create")
+def admin_send_users_to_create(m):
+    if not is_admin(m.from_user.id):
+        return
+    show_bot_builder_menu(m.chat.id)
+
+@bot.message_handler(func=lambda m: m.text == "🤖 BOT BUILDER")
+def user_bot_builder_entry(m):
+    if bot_locked_guard(m) or banned_guard(m):
+        return
+    if not can_create_bot(m.from_user.id):
+        try:
+            bot.send_message(m.chat.id, "❌ Bot creation is currently unavailable.")
+        except:
+            pass
+        return
+    show_bot_builder_menu(m.chat.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "bld_create")
+def bld_create_cb(call):
+    uid = call.from_user.id
+    if not can_create_bot(uid):
+        try:
+            bot.answer_callback_query(call.id, "❌ Bot creation is currently unavailable.")
+        except:
+            pass
+        return
+    try:
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(
+            call.message.chat.id,
+            "🤖 Create New Bot\n\n"
+            "1️⃣ Open @BotFather in Telegram\n"
+            "2️⃣ Send /newbot and follow the steps\n"
+            "3️⃣ Copy the token BotFather gives you\n"
+            "4️⃣ Paste that token here\n\n"
+            "⚠️ Your token is stored securely and is never shown again."
+        )
+        bot.register_next_step_handler(msg, bld_receive_token, uid)
+    except:
+        pass
+
+def bld_receive_token(m, owner_id):
+    token = (m.text or "").strip()
+    if not token or ":" not in token:
+        try:
+            bot.send_message(m.chat.id, "❌ That doesn't look like a valid bot token. Press ➕ Create New Bot to try again.")
+        except:
+            pass
+        return
+
+    try:
+        test_bot = telebot.TeleBot(token, parse_mode="HTML")
+        me = test_bot.get_me()
+    except Exception:
+        try:
+            bot.send_message(m.chat.id, "❌ Invalid token, or Telegram rejected it. Please check and try again.")
+        except:
+            pass
+        return
+
+    existing = managed_bots_col.find_one({"bot_username": me.username, "status": {"$ne": "deleted"}})
+    if existing:
+        try:
+            bot.send_message(m.chat.id, "❌ This bot is already registered in the system.")
+        except:
+            pass
+        return
+
+    bot_id = str(uuid.uuid4())
+    managed_bots_col.insert_one({
+        "_id": bot_id,
+        "owner_id": str(owner_id),
+        "owner_username": m.from_user.username or "",
+        "bot_username": me.username,
+        "bot_name": me.first_name,
+        "token": token,
+        "created_at": datetime.now(),
+        "status": "active",
+        "downloads": 0
+    })
+
+    start_managed_bot(bot_id, token)
+
+    try:
+        bot.send_message(
+            m.chat.id,
+            f"✅ Bot Created!\n\n🤖 @{me.username} is now live as a downloader bot.\n"
+            "You are the owner — open that bot and press 👑 Admin Panel to manage it."
+        )
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "bld_mybots")
+def bld_mybots_cb(call):
+    uid = call.from_user.id
+    bots = get_user_bots(uid)
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+    if not bots:
+        try:
+            bot.send_message(call.message.chat.id, "You don't own any bots yet.")
+        except:
+            pass
+        return
+    lines = ["🤖 Your Bots:\n"]
+    for b in bots:
+        u_count = bot_users_col.count_documents({"bot_id": b["_id"]})
+        lines.append(f"@{b.get('bot_username')} — 👥 {u_count} users | 📥 {b.get('downloads', 0)} downloads | {b.get('status', 'active')}")
+    try:
+        bot.send_message(call.message.chat.id, "\n".join(lines))
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "bld_delete")
+def bld_delete_cb(call):
+    uid = call.from_user.id
+    bots = get_user_bots(uid)
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+    if not bots:
+        try:
+            bot.send_message(call.message.chat.id, "You don't own any bots to delete.")
+        except:
+            pass
+        return
+    kb = InlineKeyboardMarkup()
+    for b in bots:
+        kb.add(InlineKeyboardButton(f"@{b.get('bot_username')}", callback_data=f"bld_delpick_{b['_id']}"))
+    try:
+        bot.send_message(call.message.chat.id, "🤖 Select a bot to delete:", reply_markup=kb)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("bld_delpick_"))
+def bld_delpick_cb(call):
+    bot_id = call.data.split("bld_delpick_", 1)[1]
+    b = managed_bots_col.find_one({"_id": bot_id})
+    uid = call.from_user.id
+    if not b or (str(b.get("owner_id")) != str(uid) and not is_admin(uid)):
+        try:
+            bot.answer_callback_query(call.id, "❌ Not authorized")
+        except:
+            pass
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✅ Yes, Delete", callback_data=f"bld_delconfirm_{bot_id}"))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="bld_delcancel"))
+    try:
+        bot.answer_callback_query(call.id)
+        bot.edit_message_text(
+            f"⚠️ Are you sure?\n\nThis will remove @{b.get('bot_username')} from your Bot Builder system.",
+            call.message.chat.id, call.message.message_id, reply_markup=kb
+        )
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("bld_delconfirm_"))
+def bld_delconfirm_cb(call):
+    bot_id = call.data.split("bld_delconfirm_", 1)[1]
+    b = managed_bots_col.find_one({"_id": bot_id})
+    uid = call.from_user.id
+    if not b or (str(b.get("owner_id")) != str(uid) and not is_admin(uid)):
+        try:
+            bot.answer_callback_query(call.id, "❌ Not authorized")
+        except:
+            pass
+        return
+    stop_managed_bot(bot_id)
+    managed_bots_col.update_one({"_id": bot_id}, {"$set": {"status": "deleted"}})
+    try:
+        bot.answer_callback_query(call.id, "🗑 Bot deleted")
+        bot.edit_message_text(f"🗑 @{b.get('bot_username')} has been deleted.", call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "bld_delcancel")
+def bld_delcancel_cb(call):
+    try:
+        bot.answer_callback_query(call.id, "Cancelled")
+        bot.edit_message_text("❌ Deletion cancelled.", call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+def show_all_bots_page(chat_id, page, message_id=None):
+    all_bots = get_all_bots()
+    per_page = 5
+    total = len(all_bots)
+    start = page * per_page
+    page_bots = all_bots[start:start + per_page]
+
+    lines = [f"🤖 All Created Bots\n\nTotal Bots: {total}\n"]
+    for i, b in enumerate(page_bots, start=start + 1):
+        u_count = bot_users_col.count_documents({"bot_id": b["_id"]})
+        owner_label = f"@{b['owner_username']}" if b.get("owner_username") else b.get("owner_id")
+        lines.append(
+            f"{i}. @{b.get('bot_username')}\n"
+            f"Owner: {owner_label}\n"
+            f"Users: {u_count}\n"
+            f"Downloads: {b.get('downloads', 0)}\n"
+            f"Status: {b.get('status', 'active')}\n"
+        )
+
+    kb = InlineKeyboardMarkup()
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"bld_allbots_{page - 1}"))
+    if start + per_page < total:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"bld_allbots_{page + 1}"))
+    if nav:
+        kb.row(*nav)
+
+    text = "\n".join(lines) if page_bots else "No bots created yet."
+    try:
+        if message_id:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=kb)
+        else:
+            bot.send_message(chat_id, text, reply_markup=kb)
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text == "🤖 All Created Bots")
+def admin_all_bots(m):
+    if not is_admin(m.from_user.id):
+        return
+    show_all_bots_page(m.chat.id, 0)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("bld_allbots_"))
+def bld_allbots_page_cb(call):
+    if not is_admin(call.from_user.id):
+        try:
+            bot.answer_callback_query(call.id, "❌ Not admin")
+        except:
+            pass
+        return
+    page = int(call.data.split("_")[-1])
+    try:
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+    show_all_bots_page(call.message.chat.id, page, call.message.message_id)
+
+@bot.message_handler(func=lambda m: m.text == "⚙️ Bot Creation Access")
+def admin_toggle_access(m):
+    if not is_admin(m.from_user.id):
+        return
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🟢 Enable", callback_data="bld_access_on"))
+    kb.add(InlineKeyboardButton("🔴 Disable", callback_data="bld_access_off"))
+    status = "🟢 Enabled" if BOT_CREATION_ENABLED else "🔴 Disabled"
+    try:
+        bot.send_message(m.chat.id, f"⚙️ Bot Creation Access\n\nCurrent status: {status}", reply_markup=kb)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data in ["bld_access_on", "bld_access_off"])
+def bld_access_toggle_cb(call):
+    global BOT_CREATION_ENABLED
+    if not is_admin(call.from_user.id):
+        try:
+            bot.answer_callback_query(call.id, "❌ Not admin")
+        except:
+            pass
+        return
+    BOT_CREATION_ENABLED = call.data == "bld_access_on"
+    save_builder_settings()
+    status = "🟢 Enabled" if BOT_CREATION_ENABLED else "🔴 Disabled"
+    try:
+        bot.answer_callback_query(call.id, "✅ Updated")
+        bot.edit_message_text(f"⚙️ Bot Creation Access\n\nCurrent status: {status}", call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text == "📢 Broadcast All Bots")
+def admin_broadcast_all_bots(m):
+    if not is_admin(m.from_user.id):
+        return
+    all_bots = get_all_bots()
+    if not all_bots:
+        try:
+            bot.send_message(m.chat.id, "No managed bots yet.")
+        except:
+            pass
+        return
+    try:
+        msg = bot.send_message(m.chat.id, "📝 Send the text / photo / video / document to broadcast to ALL managed bots' users:")
+        bot.register_next_step_handler(msg, broadcast_all_bots_process)
+    except:
+        pass
+
+def broadcast_all_bots_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    if not (m.text or m.photo or m.video or m.document):
+        try:
+            bot.send_message(m.chat.id, "❌ Please send text, a photo, a video, or a document.")
+        except:
+            pass
+        return
+
+    all_bots = get_all_bots()
+    bots_with_recipients = []
+    total_users = 0
+    for b in all_bots:
+        recipients = list(bot_users_col.find({"bot_id": b["_id"]}))
+        bots_with_recipients.append((b, recipients))
+        total_users += len(recipients)
+
+    progress_msg = None
+    try:
+        progress_msg = bot.send_message(
+            m.chat.id,
+            f"📢 Broadcast started...\n\nBots: {len(all_bots)}\nUsers: {total_users}\n\nProgress:\n0 / {total_users}"
+        )
+    except:
+        pass
+
+    sent = 0
+    failed = 0
+    processed = 0
+    already_notified = set()  # avoid duplicate sends if the same telegram user exists in multiple bots
+    last_update = time.time()
+
+    for b, recipients in bots_with_recipients:
+        bi = managed_bot_instances.get(b["_id"])
+        if not bi:
+            failed += len(recipients)
+            processed += len(recipients)
+            continue
+
+        for r in recipients:
+            uid = r["user_id"]
+            processed += 1
+            if uid in already_notified:
+                # Already messaged this Telegram user through another managed bot
+                time.sleep(0.02)
+            else:
+                try:
+                    send_broadcast_item(bi, int(uid), m)
+                    sent += 1
+                    already_notified.add(uid)
+                except ApiTelegramException as e:
+                    if e.error_code == 429:
+                        retry_after = 5
+                        try:
+                            retry_after = e.result_json.get("parameters", {}).get("retry_after", 5)
+                        except:
+                            pass
+                        time.sleep(retry_after)
+                        try:
+                            send_broadcast_item(bi, int(uid), m)
+                            sent += 1
+                            already_notified.add(uid)
+                        except:
+                            failed += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    failed += 1
+                time.sleep(0.05)
+
+            if progress_msg and time.time() - last_update > 3:
+                last_update = time.time()
+                try:
+                    bot.edit_message_text(
+                        f"📢 Broadcast in progress...\n\nBots: {len(all_bots)}\nUsers: {total_users}\n\nProgress:\n{processed} / {total_users}",
+                        m.chat.id, progress_msg.message_id
+                    )
+                except:
+                    pass
+
+    try:
+        bot.send_message(m.chat.id, f"✅ Broadcast Completed\n\nSent: {sent}\nFailed: {failed}")
+    except:
+        pass
 
 # ================= RUN =================
 if __name__ == "__main__":
@@ -2073,6 +2754,11 @@ if __name__ == "__main__":
         os.makedirs("downloads")
 
     print("🤖 Downloader Bot is running...")
+
+    # Start all previously created managed (downloader) bots so they resume after a restart
+    for _b in get_all_bots():
+        if _b.get("status") == "active" and _b.get("token"):
+            start_managed_bot(_b["_id"], _b["token"])
     
     def run_bot1():
         bot.infinity_polling(timeout=20, long_polling_timeout=20)
