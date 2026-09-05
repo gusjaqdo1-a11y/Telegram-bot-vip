@@ -15,9 +15,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 # ================= CONFIG =================
 
@@ -29,11 +26,9 @@ API_HASH = os.getenv("API_HASH")
 
 PHONE = os.getenv("PHONE")
 
-# SMTP Config for support@vexdou.space
-SMTP_HOST = os.getenv("SMTP_HOST", "mail.spacemail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
-GMAIL_USER = os.getenv("GMAIL_USER", "support@vexdou.space")
-GMAIL_PASS = os.getenv("GMAIL_PASS")
+# Resend API Config for support@vexdou.space (HTTP Port 443 - Railey-friendly)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900"))  # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
@@ -229,20 +224,30 @@ def bot_locked_guard(message):
     return False
 
 def send_html_email(to_email, subject, html_body):
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = GMAIL_USER
-        msg["To"] = to_email
-        msg.attach(MIMEText(html_body, "html"))
+    if not RESEND_API_KEY:
+        print("❌ RESEND_API_KEY is not set in environment variables.")
+        return False
         
-        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
-        server.login(GMAIL_USER, GMAIL_PASS)
-        server.sendmail(GMAIL_USER, to_email, msg.as_string())
-        server.quit()
-        return True
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "from": SENDER_EMAIL,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            print(f"RESEND API ERROR: {response.text}")
+            return False
     except Exception as e:
-        print(f"HTML EMAIL ERROR: {e}")
+        print(f"EMAIL API ERROR: {e}")
         return False
 
 # ================= MENUS =================
