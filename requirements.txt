@@ -4,7 +4,7 @@ requests
 yt-dlp[default]
 beautifulsoup4
 pyTelegramBotAPI
-pymongo[srv]==3.11
+pymongo[srv]==3.12
 telethon
 gunicorn
 fastapi
