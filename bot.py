@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
 
-================= CONFIG =================
+# ================= CONFIG =================
 
 TOKEN = os.getenv("BOT_TOKEN")
 BOT2_TOKEN = os.getenv("BOT2_TOKEN")
