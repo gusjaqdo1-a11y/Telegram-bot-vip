@@ -924,10 +924,13 @@ def withdraw_address_step(m):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 CANCEL")
     try:
-        msg = bot.send_message(m.chat.id, f"Enter withdrawal amount\nMinimum: $1\nBalance: ${users[uid]['balance']:.2f}\n\nOr press 🔙 CANCEL", reply_markup=kb)
+        # Halkan ayaan ku darnay soo akhrinta minimum-ka admin-ka
+        min_w = get_setting("min_withdrawal", 1.0)
+        msg = bot.send_message(m.chat.id, f"Enter withdrawal amount\nMinimum: ${min_w}\nBalance: ${users[uid]['balance']:.2f}\n\nOr press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_amount_step)
     except:
         pass
+
 
 def withdraw_amount_step(m):
     uid = str(m.from_user.id)
