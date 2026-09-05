@@ -106,6 +106,16 @@ except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
 
+# ================= SETTINGS SETUP =================
+settings_col = db1["settings"]
+
+def get_setting(key, default):
+    res = settings_col.find_one({"_id": key})
+    return res["value"] if res else default
+
+def set_setting(key, value):
+    settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
 # ================= MONGODB DATABASE FUNCTIONS =================
 
 def load_users():
@@ -241,6 +251,9 @@ def admin_menu():
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
     kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
+    kb.add("📉 CHANGE MINIMUM", "➕ ADD FEE")
+    kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
+    kb.add("🗑️ REMOVE ALL")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -934,9 +947,10 @@ def withdraw_amount_step(m):
             pass
         return
 
-    if amt < 1:
+    min_w = get_setting("min_withdrawal", 1.0)
+    if amt < min_w:
         try:
-            bot.send_message(m.chat.id, "❌ Minimum withdrawal is $1", reply_markup=user_menu(is_admin(uid)))
+            bot.send_message(m.chat.id, f"❌ Minimum withdrawal is ${min_w}", reply_markup=user_menu(is_admin(uid)))
         except:
             pass
         return
@@ -948,6 +962,14 @@ def withdraw_amount_step(m):
             pass
         return
 
+    fee_pct = get_setting("fee_percent", 0.0)
+    low_fee = get_setting("low_fee", 0.0)
+
+    calculated_fee = (amt * fee_pct) / 100.0
+    amount_sent = amt - calculated_fee - low_fee
+    if amount_sent < 0:
+        amount_sent = 0.0
+
     wid = random.randint(10000, 99999)
     users[uid]["balance"] -= amt
     users[uid]["blocked"] += amt
@@ -956,6 +978,9 @@ def withdraw_amount_step(m):
         "id": wid,
         "user": uid,
         "amount": amt,
+        "fee": calculated_fee,
+        "low_fee": low_fee,
+        "amount_sent": amount_sent,
         "blocked": amt,
         "address": users[uid].get("temp_addr", "N/A"),
         "status": "pending",
@@ -966,12 +991,24 @@ def withdraw_amount_step(m):
     save_user(uid)
     save_withdraws()
 
+    # Fariintaada gaarka ah ee uu user-ku helayo:
+    receipt_text = (
+        f"✅ Withdrawal Request Sent\n"
+        f"🧾 Request ID: {wid}\n"
+        f"💲Fee ({fee_pct:.2f}%): -${calculated_fee:.2f}\n"
+        f"💲 Low W/D Fee: -${low_fee:.2f}\n"
+        f"💵 Amount: ${amt:.2f}\n"
+        f"🏦 Address: {withdrawal['address']}\n"
+        f"♾️ Amount Sent: ${amount_sent:.2f}\n"
+        f"⏳ Status: Pending"
+    )
+
     try:
-        bot.send_message(int(uid), f"✅ Withdrawal Request Sent\n🧾 Request ID: {wid}\n💵 Amount: ${amt:.2f}\n🏦 Address: {withdrawal['address']}\n💰 Balance Left: ${users[uid]['balance']:.2f}\n⏳ Status: Pending")
+        bot.send_message(int(uid), receipt_text)
     except:
         pass
 
-    admin_text = f"💳 NEW WITHDRAWAL\n\n👤 User: {uid}\n🤖 BOT ID: {users[uid]['bot_id']}\n👥 Referrals: {users[uid]['invited']}\n💵 Amount: ${amt:.2f}\n🧾 Request ID: {wid}\n🏦 Address: {withdrawal['address']}\n⏳ Status: Pending"
+    admin_text = f"💳 NEW WITHDRAWAL\n\n👤 User: {uid}\n🤖 BOT ID: {users[uid]['bot_id']}\n👥 Referrals: {users[uid]['invited']}\n💵 Amount: ${amt:.2f}\n♾️ Amount Sent: ${amount_sent:.2f}\n🧾 Request ID: {wid}\n🏦 Address: {withdrawal['address']}\n⏳ Status: Pending"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("✅ CONFIRM", callback_data=f"confirm_{wid}"),
@@ -985,6 +1022,7 @@ def withdraw_amount_step(m):
             bot.send_message(admin, admin_text, reply_markup=markup)
         except:
             pass
+
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("confirm_", "reject_", "ban_", "block_")))
 def admin_callbacks(call):
@@ -1175,6 +1213,123 @@ def stats_handler(m):
         bot.send_message(m.chat.id, msg)
     except:
         pass
+
+# ================= 1. CHANGE MINIMUM WITHDRAWAL =================
+@bot.message_handler(func=lambda m: m.text == "📉 CHANGE MINIMUM")
+def change_min_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send new minimum withdrawal amount (e.g., 0.001 or 1):")
+        bot.register_next_step_handler(msg, change_min_process)
+    except: pass
+
+def change_min_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        new_min = float(m.text.strip())
+        set_setting("min_withdrawal", new_min)
+        bot.send_message(m.chat.id, f"✅ Minimum withdrawal updated to: ${new_min}")
+    except:
+        bot.send_message(m.chat.id, "❌ Invalid number.")
+
+# ================= 2. ADD FEE & LOW FEE =================
+@bot.message_handler(func=lambda m: m.text == "➕ ADD FEE")
+def add_fee_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send fee percentage (e.g., 1.5 for 1.5% or 0 for 0%):")
+        bot.register_next_step_handler(msg, add_fee_process)
+    except: pass
+
+def add_fee_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        fee_pct = float(m.text.strip())
+        set_setting("fee_percent", fee_pct)
+        bot.send_message(m.chat.id, f"✅ Withdrawal fee percentage set to: {fee_pct}%")
+    except:
+        bot.send_message(m.chat.id, "❌ Invalid number.")
+
+@bot.message_handler(func=lambda m: m.text == "➕ ADD LOW FEE")
+def add_low_fee_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send low withdrawal fee amount (e.g., 0.05):")
+        bot.register_next_step_handler(msg, add_low_fee_process)
+    except: pass
+
+def add_low_fee_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        low_fee = float(m.text.strip())
+        set_setting("low_fee", low_fee)
+        bot.send_message(m.chat.id, f"✅ Low W/D fee set to: ${low_fee}")
+    except:
+        bot.send_message(m.chat.id, "❌ Invalid number.")
+
+# ================= 3. GIFT ALL & REMOVE ALL =================
+@bot.message_handler(func=lambda m: m.text == "🎁 GIFT ALL")
+def gift_all_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send amount to gift to ALL users (e.g. 1 or 0.5):")
+        bot.register_next_step_handler(msg, gift_all_process)
+    except: pass
+
+def gift_all_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        amount = float(m.text.strip())
+        if amount <= 0:
+            bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
+            return
+        
+        users_col.update_many({}, {"$inc": {"balance": amount}})
+        for uid in users:
+            users[uid]["balance"] = users[uid].get("balance", 0.0) + amount
+            
+        bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} to all users' balances!")
+    except Exception as e:
+        bot.send_message(m.chat.id, f"❌ Error: {e}")
+
+@bot.message_handler(func=lambda m: m.text == "🗑️ REMOVE ALL")
+def remove_all_start(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        msg = bot.send_message(m.chat.id, "Send amount and reason separated by pipe (|)\nExample:\n0.5 | Cashuur")
+        bot.register_next_step_handler(msg, remove_all_process)
+    except: pass
+
+def remove_all_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        parts = m.text.split("|")
+        if len(parts) < 2:
+            bot.send_message(m.chat.id, "❌ Invalid format. Use: Amount | Reason")
+            return
+        remove_amt = float(parts[0].strip())
+        reason = parts[1].strip()
+        
+        if remove_amt <= 0:
+            bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
+            return
+
+        users_col.update_many({}, {"$inc": {"balance": -remove_amt}})
+        for uid in users:
+            users[uid]["balance"] = max(0.0, users[uid].get("balance", 0.0) - remove_amt)
+
+        count = 0
+        for uid in users:
+            try:
+                bot.send_message(int(uid), f"⚠️ Fiiro gaar ah: Waxaa akoonkaaga laga jaray lacag dhan ${remove_amt:.2f} sabab la xiriirta: *{reason}*.")
+                count += 1
+            except:
+                pass
+
+        bot.send_message(m.chat.id, f"✅ Successfully removed ${remove_amt} from all users and notified {count} users. Reason: {reason}")
+    except Exception as e:
+        bot.send_message(m.chat.id, f"❌ Error: {e}")
+
 
 @bot.message_handler(func=lambda m: m.text == "🚫 BAN USER MANUAL")
 def manual_ban_start(m):
