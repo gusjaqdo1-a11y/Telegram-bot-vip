@@ -30,6 +30,9 @@ PHONE = os.getenv("PHONE")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
+# D7 SMS API Config
+D7_TOKEN = os.getenv("D7_TOKEN") # Add your D7 API Bearer Token to your environment variables
+
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
@@ -67,6 +70,7 @@ channel_posts = {}
 VERIFY_ENABLED = False
 verify_pending = {}
 email_verify_pending = {}
+phone_verify_pending = {} # New: Phone verification tracking
 video_files = {}
 
 ADS_ENABLED = False
@@ -255,6 +259,44 @@ def send_html_email(to_email, subject, html_body):
         print(f"EMAIL API ERROR: {e}")
         return False
 
+# NEW: D7 SMS Sender Function
+def send_d7_sms(phone_number, text):
+    if not D7_TOKEN:
+        print("❌ D7_TOKEN is not set in environment variables.")
+        return False
+        
+    url = "https://api.d7networks.com/messages/v1/send"
+    headers = {
+        "Authorization": f"Bearer {D7_TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "messages": [
+            {
+                "channel": "sms",
+                "recipients": [phone_number],
+                "content": text,
+                "msg_type": "text",
+                "data_coding": "text"
+            }
+        ],
+        "message_globals": {
+            "originator": "VerifyBot",
+            "report_url": "https://vexdou.space" # Dummy URL or your real webhook if needed
+        }
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            print(f"D7 SMS API ERROR: {response.text}")
+            return False
+    except Exception as e:
+        print(f"D7 SMS EXCEPTION: {e}")
+        return False
+
 def extract_url(text):
     if not text:
         return None
@@ -299,6 +341,7 @@ def admin_menu():
     kb.add("✅ Verified Users", "🏷️ Sticker")
     kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
     kb.add("Send verify")
+    kb.add("🟢 Open SMS", "🔴 CLOSE SMS") # Added New Buttons Here
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -317,6 +360,21 @@ def back_to_main_menu(m):
 def back_button_handler(m):
     back_to_main_menu(m)
 
+# ================= ADMIN SMS CONTROL =================
+@bot.message_handler(func=lambda m: m.text in ["🟢 Open SMS", "🔴 CLOSE SMS"])
+def sms_admin_manager(m):
+    if not is_admin(m.from_user.id): return
+
+    if m.text == "🟢 Open SMS":
+        set_setting("sms_enabled", True)
+        try: bot.send_message(m.chat.id, "🟢 SMS Verification system is now OPEN. Users can choose Gmail or Phone.")
+        except: pass
+    elif m.text == "🔴 CLOSE SMS":
+        set_setting("sms_enabled", False)
+        try: bot.send_message(m.chat.id, "🔴 SMS Verification system is now CLOSED. Users will only use Gmail.")
+        except: pass
+
+
 # ================= PROFILE & VERIFICATION LOGIC =================
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
@@ -332,12 +390,15 @@ def profile_handler(m):
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
-    email = u_data.get("email", "Not Set")
+    email = u_data.get("email", "")
+    phone = u_data.get("phone", "")
+    
+    contact_info = email if email else (phone if phone else "Not Set")
 
     text = (
         f"<b>👤 USER PROFILE</b>\n\n"
         f"• Status: {status_str}\n"
-        f"• Email: {email}\n"
+        f"• Contact: {contact_info}\n"
         f"• Date Joined: {joined}\n"
         f"• Total Downloads: {downloads}\n"
         f"• Balance: ${balance:.2f}"
@@ -353,12 +414,41 @@ def profile_handler(m):
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
     try:
-        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
-        bot.register_next_step_handler(msg, process_verification_email)
+        sms_enabled = get_setting("sms_enabled", False)
+        if sms_enabled:
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_choice_gmail"),
+                InlineKeyboardButton("📱 Verify via Number", callback_data="verify_choice_phone")
+            )
+            bot.edit_message_text(
+                "Fadlan dooro qaabka aad u rabto in lagu verify gareeyo:", 
+                call.message.chat.id, 
+                call.message.message_id, 
+                reply_markup=kb
+            )
+        else:
+            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
+            bot.register_next_step_handler(msg, process_verification_email)
+        bot.answer_callback_query(call.id)
+    except Exception as e:
+        print(f"Verify flow error: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("verify_choice_"))
+def handle_verify_choice(call):
+    choice = call.data.split("_")[2]
+    try:
+        if choice == "gmail":
+            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
+            bot.register_next_step_handler(msg, process_verification_email)
+        elif choice == "phone":
+            msg = bot.send_message(call.message.chat.id, "Fadlan soo dir Number-kaaga adoo ku daraya furaha dalka (Tusaale: +25261XXXXXXX ama +2519XXXXXXX):")
+            bot.register_next_step_handler(msg, process_verification_phone)
         bot.answer_callback_query(call.id)
     except:
         pass
 
+# ----- GMAIL VERIFICATION LOGIC -----
 def process_verification_email(m):
     uid = str(m.from_user.id)
     email = (m.text or "").strip()
@@ -532,6 +622,149 @@ def process_verification_code(m):
         except:
             pass
 
+# ----- PHONE VERIFICATION LOGIC -----
+def process_verification_phone(m):
+    uid = str(m.from_user.id)
+    phone_input = (m.text or "").strip().replace(" ", "")
+
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
+    if phone_input in menu_buttons or not phone_input.startswith("+") or len(phone_input) < 10:
+        try:
+            msg = bot.send_message(m.chat.id, "❌ Number-ka waa khalad. Fadlan soo dir Number sax ah oo wata furaha dalka (Sida: +252... ama +251...):")
+            bot.register_next_step_handler(msg, process_verification_phone)
+        except:
+            pass
+        return
+
+    code = str(random.randint(100000, 999999))
+    current_time = time.time()
+    phone_verify_pending[uid] = {
+        "phone": phone_input,
+        "code": code,
+        "time": current_time,
+        "last_resend": current_time
+    }
+
+    sms_text = f"Your Video Downloader Bot Verification Code is: {code}"
+    
+    success = send_d7_sms(phone_input, sms_text)
+    if success:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"))
+            msg = bot.send_message(m.chat.id, f"📲 Code ka kooban 6-god ayaa loogu soo diray SMS number-kaaga ({phone_input}). Fadlan hoos kusoo qor code-ka:", reply_markup=kb)
+            bot.register_next_step_handler(msg, process_phone_code)
+            threading.Thread(target=expire_phone_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+        except:
+            pass
+    else:
+        try:
+            bot.send_message(m.chat.id, "❌ Cillad ayaa ku timid dirida SMS-ka. Fadlan isku day mar kale ama hubi number-kaaga.")
+        except:
+            pass
+
+def expire_phone_verification(chat_id, message_id, uid):
+    time.sleep(120)
+    if uid in phone_verify_pending:
+        phone_verify_pending.pop(uid, None)
+        try:
+            bot.edit_message_text("❌ Waqtigii Verification-ka waa uu dhacay (2 Daqiiqo). Fadlan mar kale ka bilow Profile-kaaga.", chat_id, message_id, reply_markup=None)
+        except:
+            pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "resend_phone_code")
+def resend_phone_code_callback(call):
+    uid = str(call.from_user.id)
+    if uid not in phone_verify_pending:
+        bot.answer_callback_query(call.id, "❌ Waqtigii wuu dhacay. Fadlan ka bilow markale Profile-kaaga.", show_alert=True)
+        return
+
+    data = phone_verify_pending[uid]
+    current_time = time.time()
+    last_resend_time = data.get("last_resend", data.get("time", 0))
+    cooldown = 120
+    elapsed = current_time - last_resend_time
+
+    if elapsed < cooldown:
+        remaining = int(cooldown - elapsed)
+        mins = remaining // 60
+        secs = remaining % 60
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+        bot.answer_callback_query(call.id, f"⏳ Fadlan sug {time_str} intaad dib u codsan lahayd code kale.", show_alert=True)
+        return
+
+    data["last_resend"] = current_time
+    phone = data["phone"]
+    code = str(random.randint(100000, 999999))
+    data["code"] = code
+
+    sms_text = f"Your New Verification Code is: {code}"
+    
+    success = send_d7_sms(phone, sms_text)
+    if success:
+        bot.answer_callback_query(call.id, "✅ Code cusub ayaa laguugu soo diray SMS-kaaga!")
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"))
+            msg = bot.send_message(call.message.chat.id, f"📲 Code cusub ayaa loogu soo diray number-kaaga ({phone}). Fadlan gali code-ka halkan:", reply_markup=kb)
+            bot.register_next_step_handler(msg, process_phone_code)
+            threading.Thread(target=expire_phone_verification, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
+        except:
+            pass
+    else:
+        bot.answer_callback_query(call.id, "❌ Cillad baa jirta, dib isku day.", show_alert=True)
+
+def process_phone_code(m):
+    uid = str(m.from_user.id)
+    code_input = (m.text or "").strip()
+
+    if uid not in phone_verify_pending:
+        try:
+            bot.send_message(m.chat.id, "❌ Waqtigii Verify-ga wuu idlaaday. Fadlan mar kale ka bilow Profile-kaaga.")
+        except:
+            pass
+        return
+
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
+    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"))
+            msg = bot.send_message(
+                m.chat.id,
+                "⚠️ <b>Lama ogola in aad meel kale taabato!</b>\n"
+                "Waa in aad marka hore gelisaa code-ka 6-digit ah ee laguu soo diray SMS ahaan si aad u sii waddo isticmaalka bot-ka.\n\n"
+                "Fadlan geli code-ka saxda ah:",
+                reply_markup=kb
+            )
+            bot.register_next_step_handler(msg, process_phone_code)
+        except:
+            pass
+        return
+
+    data = phone_verify_pending[uid]
+    if code_input == data["code"]:
+        users[uid]["verified"] = True
+        users[uid]["phone"] = data["phone"]
+        if "sticker" not in users[uid] or not users[uid]["sticker"]:
+            users[uid]["sticker"] = "🌟"
+        save_user(uid)
+        phone_verify_pending.pop(uid, None)
+        try:
+            bot.send_message(m.chat.id, "✅ Hambalyo! Akoonkaaga hada waa Verified. Waxaad hubin kartaa Profile-kaaga.", reply_markup=user_menu(is_admin(m.from_user.id)))
+        except:
+            pass
+    else:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"))
+            msg = bot.send_message(m.chat.id, "❌ Code-ku waa khalad. Fadlan geli code-ka saxda ah ee SMS-ka laguugu soo diray:", reply_markup=kb)
+            bot.register_next_step_handler(msg, process_phone_code)
+            threading.Thread(target=expire_phone_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+        except:
+            pass
+
+
 # ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
 
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
@@ -550,7 +783,10 @@ def verified_users_list(m):
     for uid in verified_list[:30]:
         u_data = users[uid]
         sticker = u_data.get("sticker", "N/A")
-        text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {u_data.get('email', 'No email')} | Sticker: {sticker}\n"
+        email = u_data.get('email', '')
+        phone = u_data.get('phone', '')
+        contact = email if email else (phone if phone else "No Contact Info")
+        text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {contact} | Sticker: {sticker}\n"
     try:
         bot.send_message(m.chat.id, text, parse_mode="HTML")
     except:
@@ -2309,7 +2545,7 @@ def send_verify_broadcast_process(m):
     if not is_admin(m.from_user.id): return
     text = m.text
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🔐 Verify Now (Gmail)", callback_data="start_verify_flow"))
+    kb.add(InlineKeyboardButton("🔐 Verify Now", callback_data="start_verify_flow"))
 
     count = 0
     for uid, udata in users.items():
