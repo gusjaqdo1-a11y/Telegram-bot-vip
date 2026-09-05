@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
 
-# ================= CONFIG =================
+================= CONFIG =================
 
 TOKEN = os.getenv("BOT_TOKEN")
 BOT2_TOKEN = os.getenv("BOT2_TOKEN")
@@ -26,14 +26,16 @@ API_HASH = os.getenv("API_HASH")
 
 PHONE = os.getenv("PHONE")
 
-# Resend API Config for support@vexdou.space (HTTP Port 443 - Railey-friendly)
+Resend API Config for support@vexdou.space (HTTP Port 443 - Railey-friendly)
+
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
-MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900"))  # 15 Minutes in seconds
+MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
-# Dual executors for Priority (Quick Access) & Normal
+Dual executors for Priority (Quick Access) & Normal
+
 vip_executor = ThreadPoolExecutor(max_workers=5)
 normal_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
 
@@ -72,9 +74,10 @@ video_files = {}
 ADS_ENABLED = False
 ADS_TEXT = ""
 ADS_BTN_TEXT = ""
-ADS_URL = "" 
+ADS_URL = ""
 
-# ================= MONGODB SETUP (DUAL DATABASE) =================
+================= MONGODB SETUP (DUAL DATABASE) =================
+
 MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
 MONGO_URI_2 = os.getenv("MONGO_URI_2", os.getenv("mongodb://localhost:27017/stats_db"))
 
@@ -84,10 +87,11 @@ try:
         db1 = mongo_client1.get_default_database()
     except Exception:
         db1 = mongo_client1["user_db"]
-        
+
     users_col = db1["users"]
     withdraws_col = db1["withdraws"]
     print("✅ MongoDB 1 (Users & Withdraws) Connected Successfully")
+
 except Exception as e:
     print(f"❌ MongoDB 1 Connection Error: {e}")
     exit()
@@ -98,15 +102,17 @@ try:
         db2 = mongo_client2.get_default_database()
     except Exception:
         db2 = mongo_client2["stats_db"]
-        
+
     videos_col = db2["videos"]
     feedback_col = db2["feedback"]
     print("✅ MongoDB 2 (Videos, Stats & Feedback) Connected Successfully")
+
 except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
 
-# ================= SETTINGS SETUP =================
+================= SETTINGS SETUP =================
+
 settings_col = db1["settings"]
 
 def get_setting(key, default):
@@ -116,7 +122,7 @@ def get_setting(key, default):
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
-# ================= MONGODB DATABASE FUNCTIONS =================
+================= MONGODB DATABASE FUNCTIONS =================
 
 def load_users():
     users_dict = {}
@@ -181,7 +187,8 @@ def save_videos():
     data.pop("_id", None)
     videos_col.update_one({"_id": "stats"}, {"$set": data}, upsert=True)
 
-# ================= HELPER FUNCTIONS =================
+================= HELPER FUNCTIONS =================
+
 def random_ref():
     return str(random.randint(1000000000, 9999999999))
 
@@ -227,7 +234,7 @@ def send_html_email(to_email, subject, html_body):
     if not RESEND_API_KEY:
         print("❌ RESEND_API_KEY is not set in environment variables.")
         return False
-        
+
     url = "https://api.resend.com/emails"
     headers = {
         "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -250,11 +257,13 @@ def send_html_email(to_email, subject, html_body):
         print(f"EMAIL API ERROR: {e}")
         return False
 
-# ================= MENUS =================
+================= MENUS =================
+
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
     kb.add("👥 REFERRAL", "🆔 GET ID")
+    kb.add("💳 PAY")
     kb.add("👤 Profile")
     kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
     if show_admin:
@@ -284,6 +293,8 @@ def admin_menu():
     kb.add("🗑️ REMOVE ALL")
     kb.add("📢 Send Email All")
     kb.add("✅ Verified Users", "🏷️ Sticker")
+    kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
+    kb.add("Send verify")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -302,14 +313,15 @@ def back_to_main_menu(m):
 def back_button_handler(m):
     back_to_main_menu(m)
 
-# ================= PROFILE & VERIFICATION LOGIC =================
+================= PROFILE & VERIFICATION LOGIC =================
+
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
 def profile_handler(m):
     if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
     u_data = users.get(uid, {})
-    
+
     verified = u_data.get("verified", False)
     sticker = u_data.get("sticker", "Verified" if verified else "Not Verified")
     status_str = f"Verified ({sticker})" if verified else "Not Verified"
@@ -317,7 +329,7 @@ def profile_handler(m):
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
     email = u_data.get("email", "Not Set")
-    
+
     text = (
         f"<b>👤 USER PROFILE</b>\n\n"
         f"• Status: {status_str}\n"
@@ -326,11 +338,9 @@ def profile_handler(m):
         f"• Total Downloads: {downloads}\n"
         f"• Balance: ${balance:.2f}"
     )
-    
     kb = InlineKeyboardMarkup()
     if not verified:
         kb.add(InlineKeyboardButton("Verify", callback_data="start_verify_flow"))
-        
     try:
         bot.send_message(m.chat.id, text, reply_markup=kb)
     except:
@@ -339,9 +349,7 @@ def profile_handler(m):
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
     try:
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
-        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
+        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
         bot.register_next_step_handler(msg, process_verification_email)
         bot.answer_callback_query(call.id)
     except:
@@ -350,37 +358,25 @@ def start_verify_flow(call):
 def process_verification_email(m):
     uid = str(m.from_user.id)
     email = (m.text or "").strip()
-    
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "🔙 CANCEL"]
-    
-    # Haddii user-ku uu taabto button kale ama uu joojiyo, wuu ka baxayaa verification-ka
-    if email in menu_buttons or email == "🔙 CANCEL" or email == "🔙 BACK MAIN MENU":
-        email_verify_pending.pop(uid, None)
-        try:
-            bot.send_message(m.chat.id, "❌ Verification process was cancelled.", reply_markup=user_menu(is_admin(m.from_user.id)))
-        except:
-            pass
-        return
 
-    if "@" not in email:
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
+    if email in menu_buttons or "@" not in email:
         try:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
-            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:", reply_markup=kb)
+            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:")
             bot.register_next_step_handler(msg, process_verification_email)
         except:
             pass
         return
-        
+
     code = str(random.randint(100000, 999999))
     current_time = time.time()
     email_verify_pending[uid] = {
-        "email": email, 
-        "code": code, 
+        "email": email,
+        "code": code,
         "time": current_time,
         "last_resend": current_time
     }
-    
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -398,13 +394,12 @@ def process_verification_email(m):
     </body>
     </html>
     """
-    
+
     success = send_html_email(email, "Your Bot Verification Code", html_content)
     if success:
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
@@ -417,7 +412,7 @@ def process_verification_email(m):
             pass
 
 def expire_verification(chat_id, message_id, uid):
-    time.sleep(120)  # 2 minutes
+    time.sleep(120) # 2 minutes
     if uid in email_verify_pending:
         email_verify_pending.pop(uid, None)
         try:
@@ -425,32 +420,19 @@ def expire_verification(chat_id, message_id, uid):
         except:
             pass
 
-@bot.callback_query_handler(func=lambda call: call.data == "cancel_verify")
-def cancel_verify_callback(call):
-    uid = str(call.from_user.id)
-    if uid in email_verify_pending:
-        email_verify_pending.pop(uid, None)
-    try:
-        bot.answer_callback_query(call.id, "❌ Verification cancelled.")
-        bot.edit_message_text("❌ Verification has been cancelled. You can restart it anytime from your profile.", call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id, "Main menu:", reply_markup=user_menu(is_admin(uid)))
-    except:
-        pass
-
 @bot.callback_query_handler(func=lambda call: call.data == "resend_verify_code")
 def resend_verify_code_callback(call):
     uid = str(call.from_user.id)
     if uid not in email_verify_pending:
         bot.answer_callback_query(call.id, "❌ Verification session expired. Please start again from your profile.", show_alert=True)
         return
-        
+
     data = email_verify_pending[uid]
-    
     current_time = time.time()
     last_resend_time = data.get("last_resend", data.get("time", 0))
     cooldown = 120
     elapsed = current_time - last_resend_time
-    
+
     if elapsed < cooldown:
         remaining = int(cooldown - elapsed)
         mins = remaining // 60
@@ -458,12 +440,12 @@ def resend_verify_code_callback(call):
         time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
         bot.answer_callback_query(call.id, f"⏳ Fadlan sug {time_str} intaad dib u codsan lahayd code kale.", show_alert=True)
         return
-        
+
     data["last_resend"] = current_time
     email = data["email"]
     code = str(random.randint(100000, 999999))
     data["code"] = code
-    
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -481,14 +463,13 @@ def resend_verify_code_callback(call):
     </body>
     </html>
     """
-    
+
     success = send_html_email(email, "Your New Bot Verification Code", html_content)
     if success:
         bot.answer_callback_query(call.id, "✅ A new code has been sent to your email!")
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(call.message.chat.id, f"📩 A new 6-digit verification code has been resent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
@@ -500,34 +481,24 @@ def resend_verify_code_callback(call):
 def process_verification_code(m):
     uid = str(m.from_user.id)
     code_input = (m.text or "").strip()
-    
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "🔙 CANCEL"]
-    
-    # Haddii user-ku uu taabto badhan ama uu riixdo cancel, wuu ka baxayaa verification-ka
-    if code_input in menu_buttons or code_input == "🔙 CANCEL" or code_input == "🔙 BACK MAIN MENU":
-        email_verify_pending.pop(uid, None)
+
+    if uid not in email_verify_pending:
         try:
-            bot.send_message(m.chat.id, "❌ Verification process was cancelled.", reply_markup=user_menu(is_admin(uid)))
+            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.")
         except:
             pass
         return
 
-    if uid not in email_verify_pending:
-        try:
-            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.", reply_markup=user_menu(is_admin(uid)))
-        except:
-            pass
-        return
-        
-    if not code_input.isdigit() or len(code_input) != 6:
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
+    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(
-                m.chat.id, 
-                "❌ <b>Code aan sax ahayn ama meel kale oo la taabtay!</b>\n"
-                "Fadlan geli code sax ah oo 6-digit ah ama riix Cancel si aad u joojiso:", 
+                m.chat.id,
+                "⚠️ <b>Lama ogola in aad meel kale taabato!</b>\n"
+                "Waa in aad marka hore gelisaa code-ka 6-digit ah ee loo soo diray Gmail-kaaga si aad u sii waddo isticmaalka bot-ka.\n\n"
+                "Fadlan geli code-ka saxda ah:",
                 reply_markup=kb
             )
             bot.register_next_step_handler(msg, process_verification_code)
@@ -551,14 +522,14 @@ def process_verification_code(m):
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except:
             pass
 
-# ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
+================= ADMIN VERIFIED USERS & STICKER MANAGER =================
+
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
 def verified_users_list(m):
     if not is_admin(m.from_user.id):
@@ -570,13 +541,12 @@ def verified_users_list(m):
         except:
             pass
         return
-        
+
     text = f"✅ VERIFIED USERS ({len(verified_list)})\n\n"
     for uid in verified_list[:30]:
         u_data = users[uid]
         sticker = u_data.get("sticker", "N/A")
         text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {u_data.get('email', 'No email')} | Sticker: {sticker}\n"
-        
     try:
         bot.send_message(m.chat.id, text, parse_mode="HTML")
     except:
@@ -602,12 +572,12 @@ def sticker_admin_process(m):
             return
         uid_str = parts[0].strip()
         sticker_text = parts[1].strip()
-        
+
         uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
         if not uid or uid not in users:
             bot.send_message(m.chat.id, "❌ User not found.")
             return
-            
+
         users[uid]["sticker"] = sticker_text
         save_user(uid)
         bot.send_message(m.chat.id, f"✅ Sticker successfully updated for user {uid}!")
@@ -618,7 +588,8 @@ def sticker_admin_process(m):
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
-# ================= ADMIN SEND EMAIL ALL =================
+================= ADMIN SEND EMAIL ALL =================
+
 @bot.message_handler(func=lambda m: m.text == "📢 Send Email All")
 def send_email_all_start(m):
     if not is_admin(m.from_user.id):
@@ -633,7 +604,7 @@ def send_email_all_process(m):
     if not is_admin(m.from_user.id):
         return
     html_content = m.text
-    
+
     count = 0
     for uid, data in users.items():
         email = data.get("email")
@@ -641,13 +612,13 @@ def send_email_all_process(m):
             success = send_html_email(email, "Announcement from Video Downloader Bot", html_content)
             if success:
                 count += 1
-                
     try:
         bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
     except:
         pass
 
-# ================= YOUTUBE 30 MIN ADMIN CONTROL =================
+================= YOUTUBE 30 MIN ADMIN CONTROL =================
+
 @bot.message_handler(func=lambda m: m.text == "🔓 OPEN 30 MIN")
 def open_30_min_start(m):
     if not is_admin(m.from_user.id): return
@@ -660,20 +631,22 @@ def open_30_min_process(m):
     if not is_admin(m.from_user.id): return
     uid_str = (m.text or "").strip()
     uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-    
+
     if not uid or uid not in users:
-        try: bot.send_message(m.chat.id, "❌ User not found.")
+        try:
+            bot.send_message(m.chat.id, "❌ User not found.")
         except: pass
         return
-        
+
     users[uid]["youtube_30m"] = True
     save_user(uid)
-    try: 
+    try:
         bot.send_message(m.chat.id, f"✅ User {uid} can now download YouTube videos up to 30 minutes.")
         bot.send_message(int(uid), "🎉 Congratulations! You have been granted special access to download YouTube videos up to 30 minutes long!")
     except: pass
 
-# ================= QUICK ACCESS ADMIN CONTROLS =================
+================= QUICK ACCESS ADMIN CONTROLS =================
+
 @bot.message_handler(func=lambda m: m.text == "⚡ QUICK ACCESS")
 def quick_access_admin(m):
     if not is_admin(m.from_user.id):
@@ -721,7 +694,8 @@ def grant_qa(m, status):
         except:
             pass
 
-# ================= FEEDBACK LOGIC =================
+================= FEEDBACK LOGIC =================
+
 def send_feedback_request(chat_id, platform, download_id):
     feedback_request_id = str(uuid.uuid4())
     kb = InlineKeyboardMarkup()
@@ -730,7 +704,7 @@ def send_feedback_request(chat_id, platform, download_id):
         InlineKeyboardButton("👎 Bad", callback_data=f"rate_bad_{feedback_request_id}_{platform}")
     )
     kb.add(InlineKeyboardButton("💬 Feedback", callback_data=f"rate_text_{feedback_request_id}"))
-    
+
     try:
         bot.send_message(chat_id, "How was your experience with our service? ❤️", reply_markup=kb)
     except Exception as e:
@@ -743,7 +717,7 @@ def handle_rating(call):
     req_id = parts[2]
     platform = parts[3]
     user_id = call.from_user.id
-    
+
     feedback_col.update_one(
         {"user_id": user_id, "feedback_request_id": req_id},
         {"$set": {
@@ -754,7 +728,6 @@ def handle_rating(call):
         }, "$setOnInsert": {"created_at": datetime.now()}},
         upsert=True
     )
-    
     bot.answer_callback_query(call.id, "Thank you for your feedback! ❤️")
     try:
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
@@ -778,7 +751,7 @@ def save_written_feedback(m, req_id):
         except:
             pass
         return
-        
+
     feedback_col.update_one(
         {"user_id": m.from_user.id, "feedback_request_id": req_id},
         {"$set": {
@@ -796,74 +769,59 @@ def save_written_feedback(m, req_id):
 @bot.message_handler(func=lambda m: m.text in ["📊 Feedback Stats", "🟢 Open Feedback", "🔴 Close Feedback", "🗑️ Reset All Feedbacks"])
 def feedback_admin_manager(m):
     if not is_admin(m.from_user.id): return
-    
+
     if m.text == "🟢 Open Feedback":
         videos_data["feedback_enabled"] = True
         save_videos()
-        try:
-            bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.")
-        except:
-            pass
-        
+        try: bot.send_message(m.chat.id, "🟢 Feedback system is now OPEN.")
+        except: pass
     elif m.text == "🔴 Close Feedback":
         videos_data["feedback_enabled"] = False
         save_videos()
-        try:
-            bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.")
-        except:
-            pass
-        
+        try: bot.send_message(m.chat.id, "🔴 Feedback system is now CLOSED.")
+        except: pass
     elif m.text == "📊 Feedback Stats":
         goods = feedback_col.count_documents({"rating": "good"})
         bads = feedback_col.count_documents({"rating": "bad"})
         written = feedback_col.count_documents({"feedback_text": {"$exists": True}})
         total = goods + bads
-        
         sat = "No ratings yet."
         if total > 0:
             pct = (goods / total) * 100
             sat = f"{pct:.2f}%"
-            
         status = "OPEN" if videos_data.get("feedback_enabled") else "CLOSED"
-        
         text = f"📊 FEEDBACK STATISTICS\n\n👍 Good: {goods}\n👎 Bad: {bads}\n💬 Written Feedback: {written}\n📊 Total Ratings: {total}\n❤️ Satisfaction: {sat}\n\n🟢 Status: {status}"
-        
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("💬 View Feedback", callback_data="view_fb_0"))
-        try:
-            bot.send_message(m.chat.id, text, reply_markup=kb)
-        except:
-            pass
-        
+        try: bot.send_message(m.chat.id, text, reply_markup=kb)
+        except: pass
     elif m.text == "🗑️ Reset All Feedbacks":
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("✅ Yes, Reset Everything", callback_data="reset_fb_confirm"))
         kb.add(InlineKeyboardButton("❌ Cancel", callback_data="reset_fb_cancel"))
-        try:
-            bot.send_message(m.chat.id, "⚠️ Are you sure you want to delete all existing feedback data? This action cannot be undone.", reply_markup=kb)
-        except:
-            pass
+        try: bot.send_message(m.chat.id, "⚠️ Are you sure you want to delete all existing feedback data? This action cannot be undone.", reply_markup=kb)
+        except: pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("view_fb_"))
 def view_feedback_pagination(call):
     if not is_admin(call.from_user.id): return
     page = int(call.data.split("_")[2])
     all_fb = list(feedback_col.find({"feedback_text": {"$exists": True}}).sort("created_at", -1))
-    
+
     if not all_fb:
         bot.answer_callback_query(call.id, "No feedback yet.")
         return
-        
+
     item = all_fb[page]
     text = f"💬 USER FEEDBACK\n\n👤 User: @{item.get('username', 'N/A')}\n📅 Date: {item.get('created_at').strftime('%Y-%m-%d')}\n\n📝 {item.get('feedback_text')}"
-    
     kb = InlineKeyboardMarkup()
     btns = []
-    if page > 0: btns.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"view_fb_{page-1}"))
-    if page < len(all_fb) - 1: btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"view_fb_{page+1}"))
+    if page > 0:
+        btns.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"view_fb_{page-1}"))
+    if page < len(all_fb) - 1:
+        btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"view_fb_{page+1}"))
     kb.row(*btns)
     kb.add(InlineKeyboardButton("🔙 Back", callback_data="close_fb"))
-    
     try: bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
     except: pass
 
@@ -882,7 +840,8 @@ def reset_callback_handler(call):
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
 
-# ================= START HANDLER =================
+================= START HANDLER =================
+
 @bot.message_handler(commands=['start'])
 def start_handler(message):
     if bot_locked_guard(message):
@@ -890,7 +849,6 @@ def start_handler(message):
 
     uid = message.from_user.id
     args = message.text.split()
-
     if str(uid) not in users:
         ref = args[1] if len(args) > 1 else None
         users[str(uid)] = {
@@ -916,9 +874,7 @@ def start_handler(message):
                     bot.send_message(int(ref_user), "🎉 You earned $0.2 from referral!")
                 except:
                     pass
-
         save_user(str(uid))
-
     check_membership(uid)
 
 @bot.message_handler(commands=['view'])
@@ -956,7 +912,7 @@ def refer_cmd(m):
         ref = users[uid]['ref']
         link = f"https://t.me/{bot_username}?start={ref}"
         invited = users[uid].get("invited", 0)
-        
+
         promo = (
             "🚀 Download videos instantly with DownloadVedioYTBot!\n\n"
             "Supports:\n"
@@ -967,10 +923,9 @@ def refer_cmd(m):
             "🔥 Easy & free to use\n\n"
             f"{link}"
         )
-        
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("📤 Share", switch_inline_query=promo))
-        
+        kb.add(InlineKeyboardButton("💳 Buy Custom Referral Code (PAY)", callback_data="buy_ref_menu"))
         bot.send_message(
             m.chat.id,
             f"🔗 Your Referral Link:\n{link}\n\n"
@@ -990,7 +945,7 @@ def ping_cmd(m):
         speed = round((end - start) * 1000)
         status = "🟢 Online" if speed < 1000 else "🟡 Slow"
         bot.edit_message_text(
-            f"🏓 <b>PONG!</b>\n\n"
+            f"🏓 PONG!\n\n"
             f"⚡ Speed: {speed} ms\n"
             f"📡 Status: {status}",
             m.chat.id,
@@ -1000,7 +955,8 @@ def ping_cmd(m):
     except:
         pass
 
-# ================= VERIFY BOT START =================
+================= VERIFY BOT START =================
+
 @bot2.message_handler(commands=['start'])
 def verify_start(message):
     args = message.text.split()
@@ -1009,8 +965,8 @@ def verify_start(message):
         try:
             bot2.send_message(
                 message.chat.id,
-                f"🔑 <b>Your Verification Code</b>\n\n"
-                f"<code>{code}</code>\n\n"
+                f"🔑 Your Verification Code\n\n"
+                f"{code}\n\n"
                 "Copy this code and send it to the downloader bot."
             )
         except:
@@ -1026,13 +982,14 @@ def verify_start(message):
         try:
             bot2.send_message(
                 message.chat.id,
-                "❌ <b>Don't Have Code?</b>\n\nGet code from downloader bot.",
+                "❌ Don't Have Code?\n\nGet code from downloader bot.",
                 reply_markup=kb
             )
         except:
             pass
 
-# ================= CHECK MEMBERSHIP =================
+================= CHECK MEMBERSHIP =================
+
 def check_membership(user_id):
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
@@ -1044,9 +1001,12 @@ def check_membership(user_id):
 This bot helps you easily download videos and music from many popular platforms directly to Telegram.
 
 📥 How to use the bot:
-1. Copy the video link from any supported platform.
-2. Send the link here in the bot.
-3. The bot will automatically download the video for you.
+
+Copy the video link from any supported platform.
+
+Send the link here in the bot.
+
+The bot will automatically download the video for you.
 
 👇 Send any video link to begin downloading.""",
                 reply_markup=user_menu(is_admin(user_id))
@@ -1136,7 +1096,7 @@ def get_id_handler(m):
         return
     uid = str(m.from_user.id)
     try:
-        bot.send_message(m.chat.id, f"🆔 BOT ID: <code>{users[uid]['bot_id']}</code>\n👤 Telegram ID: <code>{uid}</code>")
+        bot.send_message(m.chat.id, f"🆔 BOT ID: {users[uid]['bot_id']}\n👤 Telegram ID: {uid}")
     except:
         pass
 
@@ -1210,7 +1170,6 @@ def withdraw_address_step(m):
     except:
         pass
 
-
 def withdraw_amount_step(m):
     uid = str(m.from_user.id)
     text = (m.text or "").strip()
@@ -1246,7 +1205,6 @@ def withdraw_amount_step(m):
 
     fee_pct = get_setting("fee_percent", 0.0)
     low_fee = get_setting("low_fee", 0.0)
-
     calculated_fee = (amt * fee_pct) / 100.0
     amount_sent = amt - calculated_fee - low_fee
     if amount_sent < 0:
@@ -1268,12 +1226,10 @@ def withdraw_amount_step(m):
         "status": "pending",
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
-
     withdraws.append(withdrawal)
     save_user(uid)
     save_withdraws()
 
-    # Send gorgeous HTML email receipt if verified
     if users[uid].get("verified") and users[uid].get("email"):
         w_email = users[uid]["email"]
         html_receipt = f"""
@@ -1336,7 +1292,6 @@ def withdraw_amount_step(m):
         f"♾️ Amount Sent: ${amount_sent:.2f}\n"
         f"⏳ Status: Pending"
     )
-
     try:
         bot.send_message(int(uid), receipt_text)
     except:
@@ -1350,13 +1305,11 @@ def withdraw_amount_step(m):
         InlineKeyboardButton("🚫 BAN USER", callback_data=f"ban_{uid}"),
         InlineKeyboardButton("💰 BAN MONEY", callback_data=f"block_{wid}")
     )
-
     for admin in ADMIN_IDS:
         try:
             bot.send_message(admin, admin_text, reply_markup=markup)
         except:
             pass
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("confirm_", "reject_", "ban_", "block_")))
 def admin_callbacks(call):
@@ -1382,7 +1335,6 @@ def admin_callbacks(call):
             bot.send_message(int(w["user"]), f"✅ Withdrawal #{wid} approved!")
         except:
             pass
-
     elif data.startswith("reject_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -1398,7 +1350,6 @@ def admin_callbacks(call):
             bot.send_message(int(w["user"]), f"❌ Withdrawal #{wid} rejected")
         except:
             pass
-
     elif data.startswith("ban_"):
         uid = data.split("_")[1]
         if uid in users:
@@ -1409,7 +1360,6 @@ def admin_callbacks(call):
                 bot.send_message(int(uid), "🚫 You have been banned by admin.")
             except:
                 pass
-
     elif data.startswith("block_"):
         wid = int(data.split("_")[1])
         w = next((x for x in withdraws if x["id"] == wid), None)
@@ -1458,7 +1408,6 @@ def unblock_money_process(m):
     w.pop("block_code", None)
     save_user(uid)
     save_withdraws()
-
     try:
         bot.send_message(int(uid), f"✅ Your blocked ${amt:.2f} is now available in balance!")
         bot.send_message(m.chat.id, f"✅ Money unblocked for user {uid}")
@@ -1522,11 +1471,9 @@ def withdrawal_check_process(m):
         except:
             pass
         return
-
     uid = w["user"]
     bot_id = users.get(uid, {}).get("bot_id", "Unknown")
     invited = users.get(uid, {}).get("invited", 0)
-
     msg_text = f"💳 WITHDRAWAL DETAILS\n\n🧾 Request ID: {w['id']}\n👤 User ID: {uid}\n🤖 BOT ID: {bot_id}\n👥 Referrals: {invited}\n💵 Amount: ${w['amount']:.2f}\n🏦 Address: {w['address']}\n📊 Status: {w['status'].upper()}\n⏰ Time: {w['time']}"
     try:
         bot.send_message(m.chat.id, msg_text)
@@ -1614,11 +1561,10 @@ def gift_all_process(m):
         if amount <= 0:
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
-        
+
         users_col.update_many({}, {"$inc": {"balance": amount}})
         for uid in users:
             users[uid]["balance"] = users[uid].get("balance", 0.0) + amount
-            
         bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} to all users' balances!")
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
@@ -1640,7 +1586,7 @@ def remove_all_process(m):
             return
         remove_amt = float(parts[0].strip())
         reason = parts[1].strip()
-        
+
         if remove_amt <= 0:
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
@@ -1654,13 +1600,10 @@ def remove_all_process(m):
             try:
                 bot.send_message(int(uid), f"⚠️ Your Account Has Been Charged: ${remove_amt:.2f}\nReason: {reason}")
                 count += 1
-            except:
-                pass
-
+            except: pass
         bot.send_message(m.chat.id, f"✅ Successfully removed ${remove_amt} from all users and notified {count} users. Reason: {reason}")
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
-
 
 @bot.message_handler(func=lambda m: m.text == "🚫 BAN USER MANUAL")
 def manual_ban_start(m):
@@ -1710,7 +1653,7 @@ def add_channel_process(m):
             return
         if username not in MANAGED_CHANNELS:
             MANAGED_CHANNELS.append(username)
-        bot.send_message(m.chat.id, f"✅ Channel Added\n{username}")
+            bot.send_message(m.chat.id, f"✅ Channel Added\n{username}")
     except:
         try:
             bot.send_message(m.chat.id, "❌ Invalid channel or bot not inside channel")
@@ -1754,7 +1697,6 @@ def raadi_stats(m):
         f"• X/Twitter: {tw}\n",
         "🥇 Top 40 Users:"
     ]
-
     for i, (uid, count) in enumerate(sorted_users[:40], start=1):
         bot_id = users.get(str(uid), {}).get("bot_id", "N/A")
         msg_lines.append(f'{i}. 👤 <a href="tg://user?id={uid}">{uid}</a> - 🎬 {count} videos | 🤖 BOT ID: {bot_id}')
@@ -1818,7 +1760,6 @@ def broadcast_media_process(m):
             count += 1
         except:
             continue
-
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
 
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
@@ -1839,14 +1780,13 @@ def send_pay_process(m):
         if len(parts) != 3:
             bot.send_message(m.chat.id, "❌ Invalid format. Use: Title | Description | Price")
             return
-        
+
         title = parts[0].strip()
         desc = parts[1].strip()
         price = int(parts[2].strip())
-        
         prices = [LabeledPrice(label=title, amount=price)]
+
         count = 0
-        
         for uid in users:
             try:
                 bot.send_invoice(
@@ -1861,7 +1801,6 @@ def send_pay_process(m):
                 count += 1
             except Exception as e:
                 continue
-
         bot.send_message(m.chat.id, f"✅ Telegram Stars payment sent to {count} users.")
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error processing payment: {e}")
@@ -1949,11 +1888,11 @@ def lock_bot_process(m):
     text = (m.text or "").strip()
     if text:
         LOCK_MESSAGE = text
-    BOT_LOCKED = True
-    try:
-        bot.send_message(m.chat.id, "🔒 Bot locked successfully.")
-    except:
-        pass
+        BOT_LOCKED = True
+        try:
+            bot.send_message(m.chat.id, "🔒 Bot locked successfully.")
+        except:
+            pass
 
 @bot.message_handler(func=lambda m: m.text == "🔓 UNLOCK BOT")
 def unlock_bot(m):
@@ -1971,7 +1910,7 @@ def add_ads_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        msg = bot.send_message(m.chat.id, "✍️ Format:\n`Button Name | Link | Qoraal yar`", parse_mode="Markdown")
+        msg = bot.send_message(m.chat.id, "✍️ Format:\nButton Name | Link | Qoraal yar", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_add_ads)
     except:
         pass
@@ -2120,6 +2059,179 @@ def search_user_result(m):
         except:
             pass
 
+================= NEW FEATURE: CUSTOM REFERRAL CODES & PAY =================
+
+def is_ref_taken(code):
+    for uid, data in users.items():
+        if str(data.get("ref")) == str(code):
+            return True
+    return False
+
+@bot.message_handler(func=lambda m: m.text == "💳 PAY")
+@bot.callback_query_handler(func=lambda call: call.data == "buy_ref_menu")
+def pay_custom_ref_handler(m):
+    if bot_locked_guard(m if hasattr(m, "from_user") else m.message) or banned_guard(m if hasattr(m, "from_user") else m.message):
+        return
+    
+    chat_id = m.chat.id if hasattr(m, "chat") else m.message.chat.id
+    
+    if not get_setting("pay_rev_enabled", False):
+        try:
+            bot.send_message(chat_id, "❌ Custom referral code purchase system is currently disabled by admin.")
+        except: pass
+        if hasattr(m, "id"):
+            bot.answer_callback_query(m.id)
+        return
+
+    try:
+        msg = bot.send_message(chat_id, "💳 **Buy Custom Referral Code**\n\nEnter your desired referral code (letters/numbers):")
+        bot.register_next_step_handler(msg, pay_custom_ref_code_input)
+        if hasattr(m, "id"):
+            bot.answer_callback_query(m.id)
+    except: pass
+
+def pay_custom_ref_code_input(m):
+    uid = str(m.from_user.id)
+    code = (m.text or "").strip()
+    if not code or len(code) > 30:
+        try:
+            msg = bot.send_message(m.chat.id, "❌ Invalid code. Please enter a valid referral code:")
+            bot.register_next_step_handler(msg, pay_custom_ref_code_input)
+        except: pass
+        return
+
+    if is_ref_taken(code):
+        try:
+            msg = bot.send_message(m.chat.id, "⚠️ This referral code already taken. Please choose another one:")
+            bot.register_next_step_handler(msg, pay_custom_ref_code_input)
+        except: pass
+        return
+
+    # Dynamic pricing based on length (1-10 vs 10-50 or custom)
+    length = len(code)
+    if length <= 5:
+        price = get_setting("ref_price_short", 50) # Tusaale 50 stars
+    else:
+        price = get_setting("ref_price_long", 20)  # Tusaale 20 stars
+
+    prices = [LabeledPrice(label=f"Custom Ref: {code}", amount=price)]
+    try:
+        bot.send_invoice(
+            m.chat.id,
+            title="Custom Referral Code",
+            description=f"Purchase custom referral code: {code}",
+            invoice_payload=f"buy_ref_{code}",
+            provider_token="",
+            currency="XTR",
+            prices=prices
+        )
+    except Exception as e:
+        try:
+            bot.send_message(m.chat.id, f"❌ Error creating invoice: {e}")
+        except: pass
+
+@bot.message_handler(content_types=['successful_payment'])
+def successful_payment_handler(message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    uid = str(message.from_user.id)
+    
+    if payload.startswith("buy_ref_"):
+        code = payload.replace("buy_ref_", "")
+        if is_ref_taken(code) and users.get(uid, {}).get("ref") != code:
+            try:
+                bot.send_message(message.chat.id, "⚠️ This referral code has just been taken by someone else. Please contact admin or try another code.")
+            except: pass
+            return
+            
+        users[uid]["ref"] = code
+        save_user(uid)
+        bot_username = bot.get_me().username
+        link = f"https://t.me/{bot_username}?start={code}"
+        try:
+            bot.send_message(
+                message.chat.id,
+                f"🎉 <b>Success!</b> Your custom referral code has been successfully activated.\n\n"
+                f"🔑 Code: <code>{code}</code>\n"
+                f"🔗 New Referral Link:\n{link}",
+                parse_mode="HTML"
+            )
+        except: pass
+
+@bot.message_handler(func=lambda m: m.text == "Reveral Prices")
+def admin_referral_prices(m):
+    if not is_admin(m.from_user.id): return
+    short_p = get_setting("ref_price_short", 50)
+    long_p = get_setting("ref_price_long", 20)
+    msg = f"⚙️ **Referral Code Prices (Telegram Stars)**\n\n• 1-5 chars price: {short_p} Stars\n• 6+ chars price: {long_p} Stars\n\nSend new price for short codes (1-5 chars) or type CANCEL:"
+    msg_sent = bot.send_message(m.chat.id, msg, parse_mode="Markdown")
+    bot.register_next_step_handler(msg_sent, set_short_price)
+
+def set_short_price(m):
+    if not is_admin(m.from_user.id): return
+    if m.text.strip().lower() == "cancel":
+        bot.send_message(m.chat.id, "Cancelled.")
+        return
+    try:
+        p = int(m.text.strip())
+        set_setting("ref_price_short", p)
+        msg = bot.send_message(m.chat.id, f"✅ Short code price set to {p} Stars.\n\nNow send price for 6+ characters codes:")
+        bot.register_next_step_handler(msg, set_long_price)
+    except:
+        msg = bot.send_message(m.chat.id, "❌ Invalid number. Try again or type CANCEL:")
+        bot.register_next_step_handler(msg, set_short_price)
+
+def set_long_price(m):
+    if not is_admin(m.from_user.id): return
+    if m.text.strip().lower() == "cancel":
+        bot.send_message(m.chat.id, "Cancelled.")
+        return
+    try:
+        p = int(m.text.strip())
+        set_setting("ref_price_long", p)
+        bot.send_message(m.chat.id, f"✅ Long code price set to {p} Stars successfully!")
+    except:
+        msg = bot.send_message(m.chat.id, "❌ Invalid number. Try again or type CANCEL:")
+        bot.register_next_step_handler(msg, set_long_price)
+
+@bot.message_handler(func=lambda m: m.text == "Delete Pay")
+def delete_pay_handler(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("pay_rev_enabled", False)
+    bot.send_message(m.chat.id, "🛑 Referral code purchase system is now CLOSED (Deleted Pay).")
+
+@bot.message_handler(func=lambda m: m.text == "Open Pay rev")
+def open_pay_handler(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("pay_rev_enabled", True)
+    bot.send_message(m.chat.id, "🟢 Referral code purchase system is now OPEN.")
+
+================= NEW FEATURE: SEND VERIFY BROADCAST =================
+
+@bot.message_handler(func=lambda m: m.text == "Send verify")
+def send_verify_broadcast_start(m):
+    if not is_admin(m.from_user.id): return
+    msg = bot.send_message(m.chat.id, "✍️ Send the message you want to broadcast with the email verification button to unverified users:")
+    bot.register_next_step_handler(msg, send_verify_broadcast_process)
+
+def send_verify_broadcast_process(m):
+    if not is_admin(m.from_user.id): return
+    text = m.text
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🔐 Verify Now (Gmail)", callback_data="start_verify_flow"))
+
+    count = 0
+    for uid, udata in users.items():
+        if not udata.get("verified", False):
+            try:
+                bot.send_message(int(uid), text, reply_markup=kb)
+                count += 1
+            except:
+                continue
+    bot.send_message(m.chat.id, f"✅ Verification broadcast sent to {count} unverified users successfully.")
+
+================= LINK HANDLER =================
+
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
     if bot_locked_guard(message) or banned_guard(message):
@@ -2127,7 +2239,6 @@ def handle_links(message):
 
     user_id = message.from_user.id
     link = extract_url(message.text)
-
     if not link:
         return
 
@@ -2393,7 +2504,8 @@ def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
 
-# ================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
+================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
+
 def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     if not os.path.exists(file_path):
         return
@@ -2405,12 +2517,10 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
 
     vid_id = str(uuid.uuid4())[:8]
     perm_file_path = f"saved_{vid_id}.mp4"
-    
     try:
         os.rename(file_path, perm_file_path)
     except:
         shutil.copy(file_path, perm_file_path)
-        
     video_files[vid_id] = perm_file_path
 
     kb = InlineKeyboardMarkup()
@@ -2427,7 +2537,6 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     if "users" not in videos_data:
         videos_data["users"] = {}
     videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
-
     if platform:
         if "platforms" not in videos_data:
             videos_data["platforms"] = {}
@@ -2437,16 +2546,13 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
     try:
         with open(perm_file_path, "rb") as video:
             bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
-
         if message_id:
             try:
                 bot.delete_message(chat_id, message_id)
             except:
                 pass
-        
         if videos_data.get("feedback_enabled"):
             send_feedback_request(chat_id, platform or "other", vid_id)
-            
     except Exception as e:
         print(f"Error sending video: {e}")
 
@@ -2454,26 +2560,23 @@ def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
 def extract_music(call):
     vid_id = call.data.split("_")[1]
     video_path = video_files.get(vid_id)
-    
+
     if not video_path or not os.path.exists(video_path):
         bot.answer_callback_query(call.id, "❌ Audio expired.")
         return
 
     audio_path = f"audio_{vid_id}.mp3"
-    
     try:
         bot.send_chat_action(call.message.chat.id, 'upload_audio')
-        subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], 
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
+        subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with open(audio_path, 'rb') as audio:
             bot.send_audio(call.message.chat.id, audio)
-            
         os.remove(audio_path)
     except Exception as e:
         bot.answer_callback_query(call.id, "❌ Failed to convert music")
 
-# ================= DOWNLOAD MEDIA =================
+================= DOWNLOAD MEDIA =================
+
 def download_media(chat_id, url, message_id):
     file_path = None
     download_dir = None
@@ -2533,18 +2636,17 @@ def download_media(chat_id, url, message_id):
 
                 with yt_dlp.YoutubeDL(info_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-
-                duration = info.get("duration") or 0
-                if duration > 600:
-                    try:
-                        bot.edit_message_text(
-                            "❌ YouTube video is too long.\n\n⏱ Maximum allowed: 10 minutes.",
-                            chat_id,
-                            message_id
-                        )
-                    except Exception:
-                        pass
-                    return
+                    duration = info.get("duration") or 0
+                    if duration > 600:
+                        try:
+                            bot.edit_message_text(
+                                "❌ YouTube video is too long.\n\n⏱ Maximum allowed: 10 minutes.",
+                                chat_id,
+                                message_id
+                            )
+                        except Exception:
+                            pass
+                        return
             except Exception as e:
                 try:
                     bot.edit_message_text(
@@ -2559,6 +2661,7 @@ def download_media(chat_id, url, message_id):
         download_id = uuid.uuid4().hex[:12]
         download_dir = os.path.join("downloads", download_id)
         os.makedirs(download_dir, exist_ok=True)
+
         output_template = os.path.join(download_dir, "%(id)s_%(autonumber)s.%(ext)s")
 
         ydl_opts = {
@@ -2613,7 +2716,43 @@ def download_media(chat_id, url, message_id):
                 send_video_with_music(chat_id, file_path, platform, message_id)
             else:
                 bot.send_photo(chat_id, open(file_path, 'rb'), reply_to_message_id=message_id)
-    except Exception as e:
-        print(f"Download media error: {e}")
 
-bot.infinity_polling()
+    except Exception as e:
+        print(f"[DOWNLOAD ERROR] {type(e).__name__}: {e}")
+        try:
+            bot.edit_message_text(
+                "❌ Download failed.\n\nPlease make sure the link is public and try again.",
+                chat_id,
+                message_id
+            )
+        except Exception:
+            try:
+                bot.send_message(chat_id, "❌ Download failed.")
+            except Exception:
+                pass
+
+    if download_dir:
+        try:
+            if os.path.exists(download_dir):
+                shutil.rmtree(download_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"[CLEANUP ERROR] {e}")
+
+================= RUN =================
+
+if __name__ == "__main__":
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+
+    print("🤖 Downloader Bot is running...")
+    def run_bot1():
+        bot.infinity_polling(timeout=20, long_polling_timeout=20)
+    def run_bot2():
+        bot2.infinity_polling(timeout=20, long_polling_timeout=20)
+
+    t1 = threading.Thread(target=run_bot1)
+    t2 = threading.Thread(target=run_bot2)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
