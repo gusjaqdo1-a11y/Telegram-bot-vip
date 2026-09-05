@@ -81,7 +81,7 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = ""
 
-================= MONGODB SETUP (DUAL DATABASE) =================
+# ================= MONGODB SETUP (DUAL DATABASE) =================
 
 MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
 MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
@@ -114,7 +114,7 @@ except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
 
-================= SETTINGS SETUP =================
+# ================= SETTINGS SETUP =================
 
 settings_col = db1["settings"]
 
@@ -125,7 +125,7 @@ def get_setting(key, default):
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
-================= MONGODB DATABASE FUNCTIONS =================
+# ================= MONGODB DATABASE FUNCTIONS =================
 
 def load_users():
     users_dict = {}
@@ -190,7 +190,7 @@ def save_videos():
     data.pop("_id", None)
     videos_col.update_one({"_id": "stats"}, {"$set": data}, upsert=True)
 
-================= HELPER FUNCTIONS =================
+# ================= HELPER FUNCTIONS =================
 
 def random_ref():
     return str(random.randint(1000000000, 9999999999))
@@ -305,7 +305,7 @@ def extract_url(text):
     match = re.search(r'(https?://[^\s]+)', text)
     return match.group(0) if match else None
 
-================= MENUS =================
+# ================= MENUS =================
 
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -362,7 +362,7 @@ def back_to_main_menu(m):
 def back_button_handler(m):
     back_to_main_menu(m)
 
-================= ADMIN SMS CONTROL =================
+# ================= ADMIN SMS CONTROL =================
 
 @bot.message_handler(func=lambda m: m.text in ["🟢 Open SMS", "🔴 CLOSE SMS"])
 def sms_admin_manager(m):
@@ -379,7 +379,7 @@ def sms_admin_manager(m):
             bot.send_message(m.chat.id, "🔴 SMS Verification system is now CLOSED. Users will only use Gmail.")
         except: pass
 
-================= PROFILE & VERIFICATION LOGIC =================
+# ================= PROFILE & VERIFICATION LOGIC =================
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
 def profile_handler(m):
@@ -786,7 +786,7 @@ def process_phone_code(m):
             threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
 
-================= ADMIN VERIFIED USERS & STICKER MANAGER =================
+# ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
 
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
 def verified_users_list(m):
@@ -844,7 +844,7 @@ def sticker_admin_process(m):
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
-================= ADMIN SEND EMAIL ALL =================
+# ================= ADMIN SEND EMAIL ALL =================
 
 @bot.message_handler(func=lambda m: m.text == "📢 Send Email All")
 def send_email_all_start(m):
@@ -871,7 +871,7 @@ def send_email_all_process(m):
         bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
     except: pass
 
-================= YOUTUBE 30 MIN ADMIN CONTROL =================
+# ================= YOUTUBE 30 MIN ADMIN CONTROL =================
 
 @bot.message_handler(func=lambda m: m.text == "🔓 OPEN 30 MIN")
 def open_30_min_start(m):
@@ -898,7 +898,7 @@ def open_30_min_process(m):
         bot.send_message(int(uid), "🎉 Congratulations! You have been granted special access to download YouTube videos up to 30 minutes long!")
     except: pass
 
-================= QUICK ACCESS ADMIN CONTROLS =================
+# ================= QUICK ACCESS ADMIN CONTROLS =================
 
 @bot.message_handler(func=lambda m: m.text == "⚡ QUICK ACCESS")
 def quick_access_admin(m):
@@ -942,7 +942,7 @@ def grant_qa(m, status):
             bot.send_message(m.chat.id, "❌ User not found.")
         except: pass
 
-================= FEEDBACK LOGIC =================
+# ================= FEEDBACK LOGIC =================
 
 def send_feedback_request(chat_id, platform, download_id):
     feedback_request_id = str(uuid.uuid4())
@@ -1096,7 +1096,7 @@ def reset_callback_handler(call):
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
 
-================= DOWNLOAD MEDIA FUNCTION =================
+# ================= DOWNLOAD MEDIA FUNCTION =================
 
 def download_media(chat_id, link, message_id):
     platform = "unknown"
@@ -1173,7 +1173,7 @@ def download_media(chat_id, link, message_id):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-================= START HANDLER =================
+# ================= START HANDLER =================
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -1283,7 +1283,7 @@ def ping_cmd(m):
         )
     except: pass
 
-================= VERIFY BOT START =================
+# ================= VERIFY BOT START =================
 
 @bot2.message_handler(commands=['start'])
 def verify_start(message):
@@ -1314,7 +1314,7 @@ def verify_start(message):
             )
         except: pass
 
-================= CHECK MEMBERSHIP =================
+# ================= CHECK MEMBERSHIP =================
 
 def check_membership(user_id):
     try:
@@ -2315,7 +2315,7 @@ def search_user_result(m):
             bot.send_message(m.chat.id, "❌ User not found")
         except: pass
 
-================= NEW FEATURE: CUSTOM REFERRAL CODES & PAY =================
+# ================= NEW FEATURE: CUSTOM REFERRAL CODES & PAY =================
 
 def is_ref_taken(code):
     for uid, data in users.items():
@@ -2458,7 +2458,7 @@ def open_pay_handler(m):
     set_setting("pay_rev_enabled", True)
     bot.send_message(m.chat.id, "🟢 Referral code purchase system is now OPEN.")
 
-================= NEW FEATURE: SEND VERIFY BROADCAST =================
+# ================= NEW FEATURE: SEND VERIFY BROADCAST =================
 
 @bot.message_handler(func=lambda m: m.text == "Send verify")
 def send_verify_broadcast_start(m):
@@ -2482,7 +2482,7 @@ def send_verify_broadcast_process(m):
                 continue
     bot.send_message(m.chat.id, f"✅ Verification broadcast sent to {count} unverified users successfully.")
 
-================= LINK HANDLER =================
+# ================= LINK HANDLER =================
 
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
@@ -2726,7 +2726,7 @@ def remove_balance_process(m):
             bot.send_message(m.chat.id, "❌ Format error.")
         except: pass
 
-================= MAIN RUN LOOP =================
+# ================= MAIN RUN LOOP =================
 
 if __name__ == "__main__":
     print("🤖 Bot 1 and Bot 2 are starting...")
