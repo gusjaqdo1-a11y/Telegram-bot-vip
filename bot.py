@@ -283,6 +283,7 @@ def admin_menu():
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
     kb.add("🗑️ REMOVE ALL")
     kb.add("📢 Send Email All")
+    kb.add("✅ Verified Users", "🏷️ Sticker")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -310,7 +311,8 @@ def profile_handler(m):
     u_data = users.get(uid, {})
     
     verified = u_data.get("verified", False)
-    status_str = "👤 Verified" if verified else "👤 Not Verified"
+    sticker = u_data.get("sticker", "Verified" if verified else "Not Verified")
+    status_str = f"Verified ({sticker})" if verified else "Not Verified"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -355,7 +357,7 @@ def process_verification_email(m):
         return
         
     code = str(random.randint(100000, 999999))
-    email_verify_pending[uid] = {"email": email, "code": code}
+    email_verify_pending[uid] = {"email": email, "code": code, "time": time.time()}
     
     html_content = f"""
     <!DOCTYPE html>
@@ -378,8 +380,12 @@ def process_verification_email(m):
     success = send_html_email(email, "Your Bot Verification Code", html_content)
     if success:
         try:
-            msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:")
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
+            # Start 2 minutes timeout thread
+            threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except:
             pass
     else:
@@ -388,13 +394,67 @@ def process_verification_email(m):
         except:
             pass
 
+def expire_verification(chat_id, message_id, uid):
+    time.sleep(120)  # 2 minutes
+    if uid in email_verify_pending:
+        email_verify_pending.pop(uid, None)
+        try:
+            bot.edit_message_text("❌ Verification session expired after 2 minutes. Please start again from your profile.", chat_id, message_id, reply_markup=None)
+        except:
+            pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "resend_verify_code")
+def resend_verify_code_callback(call):
+    uid = str(call.from_user.id)
+    if uid not in email_verify_pending:
+        bot.answer_callback_query(call.id, "❌ Verification session expired. Please start again from your profile.", show_alert=True)
+        return
+        
+    data = email_verify_pending[uid]
+    email = data["email"]
+    code = str(random.randint(100000, 999999))
+    data["code"] = code
+    data["time"] = time.time()
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
+        <div style="max-width: 600px; background: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <h2 style="color: #333;">Email Verification (Resend)</h2>
+            <p>Hello,</p>
+            <p>Your new 6-digit verification code for the bot is:</p>
+            <div style="font-size: 24px; font-weight: bold; color: #4CAF50; background: #e8f5e9; padding: 15px; text-align: center; border-radius: 4px; letter-spacing: 5px;">
+                {code}
+            </div>
+            <p style="margin-top: 20px; color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    success = send_html_email(email, "Your New Bot Verification Code", html_content)
+    if success:
+        bot.answer_callback_query(call.id, "✅ A new code has been sent to your email!")
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            msg = bot.send_message(call.message.chat.id, f"📩 A new 6-digit verification code has been resent to your email ({email}). Please enter the code here:", reply_markup=kb)
+            bot.register_next_step_handler(msg, process_verification_code)
+            threading.Thread(target=expire_verification, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
+        except:
+            pass
+    else:
+        bot.answer_callback_query(call.id, "❌ Failed to resend verification email.", show_alert=True)
+
 def process_verification_code(m):
     uid = str(m.from_user.id)
     code_input = (m.text or "").strip()
     
     if uid not in email_verify_pending:
         try:
-            bot.send_message(m.chat.id, "❌ Verification session expired. Please start again from your profile.")
+            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.")
         except:
             pass
         return
@@ -403,6 +463,8 @@ def process_verification_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["email"] = data["email"]
+        if "sticker" not in users[uid] or not users[uid]["sticker"]:
+            users[uid]["sticker"] = "🌟"
         save_user(uid)
         email_verify_pending.pop(uid, None)
         try:
@@ -411,10 +473,73 @@ def process_verification_code(m):
             pass
     else:
         try:
-            msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:")
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
+            threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except:
             pass
+
+# ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
+@bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
+def verified_users_list(m):
+    if not is_admin(m.from_user.id):
+        return
+    verified_list = [uid for uid, data in users.items() if data.get("verified")]
+    if not verified_list:
+        try:
+            bot.send_message(m.chat.id, "No verified users found.")
+        except:
+            pass
+        return
+        
+    text = f"✅ VERIFIED USERS ({len(verified_list)})\n\n"
+    for uid in verified_list[:30]:
+        u_data = users[uid]
+        sticker = u_data.get("sticker", "N/A")
+        text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {u_data.get('email', 'No email')} | Sticker: {sticker}\n"
+        
+    try:
+        bot.send_message(m.chat.id, text, parse_mode="HTML")
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text == "🏷️ Sticker")
+def sticker_admin_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        msg = bot.send_message(m.chat.id, "Send User ID or BOT ID and the sticker/badge separated by pipe (|)\nExample:\n123456789 | 🌟 Verified")
+        bot.register_next_step_handler(msg, sticker_admin_process)
+    except:
+        pass
+
+def sticker_admin_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        parts = m.text.split("|")
+        if len(parts) < 2:
+            bot.send_message(m.chat.id, "❌ Format error. Use: UserID | StickerText")
+            return
+        uid_str = parts[0].strip()
+        sticker_text = parts[1].strip()
+        
+        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
+        if not uid or uid not in users:
+            bot.send_message(m.chat.id, "❌ User not found.")
+            return
+            
+        users[uid]["sticker"] = sticker_text
+        save_user(uid)
+        bot.send_message(m.chat.id, f"✅ Sticker successfully updated for user {uid}!")
+        try:
+            bot.send_message(int(uid), f"🌟 Your profile status sticker has been updated to: {sticker_text}")
+        except:
+            pass
+    except Exception as e:
+        bot.send_message(m.chat.id, f"❌ Error: {e}")
 
 # ================= ADMIN SEND EMAIL ALL =================
 @bot.message_handler(func=lambda m: m.text == "📢 Send Email All")
