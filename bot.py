@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
 
-================== CONFIG =================#
+# ================= CONFIG =================
 
 TOKEN = os.getenv("BOT_TOKEN")
 BOT2_TOKEN = os.getenv("BOT2_TOKEN")
@@ -26,16 +26,14 @@ API_HASH = os.getenv("API_HASH")
 
 PHONE = os.getenv("PHONE")
 
-Resend API Config for support@vexdou.space (HTTP Port 443 - Railey-friendly)
-
+# Resend API Config for support@vexdou.space (HTTP Port 443 - Railey-friendly)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
-Dual executors for Priority (Quick Access) & Normal
-
+# Dual executors for Priority (Quick Access) & Normal
 vip_executor = ThreadPoolExecutor(max_workers=5)
 normal_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DOWNLOADS)
 
@@ -76,10 +74,10 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = ""
 
-================= MONGODB SETUP (DUAL DATABASE) =================
+# ================= MONGODB SETUP (DUAL DATABASE) =================
 
 MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
-MONGO_URI_2 = os.getenv("MONGO_URI_2", os.getenv("mongodb://localhost:27017/stats_db"))
+MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
 
 try:
     mongo_client1 = MongoClient(MONGO_URI_1)
@@ -111,7 +109,7 @@ except Exception as e:
     print(f"❌ MongoDB 2 Connection Error: {e}")
     exit()
 
-================= SETTINGS SETUP =================
+# ================= SETTINGS SETUP =================
 
 settings_col = db1["settings"]
 
@@ -122,7 +120,7 @@ def get_setting(key, default):
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
-================= MONGODB DATABASE FUNCTIONS =================
+# ================= MONGODB DATABASE FUNCTIONS =================
 
 def load_users():
     users_dict = {}
@@ -187,7 +185,7 @@ def save_videos():
     data.pop("_id", None)
     videos_col.update_one({"_id": "stats"}, {"$set": data}, upsert=True)
 
-================= HELPER FUNCTIONS =================
+# ================= HELPER FUNCTIONS =================
 
 def random_ref():
     return str(random.randint(1000000000, 9999999999))
@@ -257,7 +255,13 @@ def send_html_email(to_email, subject, html_body):
         print(f"EMAIL API ERROR: {e}")
         return False
 
-================= MENUS =================
+def extract_url(text):
+    if not text:
+        return None
+    match = re.search(r'(https?://[^\s]+)', text)
+    return match.group(0) if match else None
+
+# ================= MENUS =================
 
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -313,7 +317,7 @@ def back_to_main_menu(m):
 def back_button_handler(m):
     back_to_main_menu(m)
 
-================= PROFILE & VERIFICATION LOGIC =================
+# ================= PROFILE & VERIFICATION LOGIC =================
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
 def profile_handler(m):
@@ -412,7 +416,7 @@ def process_verification_email(m):
             pass
 
 def expire_verification(chat_id, message_id, uid):
-    time.sleep(120) # 2 minutes
+    time.sleep(120)
     if uid in email_verify_pending:
         email_verify_pending.pop(uid, None)
         try:
@@ -528,7 +532,7 @@ def process_verification_code(m):
         except:
             pass
 
-================= ADMIN VERIFIED USERS & STICKER MANAGER =================
+# ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
 
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
 def verified_users_list(m):
@@ -588,7 +592,7 @@ def sticker_admin_process(m):
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
-================= ADMIN SEND EMAIL ALL =================
+# ================= ADMIN SEND EMAIL ALL =================
 
 @bot.message_handler(func=lambda m: m.text == "📢 Send Email All")
 def send_email_all_start(m):
@@ -617,7 +621,7 @@ def send_email_all_process(m):
     except:
         pass
 
-================= YOUTUBE 30 MIN ADMIN CONTROL =================
+# ================= YOUTUBE 30 MIN ADMIN CONTROL =================
 
 @bot.message_handler(func=lambda m: m.text == "🔓 OPEN 30 MIN")
 def open_30_min_start(m):
@@ -645,7 +649,7 @@ def open_30_min_process(m):
         bot.send_message(int(uid), "🎉 Congratulations! You have been granted special access to download YouTube videos up to 30 minutes long!")
     except: pass
 
-================= QUICK ACCESS ADMIN CONTROLS =================
+# ================= QUICK ACCESS ADMIN CONTROLS =================
 
 @bot.message_handler(func=lambda m: m.text == "⚡ QUICK ACCESS")
 def quick_access_admin(m):
@@ -694,7 +698,7 @@ def grant_qa(m, status):
         except:
             pass
 
-================= FEEDBACK LOGIC =================
+# ================= FEEDBACK LOGIC =================
 
 def send_feedback_request(chat_id, platform, download_id):
     feedback_request_id = str(uuid.uuid4())
@@ -840,7 +844,95 @@ def reset_callback_handler(call):
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
 
-================= START HANDLER =================
+# ================= DOWNLOAD MEDIA FUNCTION =================
+
+def download_media(chat_id, link, message_id):
+    platform = "unknown"
+    if "tiktok.com" in link:
+        platform = "tiktok"
+    elif "youtube.com" in link or "youtu.be" in link:
+        platform = "youtube"
+    elif "facebook.com" in link or "fb.watch" in link:
+        platform = "facebook"
+    elif "instagram.com" in link:
+        platform = "instagram"
+    elif "pinterest.com" in link or "pin.it" in link:
+        platform = "pinterest"
+    elif "snapchat.com" in link:
+        platform = "snapchat"
+    elif "twitter.com" in link or "x.com" in link:
+        platform = "twitter"
+
+    max_duration = MAX_YOUTUBE_DURATION
+    uid_str = str(chat_id)
+    if platform == "youtube" and users.get(uid_str, {}).get("youtube_30m", False):
+        max_duration = 1800  # 30 minutes
+
+    tmp_dir = f"downloads_{uuid.uuid4().hex}"
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    ydl_opts = {
+        'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
+        'format': 'best',
+        'max_filesize': 500 * 1024 * 1024,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
+            info = ydl.extract_info(link, download=False)
+            if info and 'duration' in info and info['duration']:
+                if info['duration'] > max_duration and platform == "youtube":
+                    bot.edit_message_text(
+                        f"❌ Video is too long. Max allowed duration is {max_duration // 60} minutes.",
+                        chat_id,
+                        message_id
+                    )
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(link, download=True)
+            filename = ydl.prepare_filename(info)
+            
+        if not os.path.exists(filename):
+            files = os.listdir(tmp_dir)
+            if files:
+                filename = os.path.join(tmp_dir, files[0])
+            else:
+                raise Exception("Downloaded file not found.")
+
+        with open(filename, 'rb') as f:
+            if filename.endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi', '.gif')):
+                bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot")
+            elif filename.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
+                bot.send_audio(chat_id, f, caption="🎵 Audio downloaded successfully via @Downloadvedioytibot")
+            else:
+                bot.send_document(chat_id, f, caption="📁 File downloaded successfully via @Downloadvedioytibot")
+
+        bot.delete_message(chat_id, message_id)
+
+        videos_data["total"] = videos_data.get("total", 0) + 1
+        if platform in videos_data["platforms"]:
+            videos_data["platforms"][platform] += 1
+        
+        if uid_str not in videos_data["users"]:
+            videos_data["users"][uid_str] = 0
+        videos_data["users"][uid_str] += 1
+        save_videos()
+
+        if videos_data.get("feedback_enabled", False):
+            send_feedback_request(chat_id, platform, uuid.uuid4().hex)
+
+    except Exception as e:
+        print(f"Download error: {e}")
+        try:
+            bot.edit_message_text(f"❌ Failed to download media. Error: {str(e)[:100]}", chat_id, message_id)
+        except:
+            pass
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+# ================= START HANDLER =================
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
@@ -955,7 +1047,7 @@ def ping_cmd(m):
     except:
         pass
 
-================= VERIFY BOT START =================
+# ================= VERIFY BOT START =================
 
 @bot2.message_handler(commands=['start'])
 def verify_start(message):
@@ -988,7 +1080,7 @@ def verify_start(message):
         except:
             pass
 
-================= CHECK MEMBERSHIP =================
+# ================= CHECK MEMBERSHIP =================
 
 def check_membership(user_id):
     try:
@@ -2059,7 +2151,7 @@ def search_user_result(m):
         except:
             pass
 
-================= NEW FEATURE: CUSTOM REFERRAL CODES & PAY =================
+# ================= NEW FEATURE: CUSTOM REFERRAL CODES & PAY =================
 
 def is_ref_taken(code):
     for uid, data in users.items():
@@ -2107,12 +2199,11 @@ def pay_custom_ref_code_input(m):
         except: pass
         return
 
-    # Dynamic pricing based on length (1-10 vs 10-50 or custom)
     length = len(code)
     if length <= 5:
-        price = get_setting("ref_price_short", 50) # Tusaale 50 stars
+        price = get_setting("ref_price_short", 50)
     else:
-        price = get_setting("ref_price_long", 20)  # Tusaale 20 stars
+        price = get_setting("ref_price_long", 20)
 
     prices = [LabeledPrice(label=f"Custom Ref: {code}", amount=price)]
     try:
@@ -2206,7 +2297,7 @@ def open_pay_handler(m):
     set_setting("pay_rev_enabled", True)
     bot.send_message(m.chat.id, "🟢 Referral code purchase system is now OPEN.")
 
-================= NEW FEATURE: SEND VERIFY BROADCAST =================
+# ================= NEW FEATURE: SEND VERIFY BROADCAST =================
 
 @bot.message_handler(func=lambda m: m.text == "Send verify")
 def send_verify_broadcast_start(m):
@@ -2230,7 +2321,7 @@ def send_verify_broadcast_process(m):
                 continue
     bot.send_message(m.chat.id, f"✅ Verification broadcast sent to {count} unverified users successfully.")
 
-================= LINK HANDLER =================
+# ================= LINK HANDLER =================
 
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
@@ -2498,261 +2589,20 @@ def remove_balance_process(m):
         except:
             pass
 
-CAPTION_TEXT = "Downloaded by:\n@Downloadvedioytibot"
-
-def extract_url(text):
-    urls = re.findall(r'https?://[^\s]+', text)
-    return urls[0] if urls else None
-
-================= SEND VIDEO & PHOTOS (OPTIMIZED) =================
-
-def send_video_with_music(chat_id, file_path, platform=None, message_id=None):
-    if not os.path.exists(file_path):
-        return
-
-    try:
-        bot.send_chat_action(chat_id, 'upload_video')
-    except:
-        pass
-
-    vid_id = str(uuid.uuid4())[:8]
-    perm_file_path = f"saved_{vid_id}.mp4"
-    try:
-        os.rename(file_path, perm_file_path)
-    except:
-        shutil.copy(file_path, perm_file_path)
-    video_files[vid_id] = perm_file_path
-
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🎵 Convert Music", callback_data=f"music_{vid_id}"))
-    if ADS_ENABLED and ADS_BTN_TEXT and ADS_URL:
-        kb.add(InlineKeyboardButton(ADS_BTN_TEXT, url=ADS_URL))
-
-    caption = CAPTION_TEXT
-    if ADS_ENABLED and ADS_TEXT:
-        caption += f"\n\n📢 {ADS_TEXT}"
-
-    uid = str(chat_id)
-    videos_data["total"] = videos_data.get("total", 0) + 1
-    if "users" not in videos_data:
-        videos_data["users"] = {}
-    videos_data["users"][uid] = videos_data["users"].get(uid, 0) + 1
-    if platform:
-        if "platforms" not in videos_data:
-            videos_data["platforms"] = {}
-        videos_data["platforms"][platform] = videos_data["platforms"].get(platform, 0) + 1
-    save_videos()
-
-    try:
-        with open(perm_file_path, "rb") as video:
-            bot.send_video(chat_id, video, caption=caption, reply_markup=kb)
-        if message_id:
-            try:
-                bot.delete_message(chat_id, message_id)
-            except:
-                pass
-        if videos_data.get("feedback_enabled"):
-            send_feedback_request(chat_id, platform or "other", vid_id)
-    except Exception as e:
-        print(f"Error sending video: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
-def extract_music(call):
-    vid_id = call.data.split("_")[1]
-    video_path = video_files.get(vid_id)
-
-    if not video_path or not os.path.exists(video_path):
-        bot.answer_callback_query(call.id, "❌ Audio expired.")
-        return
-
-    audio_path = f"audio_{vid_id}.mp3"
-    try:
-        bot.send_chat_action(call.message.chat.id, 'upload_audio')
-        subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        with open(audio_path, 'rb') as audio:
-            bot.send_audio(call.message.chat.id, audio)
-        os.remove(audio_path)
-    except Exception as e:
-        bot.answer_callback_query(call.id, "❌ Failed to convert music")
-
-================= DOWNLOAD MEDIA =================
-
-def download_media(chat_id, url, message_id):
-    file_path = None
-    download_dir = None
-
-    try:
-        os.makedirs("downloads", exist_ok=True)
-        url = url.strip()
-
-        if "youtube.com" in url or "youtu.be" in url:
-            platform = "youtube"
-        elif "pinterest.com" in url or "pin.it" in url:
-            platform = "pinterest"
-        elif "tiktok.com" in url:
-            platform = "tiktok"
-        elif "facebook.com" in url or "fb.watch" in url:
-            platform = "facebook"
-        elif "instagram.com" in url:
-            platform = "instagram"
-        elif "x.com" in url or "twitter.com" in url:
-            platform = "twitter"
-        elif "snapchat.com" in url:
-            platform = "snapchat"
-        else:
-            platform = "other"
-
-        if platform == "pinterest" and "pin.it" in url:
-            try:
-                response = requests.get(
-                    url,
-                    allow_redirects=True,
-                    timeout=20,
-                    headers={
-                        "User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) "
-                            "Chrome/131.0.0.0 Safari/537.36"
-                        )
-                    }
-                )
-                if response.url:
-                    url = response.url
-            except Exception as e:
-                print(f"[PINTEREST] Redirect error: {e}")
-
-        if platform == "youtube":
-            try:
-                info_opts = {
-                    "quiet": False,
-                    "no_warnings": False,
-                    "noplaylist": True,
-                    "socket_timeout": 30,
-                }
-                deno_path = shutil.which("deno")
-                if deno_path:
-                    info_opts["js_runtimes"] = {"deno": {"path": deno_path}}
-
-                with yt_dlp.YoutubeDL(info_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    duration = info.get("duration") or 0
-                    if duration > 600:
-                        try:
-                            bot.edit_message_text(
-                                "❌ YouTube video is too long.\n\n⏱ Maximum allowed: 10 minutes.",
-                                chat_id,
-                                message_id
-                            )
-                        except Exception:
-                            pass
-                        return
-            except Exception as e:
-                try:
-                    bot.edit_message_text(
-                        "❌ YouTube could not be processed right now.",
-                        chat_id,
-                        message_id
-                    )
-                except Exception:
-                    pass
-                return
-
-        download_id = uuid.uuid4().hex[:12]
-        download_dir = os.path.join("downloads", download_id)
-        os.makedirs(download_dir, exist_ok=True)
-
-        output_template = os.path.join(download_dir, "%(id)s_%(autonumber)s.%(ext)s")
-
-        ydl_opts = {
-            "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
-            "outtmpl": output_template,
-            "merge_output_format": "mp4",
-            "noplaylist": False if platform == "tiktok" else True,
-            "quiet": False,
-            "no_warnings": False,
-            "socket_timeout": 30,
-            "retries": 5,
-            "fragment_retries": 5,
-            "continuedl": True,
-            "http_headers": {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                )
-            }
-        }
-
-        deno_path = shutil.which("deno")
-        if deno_path:
-            ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
-
-        ffmpeg_path = shutil.which("ffmpeg")
-        if ffmpeg_path:
-            ydl_opts["ffmpeg_location"] = ffmpeg_path
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        files_to_send = []
-        for root, dirs, files in os.walk(download_dir):
-            for name in sorted(files):
-                if name.lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".m4v", ".jpg", ".jpeg", ".png", ".webp")):
-                    files_to_send.append(os.path.join(root, name))
-
-        if not files_to_send:
-            raise FileNotFoundError("yt-dlp finished but downloaded files were not found.")
-
-        if platform == "tiktok" and len(files_to_send) > 1:
-            media_group = []
-            for path in files_to_send[:10]:
-                media_group.append(telebot.types.InputMediaPhoto(open(path, 'rb')))
-            bot.send_media_group(chat_id, media_group, reply_to_message_id=message_id)
-        else:
-            file_path = files_to_send[0]
-            if file_path.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v')):
-                send_video_with_music(chat_id, file_path, platform, message_id)
-            else:
-                bot.send_photo(chat_id, open(file_path, 'rb'), reply_to_message_id=message_id)
-
-    except Exception as e:
-        print(f"[DOWNLOAD ERROR] {type(e).__name__}: {e}")
-        try:
-            bot.edit_message_text(
-                "❌ Download failed.\n\nPlease make sure the link is public and try again.",
-                chat_id,
-                message_id
-            )
-        except Exception:
-            try:
-                bot.send_message(chat_id, "❌ Download failed.")
-            except Exception:
-                pass
-
-    if download_dir:
-        try:
-            if os.path.exists(download_dir):
-                shutil.rmtree(download_dir, ignore_errors=True)
-        except Exception as e:
-            print(f"[CLEANUP ERROR] {e}")
-
-================= RUN =================
+# ================= MAIN RUN LOOP =================
 
 if __name__ == "__main__":
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
-
-    print("🤖 Downloader Bot is running...")
-    def run_bot1():
-        bot.infinity_polling(timeout=20, long_polling_timeout=20)
+    print("🤖 Bot 1 and Bot 2 are starting...")
+    
     def run_bot2():
-        bot2.infinity_polling(timeout=20, long_polling_timeout=20)
+        try:
+            bot2.infinity_polling(skip_pending=True)
+        except Exception as e:
+            print(f"Bot 2 Error: {e}")
 
-    t1 = threading.Thread(target=run_bot1)
-    t2 = threading.Thread(target=run_bot2)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    threading.Thread(target=run_bot2, daemon=True).start()
+
+    try:
+        bot.infinity_polling(skip_pending=True)
+    except Exception as e:
+        print(f"Bot 1 Error: {e}")
