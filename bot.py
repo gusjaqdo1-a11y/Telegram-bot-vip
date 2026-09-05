@@ -308,8 +308,7 @@ def send_smess_whatsapp(phone_number, text):
         print("❌ SMESS_API_KEY is not set in environment variables.")
         return False
     
-    # Adjust URL to match exact SMESS.io API Documentation if different
-    url = "https://api.smess.io/v1/whatsapp/send" 
+    url = "https://api.smess.io/v1/whatsapp/send" # Halkan ka hubi URL-ka saxda ah ee SMESS.io
     headers = {
         "Authorization": f"Bearer {SMESS_API_KEY}",
         "Content-Type": "application/json",
@@ -322,14 +321,17 @@ def send_smess_whatsapp(phone_number, text):
     
     try:
         response = requests.post(url, json=payload, headers=headers)
+        print(f"SMESS Response Status: {response.status_code}")
+        print(f"SMESS Response Body: {response.text}")
+        
         if response.status_code in [200, 201]:
             return True
         else:
-            print(f"SMESS WHATSAPP API ERROR: {response.text}")
             return False
     except Exception as e:
         print(f"SMESS WHATSAPP EXCEPTION: {e}")
         return False
+
 
 
 # ================= MENUS =================
