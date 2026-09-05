@@ -477,7 +477,7 @@ def delayed_cancel_session(chat_id, message_id, uid):
         except:
             pass
 
------ GMAIL VERIFICATION LOGIC -----
+# ----- GMAIL VERIFICATION LOGIC ----- #
 
 def process_verification_email(m):
     uid = str(m.from_user.id)
@@ -646,7 +646,7 @@ def process_verification_code(m):
             threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
 
------ PHONE VERIFICATION LOGIC -----
+# ----- PHONE VERIFICATION LOGIC ----- #
 
 def process_verification_phone(m):
     uid = str(m.from_user.id)
@@ -671,7 +671,7 @@ def process_verification_phone(m):
         "last_resend": current_time
     }
     
-    sms_text = f"Your Video Downloader Bot Verification Code is: {code}"
+    sms_text = f"Your Downloader Bot Verification Code is: {code}"
     success = send_d7_sms(phone_input, sms_text)
     if success:
         try:
