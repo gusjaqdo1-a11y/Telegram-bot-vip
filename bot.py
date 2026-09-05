@@ -76,7 +76,7 @@ ADS_URL = ""
 
 # ================= MONGODB SETUP (DUAL DATABASE) =================
 MONGO_URI_1 = os.getenv("MONGO_URI_1", os.getenv("MONGO_URI", "mongodb://localhost:27017/user_db"))
-MONGO_URI_2 = os.getenv("MONGO_URI_2", "mongodb://localhost:27017/stats_db")
+MONGO_URI_2 = os.getenv("MONGO_URI_2", os.getenv("mongodb://localhost:27017/stats_db"))
 
 try:
     mongo_client1 = MongoClient(MONGO_URI_1)
@@ -348,7 +348,9 @@ def start_verify_flow(call):
 def process_verification_email(m):
     uid = str(m.from_user.id)
     email = (m.text or "").strip()
-    if "@" not in email:
+    
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU"]
+    if email in menu_buttons or "@" not in email:
         try:
             msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:")
             bot.register_next_step_handler(msg, process_verification_email)
@@ -357,7 +359,13 @@ def process_verification_email(m):
         return
         
     code = str(random.randint(100000, 999999))
-    email_verify_pending[uid] = {"email": email, "code": code, "time": time.time()}
+    current_time = time.time()
+    email_verify_pending[uid] = {
+        "email": email, 
+        "code": code, 
+        "time": current_time,
+        "last_resend": current_time
+    }
     
     html_content = f"""
     <!DOCTYPE html>
@@ -384,7 +392,6 @@ def process_verification_email(m):
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
             msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
-            # Start 2 minutes timeout thread
             threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except:
             pass
@@ -411,10 +418,25 @@ def resend_verify_code_callback(call):
         return
         
     data = email_verify_pending[uid]
+    
+    # Check 2 minutes cooldown (120 seconds)
+    current_time = time.time()
+    last_resend_time = data.get("last_resend", data.get("time", 0))
+    cooldown = 120
+    elapsed = current_time - last_resend_time
+    
+    if elapsed < cooldown:
+        remaining = int(cooldown - elapsed)
+        mins = remaining // 60
+        secs = remaining % 60
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+        bot.answer_callback_query(call.id, f"⏳ Fadlan sug {time_str} intaad dib u codsan lahayd code kale.", show_alert=True)
+        return
+        
+    data["last_resend"] = current_time
     email = data["email"]
     code = str(random.randint(100000, 999999))
     data["code"] = code
-    data["time"] = time.time()
     
     html_content = f"""
     <!DOCTYPE html>
@@ -459,6 +481,24 @@ def process_verification_code(m):
             pass
         return
         
+    # Intercept any attempt to press menu buttons or send incorrect format while verifying
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU"]
+    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            msg = bot.send_message(
+                m.chat.id, 
+                "⚠️ <b>Lama ogola in aad meel kale taabato!</b>\n"
+                "Waa in aad marka hore gelisaa code-ka 6-digit ah ee loo soo diray Gmail-kaaga si aad u sii waddo isticmaalka bot-ka.\n\n"
+                "Fadlan geli code-ka saxda ah:", 
+                reply_markup=kb
+            )
+            bot.register_next_step_handler(msg, process_verification_code)
+        except:
+            pass
+        return
+
     data = email_verify_pending[uid]
     if code_input == data["code"]:
         users[uid]["verified"] = True
