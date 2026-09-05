@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from telethon import TelegramClient
 import smtplib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ================= CONFIG =================
 
@@ -28,7 +29,10 @@ API_HASH = os.getenv("API_HASH")
 
 PHONE = os.getenv("PHONE")
 
-GMAIL_USER = os.getenv("GMAIL_USER")
+# SMTP Config for support@vexdou.space
+SMTP_HOST = os.getenv("SMTP_HOST", "mail.spacemail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+GMAIL_USER = os.getenv("GMAIL_USER", "support@vexdou.space")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900"))  # 15 Minutes in seconds
@@ -67,6 +71,7 @@ channel_posts = {}
 
 VERIFY_ENABLED = False
 verify_pending = {}
+email_verify_pending = {}
 video_files = {}
 
 ADS_ENABLED = False
@@ -223,11 +228,29 @@ def bot_locked_guard(message):
         return True
     return False
 
+def send_html_email(to_email, subject, html_body):
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = GMAIL_USER
+        msg["To"] = to_email
+        msg.attach(MIMEText(html_body, "html"))
+        
+        server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
+        server.login(GMAIL_USER, GMAIL_PASS)
+        server.sendmail(GMAIL_USER, to_email, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"HTML EMAIL ERROR: {e}")
+        return False
+
 # ================= MENUS =================
 def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
     kb.add("👥 REFERRAL", "🆔 GET ID")
+    kb.add("👤 Profile")
     kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
     if show_admin:
         kb.add("👑 ADMIN PANEL")
@@ -254,6 +277,7 @@ def admin_menu():
     kb.add("📉 CHANGE MINIMUM", "➕ ADD FEE")
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
     kb.add("🗑️ REMOVE ALL")
+    kb.add("📢 Send Email All")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -271,6 +295,150 @@ def back_to_main_menu(m):
 @bot.message_handler(func=lambda m: m.text == "🔙 BACK MAIN MENU")
 def back_button_handler(m):
     back_to_main_menu(m)
+
+# ================= PROFILE & VERIFICATION LOGIC =================
+@bot.message_handler(func=lambda m: m.text == "👤 Profile")
+def profile_handler(m):
+    if bot_locked_guard(m) or banned_guard(m):
+        return
+    uid = str(m.from_user.id)
+    u_data = users.get(uid, {})
+    
+    verified = u_data.get("verified", False)
+    status_str = "👤 Verified" if verified else "👤 Not Verified"
+    joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
+    downloads = videos_data.get("users", {}).get(uid, 0)
+    balance = u_data.get("balance", 0.0)
+    email = u_data.get("email", "Not Set")
+    
+    text = (
+        f"<b>👤 USER PROFILE</b>\n\n"
+        f"• Status: {status_str}\n"
+        f"• Email: {email}\n"
+        f"• Date Joined: {joined}\n"
+        f"• Total Downloads: {downloads}\n"
+        f"• Balance: ${balance:.2f}"
+    )
+    
+    kb = InlineKeyboardMarkup()
+    if not verified:
+        kb.add(InlineKeyboardButton("Verify", callback_data="start_verify_flow"))
+        
+    try:
+        bot.send_message(m.chat.id, text, reply_markup=kb)
+    except:
+        pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
+def start_verify_flow(call):
+    try:
+        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
+        bot.register_next_step_handler(msg, process_verification_email)
+        bot.answer_callback_query(call.id)
+    except:
+        pass
+
+def process_verification_email(m):
+    uid = str(m.from_user.id)
+    email = (m.text or "").strip()
+    if "@" not in email:
+        try:
+            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:")
+            bot.register_next_step_handler(msg, process_verification_email)
+        except:
+            pass
+        return
+        
+    code = str(random.randint(100000, 999999))
+    email_verify_pending[uid] = {"email": email, "code": code}
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
+        <div style="max-width: 600px; background: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <h2 style="color: #333;">Email Verification</h2>
+            <p>Hello,</p>
+            <p>Your 6-digit verification code for the bot is:</p>
+            <div style="font-size: 24px; font-weight: bold; color: #4CAF50; background: #e8f5e9; padding: 15px; text-align: center; border-radius: 4px; letter-spacing: 5px;">
+                {code}
+            </div>
+            <p style="margin-top: 20px; color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    success = send_html_email(email, "Your Bot Verification Code", html_content)
+    if success:
+        try:
+            msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:")
+            bot.register_next_step_handler(msg, process_verification_code)
+        except:
+            pass
+    else:
+        try:
+            bot.send_message(m.chat.id, "❌ Failed to send verification email. Please try again later.")
+        except:
+            pass
+
+def process_verification_code(m):
+    uid = str(m.from_user.id)
+    code_input = (m.text or "").strip()
+    
+    if uid not in email_verify_pending:
+        try:
+            bot.send_message(m.chat.id, "❌ Verification session expired. Please start again from your profile.")
+        except:
+            pass
+        return
+        
+    data = email_verify_pending[uid]
+    if code_input == data["code"]:
+        users[uid]["verified"] = True
+        users[uid]["email"] = data["email"]
+        save_user(uid)
+        email_verify_pending.pop(uid, None)
+        try:
+            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified. You can check your profile status.", reply_markup=user_menu(is_admin(m.from_user.id)))
+        except:
+            pass
+    else:
+        try:
+            msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:")
+            bot.register_next_step_handler(msg, process_verification_code)
+        except:
+            pass
+
+# ================= ADMIN SEND EMAIL ALL =================
+@bot.message_handler(func=lambda m: m.text == "📢 Send Email All")
+def send_email_all_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        msg = bot.send_message(m.chat.id, "Send the HTML content or message you want to email to all users who have an email registered:")
+        bot.register_next_step_handler(msg, send_email_all_process)
+    except:
+        pass
+
+def send_email_all_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    html_content = m.text
+    
+    count = 0
+    for uid, data in users.items():
+        email = data.get("email")
+        if email:
+            success = send_html_email(email, "Announcement from Video Downloader Bot", html_content)
+            if success:
+                count += 1
+                
+    try:
+        bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
+    except:
+        pass
 
 # ================= YOUTUBE 30 MIN ADMIN CONTROL =================
 @bot.message_handler(func=lambda m: m.text == "🔓 OPEN 30 MIN")
@@ -529,6 +697,7 @@ def start_handler(message):
             "verified": False,
             "quick_access": False,
             "youtube_30m": False,
+            "joined_date": datetime.now().strftime("%Y-%m-%d"),
             "month": now_month()
         }
         if ref:
@@ -693,61 +862,6 @@ def send_join_message(user_id):
     except:
         pass
 
-@bot.callback_query_handler(func=lambda call: call.data == "verify_dm")
-def verify_dm(call):
-    uid = call.from_user.id
-    if uid not in verify_pending:
-        return
-    code = verify_pending[uid]["code"]
-    try:
-        loop = asyncio.get_event_loop()
-        success = loop.run_until_complete(send_code_telegram(uid, code))
-    except:
-        success = False
-
-    if success:
-        try:
-            bot.answer_callback_query(call.id, "Code sent")
-            bot.send_message(call.message.chat.id, "📩 Code sent to your Telegram DM.\n\nSend the code here.")
-        except:
-            pass
-    else:
-        try:
-            bot.send_message(call.message.chat.id, "❌ Cannot send DM.\nUser must message your Telegram account first.")
-        except:
-            pass
-
-def send_gmail_code(email, code):
-    subject = "Telegram Bot Verification Code"
-    body = f"Your verification code is:\n\n{code}"
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = GMAIL_USER
-    msg["To"] = email
-    try:
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-        server.login(GMAIL_USER, GMAIL_PASS)
-        server.sendmail(GMAIL_USER, email, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        print("EMAIL ERROR:", e)
-        return False
-
-def process_email(message):
-    uid = message.from_user.id
-    email = message.text.strip()
-    code = str(random.randint(10000, 99999))
-    verify_pending[uid] = {"code": code}
-    success = send_gmail_code(email, code)
-    try:
-        if success:
-            bot.send_message(message.chat.id, "📩 Code sent to your Gmail.\nSend the code here.")
-        else:
-            bot.send_message(message.chat.id, "❌ Failed to send email.")
-    except:
-        pass
-
 def send_multi_join(user_id):
     kb = InlineKeyboardMarkup(row_width=3)
     buttons = [InlineKeyboardButton("➕️ JOIN", url=f"https://t.me/{ch}") for ch in POST_CHANNELS]
@@ -755,47 +869,6 @@ def send_multi_join(user_id):
     kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="multi_checkjoin"))
     try:
         bot.send_message(user_id, "⚠️ Join all channels to continue.", reply_markup=kb)
-    except:
-        pass
-
-async def send_code_telegram(user_id, code):
-    try:
-        user = await tg_client.get_entity(user_id)
-        await tg_client.send_message(user, f"🔐 Your verification code:\n\n{code}")
-        return True
-    except Exception as e:
-        print("DM ERROR:", e)
-        return False
-
-@bot.callback_query_handler(func=lambda call: call.data == "via_telegram")
-def via_telegram(call):
-    uid = call.from_user.id
-    if uid not in verify_pending:
-        try:
-            bot.answer_callback_query(call.id, "Verification expired")
-        except:
-            pass
-        return
-    code = verify_pending[uid]["code"]
-    try:
-        loop = asyncio.get_event_loop()
-        success = loop.run_until_complete(send_code_telegram(uid, code))
-    except:
-        success = False
-
-    try:
-        if success:
-            bot.send_message(call.message.chat.id, "✅ Code sent to your Telegram messages.\nSend the code here.")
-        else:
-            bot.send_message(call.message.chat.id, "⚠️ Telegram blocked sending message.\nUser must message your account first.")
-    except:
-        pass
-
-@bot.callback_query_handler(func=lambda call: call.data == "verify_email")
-def verify_email(call):
-    try:
-        msg = bot.send_message(call.message.chat.id, "📧 Send your Gmail address to receive verification code.")
-        bot.register_next_step_handler(msg, process_email)
     except:
         pass
 
@@ -924,7 +997,6 @@ def withdraw_address_step(m):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 CANCEL")
     try:
-        # Halkan ayaan ku darnay soo akhrinta minimum-ka admin-ka
         min_w = get_setting("min_withdrawal", 1.0)
         msg = bot.send_message(m.chat.id, f"Enter withdrawal amount\nMinimum: ${min_w}\nBalance: ${users[uid]['balance']:.2f}\n\nOr press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_amount_step)
@@ -994,11 +1066,63 @@ def withdraw_amount_step(m):
     save_user(uid)
     save_withdraws()
 
-    # Fariintaada gaarka ah ee uu user-ku helayo:
+    # Send gorgeous HTML email receipt if verified
+    if users[uid].get("verified") and users[uid].get("email"):
+        w_email = users[uid]["email"]
+        html_receipt = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
+            <div style="max-width: 600px; background: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Withdrawal Request Receipt</h2>
+                <p>Hello,</p>
+                <p>Your withdrawal request has been successfully submitted and is currently pending review.</p>
+                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Request ID:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">{wid}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Amount Requested:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${amt:.2f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Fee:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${calculated_fee:.2f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Low W/D Fee:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${low_fee:.2f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Amount to Send:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; color: #27ae60; font-weight: bold;">${amount_sent:.2f}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">USDT Address:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; word-break: break-all; font-family: monospace;">{withdrawal['address']}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Status:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; color: #e67e22; font-weight: bold;">Pending</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Time:</td>
+                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">{withdrawal['time']}</td>
+                    </tr>
+                </table>
+                <p style="margin-top: 30px; color: #7f8c8d; font-size: 12px; text-align: center;">Thank you for using our bot!</p>
+            </div>
+        </body>
+        </html>
+        """
+        send_html_email(w_email, f"Withdrawal Receipt #{wid}", html_receipt)
+
     receipt_text = (
         f"✅ Withdrawal Request Sent\n"
         f"🧾 Request ID: {wid}\n"
-        f"💲Fee ({fee_pct:.2f}%): -${calculated_fee:.2f}\n"
+        f"💲 Fee ({fee_pct:.2f}%): -${calculated_fee:.2f}\n"
         f"💲 Low W/D Fee: -${low_fee:.2f}\n"
         f"💵 Amount: ${amt:.2f}\n"
         f"🏦 Address: {withdrawal['address']}\n"
@@ -1217,7 +1341,6 @@ def stats_handler(m):
     except:
         pass
 
-# ================= 1. CHANGE MINIMUM WITHDRAWAL =================
 @bot.message_handler(func=lambda m: m.text == "📉 CHANGE MINIMUM")
 def change_min_start(m):
     if not is_admin(m.from_user.id): return
@@ -1235,7 +1358,6 @@ def change_min_process(m):
     except:
         bot.send_message(m.chat.id, "❌ Invalid number.")
 
-# ================= 2. ADD FEE & LOW FEE =================
 @bot.message_handler(func=lambda m: m.text == "➕ ADD FEE")
 def add_fee_start(m):
     if not is_admin(m.from_user.id): return
@@ -1270,7 +1392,6 @@ def add_low_fee_process(m):
     except:
         bot.send_message(m.chat.id, "❌ Invalid number.")
 
-# ================= 3. GIFT ALL & REMOVE ALL =================
 @bot.message_handler(func=lambda m: m.text == "🎁 GIFT ALL")
 def gift_all_start(m):
     if not is_admin(m.from_user.id): return
@@ -1299,7 +1420,7 @@ def gift_all_process(m):
 def remove_all_start(m):
     if not is_admin(m.from_user.id): return
     try:
-        msg = bot.send_message(m.chat.id, "Send amount and reason separated by pipe (|)\nExample:\n0.5 | Cashuur")
+        msg = bot.send_message(m.chat.id, "Send amount and reason separated by pipe (|)\nExample:\n0.5 | Reason")
         bot.register_next_step_handler(msg, remove_all_process)
     except: pass
 
@@ -1324,7 +1445,7 @@ def remove_all_process(m):
         count = 0
         for uid in users:
             try:
-                bot.send_message(int(uid), f"!Your Account Has Been Charged: ${remove_amt:.2f} 💲: {reason}.")
+                bot.send_message(int(uid), f"⚠️ Your Account Has Been Charged: ${remove_amt:.2f}\nReason: {reason}")
                 count += 1
             except:
                 pass
@@ -1389,7 +1510,6 @@ def add_channel_process(m):
         except:
             pass
 
-# ================= EXACT RAADI LAYOUT =================
 @bot.message_handler(func=lambda m: m.text == "🔍 RAADI")
 def raadi_stats(m):
     if not is_admin(m.from_user.id):
@@ -1463,7 +1583,6 @@ def broadcast_send(m):
     except:
         pass
 
-# ================= BROADCAST MEDIA =================
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
     if not is_admin(m.from_user.id):
@@ -1495,7 +1614,6 @@ def broadcast_media_process(m):
 
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to {count} users.")
 
-# ================= SEND PAY (TELEGRAM STARS) =================
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
     if not is_admin(m.from_user.id):
@@ -1713,6 +1831,7 @@ def import_users_process(m):
                 "verified": False,
                 "quick_access": False,
                 "youtube_30m": False,
+                "joined_date": datetime.now().strftime("%Y-%m-%d"),
                 "month": now_month()
             }
             save_user(uid)
@@ -1827,7 +1946,6 @@ def handle_links(message):
         kb = InlineKeyboardMarkup()
         kb.add(InlineKeyboardButton("📩 Verify via DM", callback_data="via_telegram"))
         kb.add(InlineKeyboardButton("🤖 Verify via Bot", url=f"https://t.me/Verifyd_bot?start={code}"))
-        kb.add(InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_email"))
         try:
             bot.send_message(message.chat.id, "🔐 Verification Required\n\nChoose verification method:", reply_markup=kb)
         except:
@@ -2064,31 +2182,6 @@ def remove_balance_process(m):
 
 CAPTION_TEXT = "Downloaded by:\n@Downloadvedioytibot"
 
-@bot.message_handler(func=lambda m: m.text and m.text.isdigit())
-def verify_code_check(m):
-    uid = m.from_user.id
-    if uid not in verify_pending:
-        return
-    data = verify_pending[uid]
-    if m.text == data["code"]:
-        users[str(uid)]["verified"] = True
-        save_user(str(uid))
-        link = data["link"]
-        del verify_pending[uid]
-        try:
-            msg = bot.send_message(m.chat.id, "✅ Verification successful\n⬇️ Downloading video...")
-            if is_quick_access(uid):
-                vip_executor.submit(download_media, m.chat.id, link, msg.message_id)
-            else:
-                normal_executor.submit(download_media, m.chat.id, link, msg.message_id)
-        except:
-            pass
-    else:
-        try:
-            bot.send_message(m.chat.id, "❌ Wrong verification code")
-        except:
-            pass
-
 def extract_url(text):
     urls = re.findall(r'https?://[^\s]+', text)
     return urls[0] if urls else None
@@ -2174,7 +2267,6 @@ def extract_music(call):
         bot.answer_callback_query(call.id, "❌ Failed to convert music")
 
 # ================= DOWNLOAD MEDIA =================
-# ================= DOWNLOAD MEDIA =================
 def download_media(chat_id, url, message_id):
     file_path = None
     download_dir = None
@@ -2183,37 +2275,22 @@ def download_media(chat_id, url, message_id):
         os.makedirs("downloads", exist_ok=True)
         url = url.strip()
 
-        # ================= PLATFORM DETECTION =================
         if "youtube.com" in url or "youtu.be" in url:
             platform = "youtube"
-
         elif "pinterest.com" in url or "pin.it" in url:
             platform = "pinterest"
-
         elif "tiktok.com" in url:
             platform = "tiktok"
-
         elif "facebook.com" in url or "fb.watch" in url:
             platform = "facebook"
-
         elif "instagram.com" in url:
             platform = "instagram"
-
         elif "x.com" in url or "twitter.com" in url:
             platform = "twitter"
-
         elif "snapchat.com" in url:
             platform = "snapchat"
-
         else:
             platform = "other"
-
-        print(f"[DOWNLOAD] Platform: {platform}")
-        print(f"[DOWNLOAD] URL: {url}")
-
-        # =====================================================
-        # PINTEREST SHORT URL
-        # =====================================================
 
         if platform == "pinterest" and "pin.it" in url:
             try:
@@ -2230,23 +2307,12 @@ def download_media(chat_id, url, message_id):
                         )
                     }
                 )
-
                 if response.url:
                     url = response.url
-
-                print(f"[PINTEREST] Resolved URL: {url}")
-
             except Exception as e:
                 print(f"[PINTEREST] Redirect error: {e}")
 
-        # =====================================================
-        # YOUTUBE 10 MINUTE LIMIT
-        # =====================================================
-
         if platform == "youtube":
-
-            print("[YOUTUBE] Checking video information...")
-
             try:
                 info_opts = {
                     "quiet": False,
@@ -2254,54 +2320,25 @@ def download_media(chat_id, url, message_id):
                     "noplaylist": True,
                     "socket_timeout": 30,
                 }
-
-                # Use Deno if installed
                 deno_path = shutil.which("deno")
-
                 if deno_path:
-                    info_opts["js_runtimes"] = {
-                        "deno": {
-                            "path": deno_path
-                        }
-                    }
-
-                    print(
-                        f"[YOUTUBE] Deno: {deno_path}"
-                    )
+                    info_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
                 with yt_dlp.YoutubeDL(info_opts) as ydl:
-                    info = ydl.extract_info(
-                        url,
-                        download=False
-                    )
+                    info = ydl.extract_info(url, download=False)
 
                 duration = info.get("duration") or 0
-
-                print(
-                    f"[YOUTUBE] Duration: {duration} seconds"
-                )
-
                 if duration > 600:
-
                     try:
                         bot.edit_message_text(
-                            "❌ YouTube video is too long.\n\n"
-                            "⏱ Maximum allowed: 10 minutes.",
+                            "❌ YouTube video is too long.\n\n⏱ Maximum allowed: 10 minutes.",
                             chat_id,
                             message_id
                         )
                     except Exception:
                         pass
-
                     return
-
             except Exception as e:
-
-                print(
-                    f"[YOUTUBE INFO ERROR] "
-                    f"{type(e).__name__}: {e}"
-                )
-
                 try:
                     bot.edit_message_text(
                         "❌ YouTube could not be processed right now.",
@@ -2310,58 +2347,24 @@ def download_media(chat_id, url, message_id):
                     )
                 except Exception:
                     pass
-
                 return
 
-        # =====================================================
-        # DOWNLOAD DIRECTORY
-        # =====================================================
-
         download_id = uuid.uuid4().hex[:12]
-
-        download_dir = os.path.join(
-            "downloads",
-            download_id
-        )
-
-        os.makedirs(
-            download_dir,
-            exist_ok=True
-        )
-
-        output_template = os.path.join(
-            download_dir,
-            "%(id)s_%(autonumber)s.%(ext)s"
-        )
-
-        # =====================================================
-        # YT-DLP OPTIONS
-        # =====================================================
+        download_dir = os.path.join("downloads", download_id)
+        os.makedirs(download_dir, exist_ok=True)
+        output_template = os.path.join(download_dir, "%(id)s_%(autonumber)s.%(ext)s")
 
         ydl_opts = {
-            "format": (
-                "best[ext=mp4]/"
-                "bestvideo[ext=mp4]+bestaudio/"
-                "best"
-            ),
-
+            "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio/best",
             "outtmpl": output_template,
-
             "merge_output_format": "mp4",
-
-            # TikTok wuxuu u baahan yahay False si uu u soo dejiyo sawirrada badan (slideshow)
             "noplaylist": False if platform == "tiktok" else True,
-
             "quiet": False,
             "no_warnings": False,
-
             "socket_timeout": 30,
-
             "retries": 5,
             "fragment_retries": 5,
-
             "continuedl": True,
-
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2372,192 +2375,58 @@ def download_media(chat_id, url, message_id):
             }
         }
 
-        # =====================================================
-        # DENO
-        # =====================================================
-
         deno_path = shutil.which("deno")
-
         if deno_path:
-
-            ydl_opts["js_runtimes"] = {
-                "deno": {
-                    "path": deno_path
-                }
-            }
-
-            print(
-                f"[YT-DLP] Deno enabled: {deno_path}"
-            )
-
-        else:
-
-            print(
-                "[YT-DLP] Deno not installed."
-            )
-
-        # =====================================================
-        # FFMPEG
-        # =====================================================
+            ydl_opts["js_runtimes"] = {"deno": {"path": deno_path}}
 
         ffmpeg_path = shutil.which("ffmpeg")
-
         if ffmpeg_path:
-
             ydl_opts["ffmpeg_location"] = ffmpeg_path
-
-            print(
-                f"[FFMPEG] Found: {ffmpeg_path}"
-            )
-
-        else:
-
-            print(
-                "[FFMPEG] WARNING: FFmpeg not found."
-            )
-
-        # =====================================================
-        # DOWNLOAD
-        # =====================================================
-
-        print("[DOWNLOAD] Starting yt-dlp...")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        # =====================================================
-        # FIND DOWNLOADED FILES
-        # =====================================================
-
         files_to_send = []
-
         for root, dirs, files in os.walk(download_dir):
             for name in sorted(files):
-                if name.lower().endswith(
-                    (
-                        ".mp4",
-                        ".mkv",
-                        ".webm",
-                        ".mov",
-                        ".m4v",
-                        ".jpg",
-                        ".jpeg",
-                        ".png",
-                        ".webp"
-                    )
-                ):
+                if name.lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".m4v", ".jpg", ".jpeg", ".png", ".webp")):
                     files_to_send.append(os.path.join(root, name))
 
         if not files_to_send:
-            raise FileNotFoundError(
-                "yt-dlp finished but downloaded files "
-                "were not found."
-            )
-
-        print(
-            f"[DOWNLOAD] Files found: {len(files_to_send)}"
-        )
-
-        # =====================================================
-        # SEND MEDIA (TikTok Photos as Album vs Single File)
-        # =====================================================
+            raise FileNotFoundError("yt-dlp finished but downloaded files were not found.")
 
         if platform == "tiktok" and len(files_to_send) > 1:
-            # U dir sida album (MediaGroup) haddii ay yihiin sawirro badan oo TikTok ah
             media_group = []
-            for path in files_to_send[:10]: # Telegram wuxuu ogol yahay ugu badnaan 10 sawir
+            for path in files_to_send[:10]:
                 media_group.append(telebot.types.InputMediaPhoto(open(path, 'rb')))
-
             bot.send_media_group(chat_id, media_group, reply_to_message_id=message_id)
-            print("[DOWNLOAD] TikTok photo album sent successfully.")
-
         else:
-            # Haddii uu yahay hal fayl (Video ama hal sawir)
             file_path = files_to_send[0]
-
             if file_path.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.m4v')):
-                send_video_with_music(
-                    chat_id,
-                    file_path,
-                    platform,
-                    message_id
-                )
+                send_video_with_music(chat_id, file_path, platform, message_id)
             else:
-                bot.send_photo(
-                    chat_id,
-                    open(file_path, 'rb'),
-                    reply_to_message_id=message_id
-                )
-
-            print(
-                "[DOWNLOAD] Single file sent successfully."
-            )
-
-    # =========================================================
-    # ERROR
-    # =========================================================
+                bot.send_photo(chat_id, open(file_path, 'rb'), reply_to_message_id=message_id)
 
     except Exception as e:
-
-        print(
-            "=========================================="
-        )
-
-        print(
-            f"[DOWNLOAD ERROR] "
-            f"{type(e).__name__}: {e}"
-        )
-
-        print(
-            "=========================================="
-        )
-
+        print(f"[DOWNLOAD ERROR] {type(e).__name__}: {e}")
         try:
-
             bot.edit_message_text(
-                "❌ Download failed.\n\n"
-                "Please make sure the link is public "
-                "and try again.",
+                "❌ Download failed.\n\nPlease make sure the link is public and try again.",
                 chat_id,
                 message_id
             )
-
         except Exception:
-
             try:
-
-                bot.send_message(
-                    chat_id,
-                    "❌ Download failed."
-                )
-
+                bot.send_message(chat_id, "❌ Download failed.")
             except Exception:
                 pass
 
-    # =========================================================
-    # CLEANUP
-    # =========================================================
-
     if download_dir:
-
         try:
-
             if os.path.exists(download_dir):
-
-                shutil.rmtree(
-                    download_dir,
-                    ignore_errors=True
-                )
-
-                print(
-                    "[CLEANUP] Download directory removed."
-                )
-
+                shutil.rmtree(download_dir, ignore_errors=True)
         except Exception as e:
-
-            print(
-                f"[CLEANUP ERROR] {e}"
-            )
+            print(f"[CLEANUP ERROR] {e}")
 
 
 # ================= RUN =================
