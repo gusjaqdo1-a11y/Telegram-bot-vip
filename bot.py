@@ -339,7 +339,9 @@ def profile_handler(m):
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
     try:
-        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:")
+        kb = InlineKeyboardMarkup()
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
+        msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
         bot.register_next_step_handler(msg, process_verification_email)
         bot.answer_callback_query(call.id)
     except:
@@ -349,10 +351,22 @@ def process_verification_email(m):
     uid = str(m.from_user.id)
     email = (m.text or "").strip()
     
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU"]
-    if email in menu_buttons or "@" not in email:
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "🔙 CANCEL"]
+    
+    # Haddii user-ku uu taabto button kale ama uu joojiyo, wuu ka baxayaa verification-ka
+    if email in menu_buttons or email == "🔙 CANCEL" or email == "🔙 BACK MAIN MENU":
+        email_verify_pending.pop(uid, None)
         try:
-            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:")
+            bot.send_message(m.chat.id, "❌ Verification process was cancelled.", reply_markup=user_menu(is_admin(m.from_user.id)))
+        except:
+            pass
+        return
+
+    if "@" not in email:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
+            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_email)
         except:
             pass
@@ -390,6 +404,7 @@ def process_verification_email(m):
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
@@ -410,6 +425,18 @@ def expire_verification(chat_id, message_id, uid):
         except:
             pass
 
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_verify")
+def cancel_verify_callback(call):
+    uid = str(call.from_user.id)
+    if uid in email_verify_pending:
+        email_verify_pending.pop(uid, None)
+    try:
+        bot.answer_callback_query(call.id, "❌ Verification cancelled.")
+        bot.edit_message_text("❌ Verification has been cancelled. You can restart it anytime from your profile.", call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.send_message(call.message.chat.id, "Main menu:", reply_markup=user_menu(is_admin(uid)))
+    except:
+        pass
+
 @bot.callback_query_handler(func=lambda call: call.data == "resend_verify_code")
 def resend_verify_code_callback(call):
     uid = str(call.from_user.id)
@@ -419,7 +446,6 @@ def resend_verify_code_callback(call):
         
     data = email_verify_pending[uid]
     
-    # Check 2 minutes cooldown (120 seconds)
     current_time = time.time()
     last_resend_time = data.get("last_resend", data.get("time", 0))
     cooldown = 120
@@ -462,6 +488,7 @@ def resend_verify_code_callback(call):
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(call.message.chat.id, f"📩 A new 6-digit verification code has been resent to your email ({email}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
@@ -474,24 +501,33 @@ def process_verification_code(m):
     uid = str(m.from_user.id)
     code_input = (m.text or "").strip()
     
+    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "🔙 CANCEL"]
+    
+    # Haddii user-ku uu taabto badhan ama uu riixdo cancel, wuu ka baxayaa verification-ka
+    if code_input in menu_buttons or code_input == "🔙 CANCEL" or code_input == "🔙 BACK MAIN MENU":
+        email_verify_pending.pop(uid, None)
+        try:
+            bot.send_message(m.chat.id, "❌ Verification process was cancelled.", reply_markup=user_menu(is_admin(uid)))
+        except:
+            pass
+        return
+
     if uid not in email_verify_pending:
         try:
-            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.")
+            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.", reply_markup=user_menu(is_admin(uid)))
         except:
             pass
         return
         
-    # Intercept any attempt to press menu buttons or send incorrect format while verifying
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU"]
-    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
+    if not code_input.isdigit() or len(code_input) != 6:
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(
                 m.chat.id, 
-                "⚠️ <b>Lama ogola in aad meel kale taabato!</b>\n"
-                "Waa in aad marka hore gelisaa code-ka 6-digit ah ee loo soo diray Gmail-kaaga si aad u sii waddo isticmaalka bot-ka.\n\n"
-                "Fadlan geli code-ka saxda ah:", 
+                "❌ <b>Code aan sax ahayn ama meel kale oo la taabtay!</b>\n"
+                "Fadlan geli code sax ah oo 6-digit ah ama riix Cancel si aad u joojiso:", 
                 reply_markup=kb
             )
             bot.register_next_step_handler(msg, process_verification_code)
@@ -515,6 +551,7 @@ def process_verification_code(m):
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"))
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify"))
             msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_code)
             threading.Thread(target=expire_verification, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
@@ -2576,47 +2613,7 @@ def download_media(chat_id, url, message_id):
                 send_video_with_music(chat_id, file_path, platform, message_id)
             else:
                 bot.send_photo(chat_id, open(file_path, 'rb'), reply_to_message_id=message_id)
-
     except Exception as e:
-        print(f"[DOWNLOAD ERROR] {type(e).__name__}: {e}")
-        try:
-            bot.edit_message_text(
-                "❌ Download failed.\n\nPlease make sure the link is public and try again.",
-                chat_id,
-                message_id
-            )
-        except Exception:
-            try:
-                bot.send_message(chat_id, "❌ Download failed.")
-            except Exception:
-                pass
+        print(f"Download media error: {e}")
 
-    if download_dir:
-        try:
-            if os.path.exists(download_dir):
-                shutil.rmtree(download_dir, ignore_errors=True)
-        except Exception as e:
-            print(f"[CLEANUP ERROR] {e}")
-
-
-# ================= RUN =================
-if __name__ == "__main__":
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
-
-    print("🤖 Downloader Bot is running...")
-    
-    def run_bot1():
-        bot.infinity_polling(timeout=20, long_polling_timeout=20)
-        
-    def run_bot2():
-        bot2.infinity_polling(timeout=20, long_polling_timeout=20)
-
-    t1 = threading.Thread(target=run_bot1)
-    t2 = threading.Thread(target=run_bot2)
-    
-    t1.start()
-    t2.start()
-    
-    t1.join()
-    t2.join()
+bot.infinity_polling()
