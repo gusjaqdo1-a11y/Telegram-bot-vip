@@ -1321,7 +1321,7 @@ def remove_all_process(m):
         count = 0
         for uid in users:
             try:
-                bot.send_message(int(uid), f"⚠️ Fiiro gaar ah: Waxaa akoonkaaga laga jaray lacag dhan ${remove_amt:.2f} sabab la xiriirta: *{reason}*.")
+                bot.send_message(int(uid), f"!Your Account Has Been Charged: ${remove_amt:.2f} 💲: {reason}.")
                 count += 1
             except:
                 pass
