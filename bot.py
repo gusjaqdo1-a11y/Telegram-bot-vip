@@ -3039,7 +3039,6 @@ def remove_balance_process(m):
 
 if __name__ == "__main__":
     print("🤖 Bot 1 and Bot 2 are starting...")
-    print(f"📡 Platforms: {", ".join(PLATFORM_PATTERNS.keys())}")
     print(f"🟢 SMESS WhatsApp configured: {bool(SMESS_API_KEY)} | D7 SMS configured: {bool(D7_TOKEN)}")
     print(f"📦 Telegram upload target: {MAX_UPLOAD_MB} MB")
     
