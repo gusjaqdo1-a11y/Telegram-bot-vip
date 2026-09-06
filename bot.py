@@ -374,8 +374,7 @@ def user_menu(show_admin=False):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("💰 BALANCE", "💸 WITHDRAWAL")
     kb.add("👥 REFERRAL", "🆔 GET ID")
-    kb.add("💎 PREMIUM", "🎵 MUSIC")
-    kb.add("👤 Profile")
+    kb.add("💎 PREMIUM", "👤 Profile")
     kb.add("☎️ CUSTOMER", "🤖CUSTOMER AI")
     if show_admin:
         kb.add("👑 ADMIN PANEL")
