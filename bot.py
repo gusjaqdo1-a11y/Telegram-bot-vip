@@ -483,15 +483,10 @@ def profile_handler(m):
     text = (
         f"<b>👤 USER PROFILE</b>"
 
-"
-        f"• Status: {status_str}
-"
-        f"• Contact: {contact_info}
-"
-        f"• Date Joined: {joined}
-"
-        f"• Total Downloads: {downloads}
-"
+        f"• Status: {status_str}"
+        f"• Contact: {contact_info}"
+        f"• Date Joined: {joined}"
+        f"• Total Downloads: {downloads}"
         f"• Balance: ${balance:.2f}"
     )
     kb = InlineKeyboardMarkup()
