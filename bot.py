@@ -37,6 +37,8 @@ D7_TOKEN = os.getenv("D7_TOKEN")
 
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
+MEDIA_GROUP_LIMIT = 10  # Telegram max photos per album
+FACEBOOK_COOKIES_FILE = os.getenv("FACEBOOK_COOKIES_FILE")  # optional Netscape cookies.txt for Facebook
 
 # Dual executors for Priority (Quick Access) & Normal
 
@@ -305,6 +307,104 @@ def extract_url(text):
     match = re.search(r'(https?://[^\s]+)', text)
     return match.group(0) if match else None
 
+# ================= DOWNLOAD HELPER FUNCTIONS (NEW) =================
+
+def detect_platform(link):
+    if "tiktok.com" in link:
+        return "tiktok"
+    elif "youtube.com" in link or "youtu.be" in link:
+        return "youtube"
+    elif "facebook.com" in link or "fb.watch" in link:
+        return "facebook"
+    elif "instagram.com" in link:
+        return "instagram"
+    elif "pinterest.com" in link or "pin.it" in link:
+        return "pinterest"
+    elif "snapchat.com" in link:
+        return "snapchat"
+    elif "twitter.com" in link or "x.com" in link:
+        return "twitter"
+    return "unknown"
+
+def resolve_redirect(url):
+    """Follow short-link redirects (e.g. pin.it) so yt-dlp gets the final URL."""
+    try:
+        r = http_session.head(url, allow_redirects=True, timeout=10)
+        return r.url
+    except Exception:
+        return url
+
+def update_stats_and_feedback(chat_id, platform, uid_str):
+    videos_data["total"] = videos_data.get("total", 0) + 1
+    if platform in videos_data["platforms"]:
+        videos_data["platforms"][platform] += 1
+    if uid_str not in videos_data["users"]:
+        videos_data["users"][uid_str] = 0
+    videos_data["users"][uid_str] += 1
+    save_videos()
+    if videos_data.get("feedback_enabled", False):
+        send_feedback_request(chat_id, platform, uuid.uuid4().hex)
+
+def prune_video_files(max_age_seconds=21600):
+    now = time.time()
+    expired = [k for k, v in video_files.items() if now - v.get("time", now) > max_age_seconds]
+    for k in expired:
+        video_files.pop(k, None)
+
+def try_download_tiktok_slideshow_images(link, tmp_dir):
+    """
+    TikTok 'photo mode' posts are a slideshow of images, not a single video file.
+    yt-dlp's exact info-dict shape for these has changed across versions, so this
+    checks a couple of known shapes. If TikTok changes things again and this stops
+    matching, run `pip install -U yt-dlp`, print(info) for a slideshow link, and
+    adjust the two conditions below to whatever field actually holds the image URLs.
+    """
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(link, download=False)
+    except Exception as e:
+        print(f"Slideshow probe error: {e}")
+        return []
+
+    image_urls = []
+    if info:
+        if info.get('images'):
+            image_urls = [img.get('url') for img in info['images'] if img.get('url')]
+        elif info.get('_type') == 'playlist' and info.get('entries'):
+            for entry in info['entries']:
+                if entry and entry.get('ext') in ('jpg', 'jpeg', 'png', 'webp'):
+                    image_urls.append(entry.get('url'))
+
+    saved = []
+    for i, url in enumerate(image_urls[:MEDIA_GROUP_LIMIT]):
+        try:
+            r = http_session.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                path = os.path.join(tmp_dir, f"slide_{i}.jpg")
+                with open(path, 'wb') as f:
+                    f.write(r.content)
+                saved.append(path)
+        except Exception as e:
+            print(f"Slide image download error: {e}")
+    return saved
+
+def send_tiktok_album(chat_id, image_paths, message_id):
+    media = []
+    handles = []
+    try:
+        for path in image_paths:
+            fh = open(path, 'rb')
+            handles.append(fh)
+            media.append(InputMediaPhoto(fh))
+        bot.send_media_group(chat_id, media)
+    finally:
+        for fh in handles:
+            fh.close()
+    try:
+        bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
 # ================= MENUS =================
 
 def user_menu(show_admin=False):
@@ -460,6 +560,14 @@ def cancel_verify_process(call):
     uid = str(call.from_user.id)
     email_verify_pending.pop(uid, None)
     phone_verify_pending.pop(uid, None)
+    # FIX: this clears the pending register_next_step_handler for this chat.
+    # Without it, whatever the user types/taps next (even a menu button like
+    # BALANCE or REFERRAL) was still being swallowed by the old handler and
+    # shown as "Invalid email address" - this is the bug from the screenshot.
+    try:
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    except:
+        pass
     try:
         bot.edit_message_text("❌ Verification process cancelled.", call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.answer_callback_query(call.id, "Cancelled successfully!")
@@ -472,6 +580,12 @@ def delayed_cancel_session(chat_id, message_id, uid):
     if uid in email_verify_pending or uid in phone_verify_pending:
         email_verify_pending.pop(uid, None)
         phone_verify_pending.pop(uid, None)
+        # Same fix as cancel_verify_process - clear the stale next-step handler
+        # so it doesn't intercept the user's next message after expiry.
+        try:
+            bot.clear_step_handler_by_chat_id(chat_id)
+        except:
+            pass
         try:
             bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
         except:
@@ -1099,35 +1213,48 @@ CHANNEL_USERNAME = "@tiktokvediodownload"
 # ================= DOWNLOAD MEDIA FUNCTION =================
 
 def download_media(chat_id, link, message_id):
-    platform = "unknown"
-    if "tiktok.com" in link:
-        platform = "tiktok"
-    elif "youtube.com" in link or "youtu.be" in link:
-        platform = "youtube"
-    elif "facebook.com" in link or "fb.watch" in link:
-        platform = "facebook"
-    elif "instagram.com" in link:
-        platform = "instagram"
-    elif "pinterest.com" in link or "pin.it" in link:
-        platform = "pinterest"
-    elif "snapchat.com" in link:
-        platform = "snapchat"
-    elif "twitter.com" in link or "x.com" in link:
-        platform = "twitter"
+    platform = detect_platform(link)
+
+    # pin.it short-links: resolve to the final Pinterest URL first
+    if platform == "pinterest" and "pin.it" in link:
+        link = resolve_redirect(link)
 
     max_duration = MAX_YOUTUBE_DURATION
     uid_str = str(chat_id)
     if platform == "youtube" and users.get(uid_str, {}).get("youtube_30m", False):
-        max_duration = 1800 # 30 minutes
+        max_duration = 1800  # 30 minutes
 
     tmp_dir = f"downloads_{uuid.uuid4().hex}"
     os.makedirs(tmp_dir, exist_ok=True)
+
+    common_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    }
     ydl_opts = {
         'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
-        'format': 'best',
+        'format': 'bv*+ba/b',
+        'merge_output_format': 'mp4',
         'max_filesize': 500 * 1024 * 1024,
+        'quiet': True,
+        'http_headers': common_headers,
+        'nocheckcertificate': True,
     }
+    # Optional: point FACEBOOK_COOKIES_FILE at a Netscape cookies.txt exported
+    # from an account that can already see the content, to reduce Facebook's
+    # anonymous-request blocking.
+    if platform == "facebook" and FACEBOOK_COOKIES_FILE and os.path.exists(FACEBOOK_COOKIES_FILE):
+        ydl_opts['cookiefile'] = FACEBOOK_COOKIES_FILE
+
     try:
+        # TikTok "photo mode" posts are a slideshow of images, not one video -
+        # handle those separately and send as an album.
+        if platform == "tiktok":
+            slideshow_images = try_download_tiktok_slideshow_images(link, tmp_dir)
+            if slideshow_images:
+                send_tiktok_album(chat_id, slideshow_images, message_id)
+                update_stats_and_feedback(chat_id, platform, uid_str)
+                return
+
         with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
             info = ydl.extract_info(link, download=False)
             if info and 'duration' in info and info['duration']:
@@ -1150,25 +1277,79 @@ def download_media(chat_id, link, message_id):
                     raise Exception("Downloaded file not found.")
             with open(filename, 'rb') as f:
                 if filename.endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi', '.gif')):
-                    bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot")
+                    vid_id = uuid.uuid4().hex[:10]
+                    prune_video_files()
+                    video_files[vid_id] = {"link": link, "time": time.time()}
+                    kb = InlineKeyboardMarkup()
+                    kb.add(InlineKeyboardButton("MUSIC🎵", callback_data=f"tomp3_{vid_id}"))
+                    bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot", reply_markup=kb)
                 elif filename.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
                     bot.send_audio(chat_id, f, caption="🎵 Audio downloaded successfully via @Downloadvedioytibot")
                 else:
                     bot.send_document(chat_id, f, caption="📁 File downloaded successfully via @Downloadvedioytibot")
             bot.delete_message(chat_id, message_id)
-            videos_data["total"] = videos_data.get("total", 0) + 1
-            if platform in videos_data["platforms"]:
-                videos_data["platforms"][platform] += 1
-            if uid_str not in videos_data["users"]:
-                videos_data["users"][uid_str] = 0
-            videos_data["users"][uid_str] += 1
-            save_videos()
-            if videos_data.get("feedback_enabled", False):
-                send_feedback_request(chat_id, platform, uuid.uuid4().hex)
+            update_stats_and_feedback(chat_id, platform, uid_str)
     except Exception as e:
         print(f"Download error: {e}")
         try:
             bot.edit_message_text(f"❌ Failed to download media. Error: {str(e)[:100]}", chat_id, message_id)
+        except: pass
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+# ================= MUSIC 🎵 -> MP3 BUTTON =================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("tomp3_"))
+def convert_to_mp3_callback(call):
+    vid_id = call.data.replace("tomp3_", "")
+    data = video_files.get(vid_id)
+    if not data:
+        try:
+            bot.answer_callback_query(call.id, "❌ This link expired. Please download the video again.", show_alert=True)
+        except: pass
+        return
+    link = data["link"]
+    chat_id = call.message.chat.id
+    try:
+        bot.answer_callback_query(call.id, "🎵 Converting...")
+    except: pass
+    try:
+        msg = bot.send_message(chat_id, "⏳ Converting to MP3...")
+    except:
+        return
+    if is_quick_access(call.from_user.id):
+        vip_executor.submit(extract_audio_and_send, chat_id, link, msg.message_id)
+    else:
+        normal_executor.submit(extract_audio_and_send, chat_id, link, msg.message_id)
+
+def extract_audio_and_send(chat_id, link, message_id):
+    tmp_dir = f"audio_{uuid.uuid4().hex}"
+    os.makedirs(tmp_dir, exist_ok=True)
+    ydl_opts = {
+        'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.extract_info(link, download=True)
+        files = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir) if f.lower().endswith('.mp3')]
+        if not files:
+            raise Exception("MP3 was not created - make sure ffmpeg is installed on the server.")
+        with open(files[0], 'rb') as f:
+            bot.send_audio(chat_id, f, caption="🎵 Converted via @Downloadvedioytibot")
+        try:
+            bot.delete_message(chat_id, message_id)
+        except: pass
+    except Exception as e:
+        print(f"MP3 conversion error: {e}")
+        try:
+            bot.edit_message_text(f"❌ Failed to convert to MP3: {str(e)[:100]}", chat_id, message_id)
         except: pass
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
