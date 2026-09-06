@@ -1,18 +1,26 @@
-import telebot
-from pymongo import MongoClient
-import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice
-import os, json, random
-from datetime import datetime
-import yt_dlp
-import subprocess
+import os
+import json
+import random
 import re
 import shutil
 import threading
 import asyncio
 import uuid
 import time
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+
+import requests
+import telebot
+from telebot.types import (
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputMediaPhoto,
+    LabeledPrice
+)
+from pymongo import MongoClient
+import yt_dlp
 from telethon import TelegramClient
 
 # ================= CONFIG =================
@@ -25,17 +33,18 @@ API_HASH = os.getenv("API_HASH")
 
 PHONE = os.getenv("PHONE")
 
-# Resend API Config for support@vexdou.space (HTTP Port 443 - Railway-friendly)
+# Resend API Config for Gmail/Email OTP
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
-# D7 SMS API Config
+# SMESS.io WhatsApp API Config
+SMESS_API_KEY = os.getenv("SMESS_API_KEY")
+SMESS_DEVICE_ID = os.getenv("SMESS_DEVICE_ID")
+
+# D7 SMS API Config (Fallback)
 D7_TOKEN = os.getenv("D7_TOKEN")
 
-# SMESS.io WhatsApp API Config (NEW)
-SMESS_API_KEY = os.getenv("SMESS_API_KEY")
-
-MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
+MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900"))  # 15 Minutes
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
 # Dual executors for Priority (Quick Access) & Normal
@@ -54,6 +63,7 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 bot2 = telebot.TeleBot(BOT2_TOKEN, parse_mode="HTML")
 
 ADMIN_IDS = [7983838654]
+
 CHANNEL_ID = "@tiktokvediodownload"
 
 POST_CHANNELS = []
@@ -72,7 +82,6 @@ VERIFY_ENABLED = False
 verify_pending = {}
 email_verify_pending = {}
 phone_verify_pending = {}
-whatsapp_verify_pending = {} # NEW for WhatsApp
 video_files = {}
 
 ADS_ENABLED = False
@@ -232,11 +241,7 @@ def bot_locked_guard(message):
         return True
     return False
 
-def extract_url(text):
-    if not text:
-        return None
-    match = re.search(r'(https?://[^\s]+)', text)
-    return match.group(0) if match else None
+# ----- EMAIL SENDER (RESEND API) -----
 
 def send_html_email(to_email, subject, html_body):
     if not RESEND_API_KEY:
@@ -264,6 +269,50 @@ def send_html_email(to_email, subject, html_body):
     except Exception as e:
         print(f"EMAIL API ERROR: {e}")
         return False
+
+# ----- SMESS.IO WHATSAPP OTP SENDER -----
+
+def send_smess_whatsapp_otp(phone_number, otp_code):
+    """
+    Sends WhatsApp OTP code using SMESS.io Gateway API
+    """
+    if not SMESS_API_KEY:
+        print("❌ SMESS_API_KEY is not set in environment variables.")
+        return False
+    
+    url = "https://smess.io/api/v2/send/whatsapp"
+    
+    # Ensure phone number formatting (Remove + if present)
+    clean_phone = phone_number.replace("+", "").replace(" ", "").strip()
+    
+    payload = {
+        "secret": SMESS_API_KEY,
+        "account": SMESS_DEVICE_ID,
+        "recipient": clean_phone,
+        "type": "text",
+        "message": f"🔒 Operational Security OTP Code:\n\nYour verification code is: *{otp_code}*\n\nDo not share this code with anyone."
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=12)
+        res_data = response.json() if response.content else {}
+        if response.status_code in [200, 201] and res_data.get("status") in [200, True, "success"]:
+            print(f"✅ SMESS.io WhatsApp OTP Sent to {clean_phone}")
+            return True
+        else:
+            print(f"❌ SMESS.io WhatsApp Error: {response.text}")
+            # Fallback to D7 SMS if SMESS.io fails
+            return send_d7_sms(phone_number, f"Your verification code is: {otp_code}")
+    except Exception as e:
+        print(f"❌ SMESS.io Request Exception: {e}")
+        return send_d7_sms(phone_number, f"Your verification code is: {otp_code}")
+
+# ----- FALLBACK D7 SMS SENDER -----
 
 def send_d7_sms(phone_number, text):
     if not D7_TOKEN:
@@ -302,37 +351,11 @@ def send_d7_sms(phone_number, text):
         print(f"D7 SMS EXCEPTION: {e}")
         return False
 
-# NEW: SMESS.io WhatsApp Sender Function
-def send_smess_whatsapp(phone_number, text):
-    if not SMESS_API_KEY:
-        print("❌ SMESS_API_KEY is not set in environment variables.")
-        return False
-    
-    url = "https://api.smess.io/v1/whatsapp/send" # Halkan ka hubi URL-ka saxda ah ee SMESS.io
-    headers = {
-        "Authorization": f"Bearer {SMESS_API_KEY}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    payload = {
-        "to": phone_number,
-        "message": text
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        print(f"SMESS Response Status: {response.status_code}")
-        print(f"SMESS Response Body: {response.text}")
-        
-        if response.status_code in [200, 201]:
-            return True
-        else:
-            return False
-    except Exception as e:
-        print(f"SMESS WHATSAPP EXCEPTION: {e}")
-        return False
-
-
+def extract_url(text):
+    if not text:
+        return None
+    match = re.search(r'(https?://[^\s]+)', text)
+    return match.group(0) if match else None
 
 # ================= MENUS =================
 
@@ -391,7 +414,7 @@ def back_to_main_menu(m):
 def back_button_handler(m):
     back_to_main_menu(m)
 
-# ================= ADMIN SMS CONTROL =================
+# ================= ADMIN SMS & WHATSAPP CONTROL =================
 
 @bot.message_handler(func=lambda m: m.text in ["🟢 Open SMS", "🔴 CLOSE SMS"])
 def sms_admin_manager(m):
@@ -400,12 +423,12 @@ def sms_admin_manager(m):
     if m.text == "🟢 Open SMS":
         set_setting("sms_enabled", True)
         try:
-            bot.send_message(m.chat.id, "🟢 Verification system is now OPEN. Users can choose Gmail, Phone, or WhatsApp.")
+            bot.send_message(m.chat.id, "🟢 WhatsApp / SMS Verification system is now OPEN. Users can choose Gmail or Phone/WhatsApp.")
         except: pass
     elif m.text == "🔴 CLOSE SMS":
         set_setting("sms_enabled", False)
         try:
-            bot.send_message(m.chat.id, "🔴 Verification system is now CLOSED. Users will only use Gmail.")
+            bot.send_message(m.chat.id, "🔴 WhatsApp / SMS Verification system is now CLOSED. Users will only use Gmail.")
         except: pass
 
 # ================= PROFILE & VERIFICATION LOGIC =================
@@ -448,11 +471,10 @@ def start_verify_flow(call):
     try:
         sms_enabled = get_setting("sms_enabled", False)
         if sms_enabled:
-            kb = InlineKeyboardMarkup(row_width=1)
-            kb.add(
+            kb = InlineKeyboardMarkup()
+            kb.row(
                 InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_choice_gmail"),
-                InlineKeyboardButton("📱 Verify via SMS (D7)", callback_data="verify_choice_phone"),
-                InlineKeyboardButton("💬 Verify via WhatsApp", callback_data="verify_choice_whatsapp")
+                InlineKeyboardButton("💬 Verify via WhatsApp", callback_data="verify_choice_phone")
             )
             bot.edit_message_text(
                 "Please choose your verification method:",
@@ -479,11 +501,8 @@ def handle_verify_choice(call):
             msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_email)
         elif choice == "phone":
-            msg = bot.send_message(call.message.chat.id, "Please send your phone number for SMS (e.g., +25261XXXXXXX):", reply_markup=kb)
+            msg = bot.send_message(call.message.chat.id, "Please send your WhatsApp Phone number with country code (e.g., +25261XXXXXXX or +2519XXXXXXX):", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_phone)
-        elif choice == "whatsapp":
-            msg = bot.send_message(call.message.chat.id, "Please send your WhatsApp number with country code (e.g., +25261XXXXXXX):", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_whatsapp)
         bot.answer_callback_query(call.id)
     except:
         pass
@@ -493,7 +512,6 @@ def cancel_verify_process(call):
     uid = str(call.from_user.id)
     email_verify_pending.pop(uid, None)
     phone_verify_pending.pop(uid, None)
-    whatsapp_verify_pending.pop(uid, None)
     try:
         bot.edit_message_text("❌ Verification process cancelled.", call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.answer_callback_query(call.id, "Cancelled successfully!")
@@ -502,151 +520,13 @@ def cancel_verify_process(call):
 
 def delayed_cancel_session(chat_id, message_id, uid):
     time.sleep(60)
-    if uid in email_verify_pending or uid in phone_verify_pending or uid in whatsapp_verify_pending:
+    if uid in email_verify_pending or uid in phone_verify_pending:
         email_verify_pending.pop(uid, None)
         phone_verify_pending.pop(uid, None)
-        whatsapp_verify_pending.pop(uid, None)
         try:
             bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
         except:
             pass
-
-# ----- WHATSAPP VERIFICATION LOGIC (NEW) ----- #
-
-def process_verification_whatsapp(m):
-    uid = str(m.from_user.id)
-    phone_input = (m.text or "").strip().replace(" ", "")
-    
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if phone_input in menu_buttons or not phone_input.startswith("+") or len(phone_input) < 10:
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-            msg = bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid WhatsApp number with country code:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_whatsapp)
-        except: pass
-        return
-
-    code = str(random.randint(100000, 999999))
-    current_time = time.time()
-    whatsapp_verify_pending[uid] = {
-        "phone": phone_input,
-        "code": code,
-        "time": current_time,
-        "last_resend": current_time
-    }
-    
-    whatsapp_text = f"🔐 Your Downloader Bot Verification Code is: *{code}*\n\nPlease do not share this code with anyone."
-    success = send_smess_whatsapp(phone_input, whatsapp_text)
-    
-    if success:
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("🔄 Resend WhatsApp", callback_data="resend_whatsapp_code"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
-            )
-            msg = bot.send_message(m.chat.id, f"💬 A 6-digit code has been sent via WhatsApp to ({phone_input}). Please enter the code below:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_whatsapp_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
-        except: pass
-    else:
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-            bot.send_message(m.chat.id, "❌ Failed to send WhatsApp message. Please try again later or check your number.", reply_markup=kb)
-        except: pass
-
-@bot.callback_query_handler(func=lambda call: call.data == "resend_whatsapp_code")
-def resend_whatsapp_code_callback(call):
-    uid = str(call.from_user.id)
-    if uid not in whatsapp_verify_pending:
-        bot.answer_callback_query(call.id, "❌ Session expired. Please start again from your profile.", show_alert=True)
-        return
-        
-    data = whatsapp_verify_pending[uid]
-    current_time = time.time()
-    last_resend_time = data.get("last_resend", data.get("time", 0))
-    cooldown = 60  # 1 min required for WhatsApp resend
-    elapsed = current_time - last_resend_time
-    
-    if elapsed < cooldown:
-        remaining = int(cooldown - elapsed)
-        bot.answer_callback_query(call.id, f"⏳ Please wait {remaining}s before requesting another WhatsApp code.", show_alert=True)
-        return
-        
-    data["last_resend"] = current_time
-    phone = data["phone"]
-    code = str(random.randint(100000, 999999))
-    data["code"] = code
-    
-    whatsapp_text = f"🔐 Your New Verification Code is: *{code}*"
-    success = send_smess_whatsapp(phone, whatsapp_text)
-    if success:
-        bot.answer_callback_query(call.id, "✅ A new code has been sent via WhatsApp!")
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("🔄 Resend WhatsApp", callback_data="resend_whatsapp_code"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
-            )
-            msg = bot.send_message(call.message.chat.id, f"💬 A new code has been sent to ({phone}). Please enter the code here:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_whatsapp_code)
-            threading.Thread(target=delayed_cancel_session, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
-        except: pass
-    else:
-        bot.answer_callback_query(call.id, "❌ Error sending WhatsApp message.", show_alert=True)
-
-def process_whatsapp_code(m):
-    uid = str(m.from_user.id)
-    code_input = (m.text or "").strip()
-    
-    if uid not in whatsapp_verify_pending:
-        try:
-            bot.send_message(m.chat.id, "❌ Verification session expired. Please start again.")
-        except: pass
-        return
-
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("🔄 Resend WhatsApp", callback_data="resend_whatsapp_code"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
-            )
-            msg = bot.send_message(
-                m.chat.id,
-                "⚠️ <b>Action not allowed!</b>\nYou must enter the 6-digit WhatsApp code first.\n\nPlease enter the correct code:",
-                reply_markup=kb
-            )
-            bot.register_next_step_handler(msg, process_whatsapp_code)
-        except: pass
-        return
-
-    data = whatsapp_verify_pending[uid]
-    if code_input == data["code"]:
-        users[uid]["verified"] = True
-        users[uid]["phone"] = data["phone"]
-        if "sticker" not in users[uid] or not users[uid]["sticker"]:
-            users[uid]["sticker"] = "🌟"
-        save_user(uid)
-        whatsapp_verify_pending.pop(uid, None)
-        try:
-            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified.", reply_markup=user_menu(is_admin(m.from_user.id)))
-        except: pass
-    else:
-        try:
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("🔄 Resend WhatsApp", callback_data="resend_whatsapp_code"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
-            )
-            msg = bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via WhatsApp:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_whatsapp_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
-        except: pass
-
 
 # ----- GMAIL VERIFICATION LOGIC ----- #
 
@@ -718,7 +598,7 @@ def resend_verify_code_callback(call):
     data = email_verify_pending[uid]
     current_time = time.time()
     last_resend_time = data.get("last_resend", data.get("time", 0))
-    cooldown = 60  # 1 minute for Gmail
+    cooldown = 60  # 1 minute
     elapsed = current_time - last_resend_time
     
     if elapsed < cooldown:
@@ -743,6 +623,7 @@ def resend_verify_code_callback(call):
             <div style="font-size: 24px; font-weight: bold; color: #4CAF50; background: #e8f5e9; padding: 15px; text-align: center; border-radius: 4px; letter-spacing: 5px;">
                 {code}
             </div>
+            <p style="margin-top: 20px; color: #666; font-size: 12px;">If you didn't request this, please ignore this email.</p>
         </div>
     </body>
     </html>
@@ -770,7 +651,7 @@ def process_verification_code(m):
     
     if uid not in email_verify_pending:
         try:
-            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again.")
+            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.")
         except: pass
         return
 
@@ -784,7 +665,9 @@ def process_verification_code(m):
             )
             msg = bot.send_message(
                 m.chat.id,
-                "⚠️ <b>Action not allowed!</b>\nYou must enter the 6-digit code sent to your Gmail first.\n\nPlease enter the correct code:",
+                "⚠️ <b>Action not allowed!</b>\n"
+                "You must enter the 6-digit code sent to your Gmail first.\n\n"
+                "Please enter the correct code:",
                 reply_markup=kb
             )
             bot.register_next_step_handler(msg, process_verification_code)
@@ -800,7 +683,7 @@ def process_verification_code(m):
         save_user(uid)
         email_verify_pending.pop(uid, None)
         try:
-            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified.", reply_markup=user_menu(is_admin(m.from_user.id)))
+            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified. You can check your profile status.", reply_markup=user_menu(is_admin(m.from_user.id)))
         except: pass
     else:
         try:
@@ -814,18 +697,18 @@ def process_verification_code(m):
             threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
 
-# ----- PHONE VERIFICATION LOGIC (D7 SMS) ----- #
+# ----- WHATSAPP (SMESS.IO) VERIFICATION LOGIC ----- #
 
 def process_verification_phone(m):
     uid = str(m.from_user.id)
     phone_input = (m.text or "").strip().replace(" ", "")
     
     menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if phone_input in menu_buttons or not phone_input.startswith("+") or len(phone_input) < 10:
+    if phone_input in menu_buttons or not phone_input.replace("+", "").isdigit() or len(phone_input) < 10:
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-            msg = bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid phone number with country code (e.g., +252...):", reply_markup=kb)
+            msg = bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid WhatsApp number with country code (e.g., +252... or +251...):", reply_markup=kb)
             bot.register_next_step_handler(msg, process_verification_phone)
         except: pass
         return
@@ -839,16 +722,15 @@ def process_verification_phone(m):
         "last_resend": current_time
     }
     
-    sms_text = f"Your Downloader Bot Verification Code is: {code}"
-    success = send_d7_sms(phone_input, sms_text)
+    success = send_smess_whatsapp_otp(phone_input, code)
     if success:
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
-                InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
+                InlineKeyboardButton("🔄 Resend WhatsApp OTP", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, f"📲 A 6-digit code has been sent via SMS to your number ({phone_input}). Please enter the code below:", reply_markup=kb)
+            msg = bot.send_message(m.chat.id, f"💬 A 6-digit OTP code has been sent via WhatsApp to your number ({phone_input}). Please enter the code below:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_phone_code)
             threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
@@ -856,7 +738,7 @@ def process_verification_phone(m):
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-            bot.send_message(m.chat.id, "❌ Failed to send SMS. Please try again later or check your phone number.", reply_markup=kb)
+            bot.send_message(m.chat.id, "❌ Failed to send WhatsApp OTP. Please try again later or check your phone number.", reply_markup=kb)
         except: pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "resend_phone_code")
@@ -869,15 +751,12 @@ def resend_phone_code_callback(call):
     data = phone_verify_pending[uid]
     current_time = time.time()
     last_resend_time = data.get("last_resend", data.get("time", 0))
-    cooldown = 600  # 10 minutes required for SMS
+    cooldown = 120  # 2 minutes cooldown
     elapsed = current_time - last_resend_time
     
     if elapsed < cooldown:
         remaining = int(cooldown - elapsed)
-        mins = remaining // 60
-        secs = remaining % 60
-        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-        bot.answer_callback_query(call.id, f"⏳ Please wait {time_str} before requesting another SMS code.", show_alert=True)
+        bot.answer_callback_query(call.id, f"⏳ Please wait {remaining}s before requesting another WhatsApp OTP.", show_alert=True)
         return
         
     data["last_resend"] = current_time
@@ -885,22 +764,21 @@ def resend_phone_code_callback(call):
     code = str(random.randint(100000, 999999))
     data["code"] = code
     
-    sms_text = f"Your New Verification Code is: {code}"
-    success = send_d7_sms(phone, sms_text)
+    success = send_smess_whatsapp_otp(phone, code)
     if success:
-        bot.answer_callback_query(call.id, "✅ A new code has been sent via SMS!")
+        bot.answer_callback_query(call.id, "✅ A new OTP code has been sent via WhatsApp!")
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
-                InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
+                InlineKeyboardButton("🔄 Resend WhatsApp OTP", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(call.message.chat.id, f"📲 A new code has been sent to your number ({phone}). Please enter the code here:", reply_markup=kb)
+            msg = bot.send_message(call.message.chat.id, f"💬 A new code has been sent to your WhatsApp number ({phone}). Please enter the code here:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_phone_code)
             threading.Thread(target=delayed_cancel_session, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
     else:
-        bot.answer_callback_query(call.id, "❌ Error sending SMS, please try again later.", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Error sending WhatsApp OTP, please try again later.", show_alert=True)
 
 def process_phone_code(m):
     uid = str(m.from_user.id)
@@ -917,12 +795,14 @@ def process_phone_code(m):
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
-                InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
+                InlineKeyboardButton("🔄 Resend WhatsApp OTP", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
             msg = bot.send_message(
                 m.chat.id,
-                "⚠️ <b>Action not allowed!</b>\nYou must enter the 6-digit SMS code first.\n\nPlease enter the correct code:",
+                "⚠️ <b>Action not allowed!</b>\n"
+                "You must enter the 6-digit WhatsApp OTP code first.\n\n"
+                "Please enter the correct code:",
                 reply_markup=kb
             )
             bot.register_next_step_handler(msg, process_phone_code)
@@ -938,32 +818,33 @@ def process_phone_code(m):
         save_user(uid)
         phone_verify_pending.pop(uid, None)
         try:
-            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified.", reply_markup=user_menu(is_admin(m.from_user.id)))
+            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified. You can check your profile status.", reply_markup=user_menu(is_admin(m.from_user.id)))
         except: pass
     else:
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
-                InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
+                InlineKeyboardButton("🔄 Resend WhatsApp OTP", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via SMS:", reply_markup=kb)
+            msg = bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via WhatsApp:", reply_markup=kb)
             bot.register_next_step_handler(msg, process_phone_code)
             threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
         except: pass
 
-
-# [BINTA KALE EE ADMIN PANEL/VERIFICATION ETC WAA SIDII HORE (LAGA BOODAY INAAN BADALO SI AAN WAX LOOGA TAGIN)]
+# ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
 
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
 def verified_users_list(m):
-    if not is_admin(m.from_user.id): return
+    if not is_admin(m.from_user.id):
+        return
     verified_list = [uid for uid, data in users.items() if data.get("verified")]
     if not verified_list:
         try:
             bot.send_message(m.chat.id, "No verified users found.")
         except: pass
         return
+    
     text = f"✅ VERIFIED USERS ({len(verified_list)})\n\n"
     for uid in verified_list[:30]:
         u_data = users[uid]
@@ -978,14 +859,16 @@ def verified_users_list(m):
 
 @bot.message_handler(func=lambda m: m.text == "🏷️ Sticker")
 def sticker_admin_start(m):
-    if not is_admin(m.from_user.id): return
+    if not is_admin(m.from_user.id):
+        return
     try:
         msg = bot.send_message(m.chat.id, "Send User ID or BOT ID and the sticker/badge separated by pipe (|)\nExample:\n123456789 | 🌟 Verified")
         bot.register_next_step_handler(msg, sticker_admin_process)
     except: pass
 
 def sticker_admin_process(m):
-    if not is_admin(m.from_user.id): return
+    if not is_admin(m.from_user.id):
+        return
     try:
         parts = m.text.split("|")
         if len(parts) < 2:
@@ -993,6 +876,7 @@ def sticker_admin_process(m):
             return
         uid_str = parts[0].strip()
         sticker_text = parts[1].strip()
+        
         uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
         if not uid or uid not in users:
             bot.send_message(m.chat.id, "❌ User not found.")
@@ -1006,189 +890,176 @@ def sticker_admin_process(m):
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
-# ================= DOWNLOAD MEDIA FUNCTION =================
+# ================= USER BASIC COMMANDS & CORE FUNCTIONS =================
 
-def download_media(chat_id, link, message_id):
-    platform = "unknown"
-    if "tiktok.com" in link:
-        platform = "tiktok"
-    elif "youtube.com" in link or "youtu.be" in link:
-        platform = "youtube"
-    elif "facebook.com" in link or "fb.watch" in link:
-        platform = "facebook"
-    elif "instagram.com" in link:
-        platform = "instagram"
-    elif "pinterest.com" in link or "pin.it" in link:
-        platform = "pinterest"
-    elif "snapchat.com" in link:
-        platform = "snapchat"
-    elif "twitter.com" in link or "x.com" in link:
-        platform = "twitter"
-
-    max_duration = MAX_YOUTUBE_DURATION
-    uid_str = str(chat_id)
-    if platform == "youtube" and users.get(uid_str, {}).get("youtube_30m", False):
-        max_duration = 1800 # 30 minutes
-
-    tmp_dir = f"downloads_{uuid.uuid4().hex}"
-    os.makedirs(tmp_dir, exist_ok=True)
-    ydl_opts = {
-        'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
-        'format': 'best',
-        'max_filesize': 500 * 1024 * 1024,
-    }
-    try:
-        with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
-            info = ydl.extract_info(link, download=False)
-            if info and 'duration' in info and info['duration']:
-                if info['duration'] > max_duration and platform == "youtube":
-                    bot.edit_message_text(
-                        f"❌ Video is too long. Max allowed duration is {max_duration // 60} minutes.",
-                        chat_id,
-                        message_id
-                    )
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                    return
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link, download=True)
-            filename = ydl.prepare_filename(info)
-            if not os.path.exists(filename):
-                files = os.listdir(tmp_dir)
-                if files:
-                    filename = os.path.join(tmp_dir, files[0])
-                else:
-                    raise Exception("Downloaded file not found.")
-            with open(filename, 'rb') as f:
-                if filename.endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi', '.gif')):
-                    bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot")
-                elif filename.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
-                    bot.send_audio(chat_id, f, caption="🎵 Audio downloaded successfully via @Downloadvedioytibot")
-                else:
-                    bot.send_document(chat_id, f, caption="📁 File downloaded successfully via @Downloadvedioytibot")
-            bot.delete_message(chat_id, message_id)
-            videos_data["total"] = videos_data.get("total", 0) + 1
-            if platform in videos_data["platforms"]:
-                videos_data["platforms"][platform] += 1
-            if uid_str not in videos_data["users"]:
-                videos_data["users"][uid_str] = 0
-            videos_data["users"][uid_str] += 1
-            save_videos()
-    except Exception as e:
-        print(f"Download error: {e}")
-        try:
-            bot.edit_message_text(f"❌ Failed to download media. Error: {str(e)[:100]}", chat_id, message_id)
-        except: pass
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-# ================= LINK HANDLER & BOT START PROCESS =================
-
-@bot.message_handler(func=lambda m: m.text and "http" in m.text)
-def handle_links(message):
-    if bot_locked_guard(message) or banned_guard(message):
+@bot.message_handler(commands=["start"])
+def start_cmd(m):
+    if bot_locked_guard(m) or banned_guard(m):
         return
-
-    user_id = message.from_user.id
-    link = extract_url(message.text)
-    if not link:
-        return
-
-    if CHANNEL_WINDOW_OPEN and POST_CHANNELS:
-        joined_all = True
-        for ch in POST_CHANNELS:
-            try:
-                member = bot.get_chat_member(f"@{ch}", user_id)
-                if member.status not in ["member", "administrator", "creator"]:
-                    joined_all = False
+    uid = str(m.from_user.id)
+    args = m.text.split()
+    
+    if uid not in users:
+        ref_by = None
+        if len(args) > 1:
+            possible_ref = args[1]
+            for u, d in users.items():
+                if d.get("ref_code") == possible_ref:
+                    ref_by = u
                     break
-            except:
-                joined_all = False
-                break
-        if not joined_all:
-            pending_links[user_id] = link
-            send_multi_join(user_id)
-            return
+        
+        users[uid] = {
+            "balance": 0.0,
+            "ref_code": random_ref(),
+            "bot_id": random_botid(),
+            "referred_by": ref_by,
+            "referrals": [],
+            "quick_access": False,
+            "banned": False,
+            "verified": False,
+            "sticker": "",
+            "joined_date": datetime.now().strftime("%Y-%m-%d")
+        }
+        
+        if ref_by and ref_by in users:
+            users[ref_by].setdefault("referrals", []).append(uid)
+            ref_bonus = float(get_setting("referral_price", 0.10))
+            users[ref_by]["balance"] = users[ref_by].get("balance", 0.0) + ref_bonus
+            save_user(ref_by)
+            try:
+                bot.send_message(int(ref_by), f"🎉 New referral joined using your link! You earned ${ref_bonus:.2f}")
+            except: pass
+            
+        save_user(uid)
 
-    if VERIFY_ENABLED and not users.get(str(user_id), {}).get("verified", False):
-        code = str(random.randint(10000, 99999))
-        verify_pending[user_id] = {"code": code, "link": link}
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("📩 Verify via DM", callback_data="via_telegram"))
-        kb.add(InlineKeyboardButton("🤖 Verify via Bot", url=f"https://t.me/Verifyd_bot?start={code}"))
-        try:
-            bot.send_message(message.chat.id, "🔐 Verification Required\n\nChoose verification method:", reply_markup=kb)
-        except: pass
-        return
+    text = (
+        f"👋 Welcome <a href='tg://user?id={uid}'>{m.from_user.first_name}</a>!\n\n"
+        f"Send me any video link from YouTube, TikTok, Facebook, Instagram, or Twitter to download."
+    )
+    bot.send_message(m.chat.id, text, reply_markup=user_menu(is_admin(uid)))
 
+@bot.message_handler(func=lambda m: m.text == "💰 BALANCE")
+def balance_cmd(m):
+    if bot_locked_guard(m) or banned_guard(m): return
+    uid = str(m.from_user.id)
+    bal = users.get(uid, {}).get("balance", 0.0)
+    bot.send_message(m.chat.id, f"💰 <b>Your Current Balance:</b> ${bal:.2f}")
+
+@bot.message_handler(func=lambda m: m.text == "👥 REFERRAL")
+def referral_cmd(m):
+    if bot_locked_guard(m) or banned_guard(m): return
+    uid = str(m.from_user.id)
+    u_data = users.get(uid, {})
+    ref_code = u_data.get("ref_code", "")
+    bot_username = bot.get_me().username
+    ref_link = f"https://t.me/{bot_username}?start={ref_code}"
+    total_refs = len(u_data.get("referrals", []))
+    
+    text = (
+        f"👥 <b>REFERRAL PROGRAM</b>\n\n"
+        f"Share your referral link with friends and earn rewards!\n\n"
+        f"🔗 <b>Link:</b> <code>{ref_link}</code>\n"
+        f"📊 <b>Total Invited:</b> {total_refs}"
+    )
+    bot.send_message(m.chat.id, text)
+
+@bot.message_handler(func=lambda m: m.text == "🆔 GET ID")
+def get_id_cmd(m):
+    uid = str(m.from_user.id)
+    bot_id = users.get(uid, {}).get("bot_id", "N/A")
+    bot.send_message(m.chat.id, f"🆔 <b>Telegram ID:</b> <code>{uid}</code>\n🤖 <b>Bot System ID:</b> <code>{bot_id}</code>")
+
+# ================= ADMIN PANEL HANDLERS =================
+
+@bot.message_handler(func=lambda m: m.text == "👑 ADMIN PANEL")
+def admin_panel_cmd(m):
+    if not is_admin(m.from_user.id): return
+    bot.send_message(m.chat.id, "👑 <b>Welcome to Admin Panel</b>", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "📊 STATS")
+def stats_cmd(m):
+    if not is_admin(m.from_user.id): return
+    total_users = len(users)
+    total_downloads = videos_data.get("total", 0)
+    text = (
+        f"📊 <b>BOT SYSTEM STATS</b>\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"📥 Total Downloads: {total_downloads}\n"
+    )
+    bot.send_message(m.chat.id, text)
+
+# ================= VIDEO DOWNLOAD ENGINE (YTDLP) =================
+
+def process_video_download(message, url):
+    uid = str(message.from_user.id)
+    msg = bot.send_message(message.chat.id, "⏳ Processing your request... Please wait.")
+    
+    ydl_opts = {
+        'format': 'best',
+        'outtmpl': f'downloads/{uid}_%(id)s.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
     try:
-        msg = bot.send_message(message.chat.id, "⚡ Processing...")
-        if is_quick_access(user_id):
-            vip_executor.submit(download_media, message.chat.id, link, msg.message_id)
-        else:
-            normal_executor.submit(download_media, message.chat.id, link, msg.message_id)
-    except: pass
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            
+            bot.edit_message_text("📤 Uploading video to Telegram...", message.chat.id, msg.message_id)
+            
+            with open(filename, 'rb') as video:
+                bot.send_video(message.chat.id, video, caption=f"✅ Downloaded: {info.get('title', 'Video')}")
+            
+            bot.delete_message(message.chat.id, msg.message_id)
+            
+            # Clean up
+            if os.path.exists(filename):
+                os.remove(filename)
+                
+            # Stats Update
+            videos_data["total"] = videos_data.get("total", 0) + 1
+            videos_data["users"][uid] = videos_data.get("users", {}).get(uid, 0) + 1
+            save_videos()
 
-@bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
-def multi_checkjoin(call):
-    user_id = call.from_user.id
-    joined_all = True
-    for ch in POST_CHANNELS:
-        try:
-            member = bot.get_chat_member(f"@{ch}", user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                joined_all = False
-                break
-        except:
-            joined_all = False
-            break
+    except Exception as e:
+        bot.edit_message_text(f"❌ Failed to download video: {str(e)}", message.chat.id, msg.message_id)
 
-    if joined_all:
-        try:
-            bot.answer_callback_query(call.id, "✅ Join verified")
-        except: pass
-        if user_id in pending_links:
-            link = pending_links[user_id]
-            del pending_links[user_id]
-            try:
-                msg = bot.send_message(user_id, "⬇️ Processing your video...")
-                if is_quick_access(user_id):
-                    vip_executor.submit(download_media, user_id, link, msg.message_id)
-                else:
-                    normal_executor.submit(download_media, user_id, link, msg.message_id)
-            except: pass
-        else:
-            try:
-                bot.send_message(user_id, "Send your video link.")
-            except: pass
+@bot.message_handler(func=lambda m: extract_url(m.text) is not None)
+def handle_video_links(m):
+    if bot_locked_guard(m) or banned_guard(m): return
+    url = extract_url(m.text)
+    
+    if is_quick_access(m.from_user.id):
+        vip_executor.submit(process_video_download, m, url)
     else:
+        normal_executor.submit(process_video_download, m, url)
+
+# ================= SYSTEM BOT INITIALIZATION =================
+
+def run_telethon():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    if API_ID and API_HASH:
         try:
-            bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
-        except: pass
-
-# --- (Qaybtii go'day oo la dhammaystiray) ---
-
-@bot.message_handler(func=lambda m: True)
-def catch_all_messages(message):
-    if bot_locked_guard(message) or banned_guard(message):
-        return
-    # This acts as a fallback for any other unhandled text messages
-    pass
-
-def start_bot_1():
-    print("🤖 Downloader Bot is running...")
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
-
-def start_bot_2():
-    if BOT2_TOKEN:
-        print("🤖 Verification Bot 2 is running...")
-        bot2.infinity_polling(timeout=10, long_polling_timeout=5)
+            tg_client.start(phone=PHONE)
+            print("✅ Telethon Client Started Successfully.")
+            tg_client.run_until_disconnected()
+        except Exception as e:
+            print(f"❌ Telethon Error: {e}")
 
 if __name__ == "__main__":
-    # Start bot2 in a separate thread if token exists
-    if BOT2_TOKEN:
-        threading.Thread(target=start_bot_2, daemon=True).start()
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+        
+    print("🚀 Starting Telegram Bot Engine...")
     
-    # Start the main bot in the main thread
-    start_bot_1()
-
+    # Run Telethon in background thread
+    t_thread = threading.Thread(target=run_telethon, daemon=True)
+    t_thread.start()
+    
+    # Run Telebot
+    try:
+        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    except Exception as e:
+        print(f"❌ Bot Polling Crashed: {e}")
