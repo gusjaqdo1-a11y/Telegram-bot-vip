@@ -727,10 +727,7 @@ def process_verification_code(m):
             bot.send_message(
                 m.chat.id,
                 "⚠️ <b>Action not allowed!</b>
-"
                 "You must enter the 6-digit code sent to your Gmail first.
-
-"
                 "Please enter the correct code:",
                 reply_markup=kb
             )
@@ -857,10 +854,7 @@ def process_phone_code(m):
             bot.send_message(
                 m.chat.id,
                 "⚠️ <b>Action not allowed!</b>
-"
                 "You must enter the 6-digit SMS code first.
-
-"
                 "Please enter the correct code:",
                 reply_markup=kb
             )
@@ -987,10 +981,7 @@ def process_whatsapp_code(m):
             bot.send_message(
                 m.chat.id,
                 "⚠️ <b>Action not allowed!</b>
-"
                 "You must enter the 6-digit WhatsApp code first.
-
-"
                 "Please enter the correct code:",
                 reply_markup=kb
             )
@@ -1033,15 +1024,14 @@ def verified_users_list(m):
     
     text = f"✅ VERIFIED USERS ({len(verified_list)})
 
-"
-    for uid in verified_list[:30]:
+   " for uid in verified_list[:30]:
         u_data = users[uid]
         sticker = u_data.get("sticker", "N/A")
         email = u_data.get('email', '')
         phone = u_data.get('phone', '')
         contact = email if email else (phone if phone else "No Contact Info")
-        text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {contact} | Sticker: {sticker}
-"
+        text += f"• <a href='tg://user?id={uid}'>{uid}</a> | {contact} | Sticker: {sticker}"
+   
     try:
         bot.send_message(m.chat.id, text, parse_mode="HTML")
     except: pass
