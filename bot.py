@@ -481,7 +481,7 @@ def profile_handler(m):
     contact_info = email if email else (phone if phone else "Not Set")
     
     text = (
-        f"<b>👤 USER PROFILE</b>
+        f"<b>👤 USER PROFILE</b>"
 
 "
         f"• Status: {status_str}
