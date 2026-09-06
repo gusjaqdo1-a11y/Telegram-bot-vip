@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo, LabeledPrice
 import os, json, random
 from datetime import datetime
 import yt_dlp
@@ -35,10 +35,13 @@ SENDER_EMAIL = os.getenv("SENDER_EMAIL", "support@vexdou.space")
 
 D7_TOKEN = os.getenv("D7_TOKEN")
 
+# SMESS.io WhatsApp OTP API Config
+SMESS_API_URL = os.getenv("SMESS_API_URL", "https://smess.io/api/send")
+SMESS_API_KEY = os.getenv("SMESS_API_KEY")
+SMESS_SENDER_NUMBER = os.getenv("SMESS_SENDER_NUMBER")
+
 MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
-MEDIA_GROUP_LIMIT = 10  # Telegram max photos per album
-FACEBOOK_COOKIES_FILE = os.getenv("FACEBOOK_COOKIES_FILE")  # optional Netscape cookies.txt for Facebook
 
 # Dual executors for Priority (Quick Access) & Normal
 
@@ -76,6 +79,7 @@ VERIFY_ENABLED = False
 verify_pending = {}
 email_verify_pending = {}
 phone_verify_pending = {}
+whatsapp_verify_pending = {}
 video_files = {}
 
 ADS_ENABLED = False
@@ -301,109 +305,40 @@ def send_d7_sms(phone_number, text):
         print(f"D7 SMS EXCEPTION: {e}")
         return False
 
+# NEW: SMESS.io WhatsApp OTP Sender Function
+
+def send_whatsapp_otp(phone_number, text):
+    if not SMESS_API_KEY:
+        print("❌ SMESS_API_KEY is not set in environment variables.")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {SMESS_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    payload = {
+        "sender": SMESS_SENDER_NUMBER,
+        "to": phone_number,
+        "type": "text",
+        "message": text
+    }
+    try:
+        response = requests.post(SMESS_API_URL, json=payload, headers=headers)
+        if response.status_code in [200, 201]:
+            return True
+        else:
+            print(f"SMESS.io WHATSAPP API ERROR: {response.text}")
+            return False
+    except Exception as e:
+        print(f"SMESS.io WHATSAPP EXCEPTION: {e}")
+        return False
+
 def extract_url(text):
     if not text:
         return None
     match = re.search(r'(https?://[^\s]+)', text)
     return match.group(0) if match else None
-
-# ================= DOWNLOAD HELPER FUNCTIONS (NEW) =================
-
-def detect_platform(link):
-    if "tiktok.com" in link:
-        return "tiktok"
-    elif "youtube.com" in link or "youtu.be" in link:
-        return "youtube"
-    elif "facebook.com" in link or "fb.watch" in link:
-        return "facebook"
-    elif "instagram.com" in link:
-        return "instagram"
-    elif "pinterest.com" in link or "pin.it" in link:
-        return "pinterest"
-    elif "snapchat.com" in link:
-        return "snapchat"
-    elif "twitter.com" in link or "x.com" in link:
-        return "twitter"
-    return "unknown"
-
-def resolve_redirect(url):
-    """Follow short-link redirects (e.g. pin.it) so yt-dlp gets the final URL."""
-    try:
-        r = http_session.head(url, allow_redirects=True, timeout=10)
-        return r.url
-    except Exception:
-        return url
-
-def update_stats_and_feedback(chat_id, platform, uid_str):
-    videos_data["total"] = videos_data.get("total", 0) + 1
-    if platform in videos_data["platforms"]:
-        videos_data["platforms"][platform] += 1
-    if uid_str not in videos_data["users"]:
-        videos_data["users"][uid_str] = 0
-    videos_data["users"][uid_str] += 1
-    save_videos()
-    if videos_data.get("feedback_enabled", False):
-        send_feedback_request(chat_id, platform, uuid.uuid4().hex)
-
-def prune_video_files(max_age_seconds=21600):
-    now = time.time()
-    expired = [k for k, v in video_files.items() if now - v.get("time", now) > max_age_seconds]
-    for k in expired:
-        video_files.pop(k, None)
-
-def try_download_tiktok_slideshow_images(link, tmp_dir):
-    """
-    TikTok 'photo mode' posts are a slideshow of images, not a single video file.
-    yt-dlp's exact info-dict shape for these has changed across versions, so this
-    checks a couple of known shapes. If TikTok changes things again and this stops
-    matching, run `pip install -U yt-dlp`, print(info) for a slideshow link, and
-    adjust the two conditions below to whatever field actually holds the image URLs.
-    """
-    try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info = ydl.extract_info(link, download=False)
-    except Exception as e:
-        print(f"Slideshow probe error: {e}")
-        return []
-
-    image_urls = []
-    if info:
-        if info.get('images'):
-            image_urls = [img.get('url') for img in info['images'] if img.get('url')]
-        elif info.get('_type') == 'playlist' and info.get('entries'):
-            for entry in info['entries']:
-                if entry and entry.get('ext') in ('jpg', 'jpeg', 'png', 'webp'):
-                    image_urls.append(entry.get('url'))
-
-    saved = []
-    for i, url in enumerate(image_urls[:MEDIA_GROUP_LIMIT]):
-        try:
-            r = http_session.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code == 200:
-                path = os.path.join(tmp_dir, f"slide_{i}.jpg")
-                with open(path, 'wb') as f:
-                    f.write(r.content)
-                saved.append(path)
-        except Exception as e:
-            print(f"Slide image download error: {e}")
-    return saved
-
-def send_tiktok_album(chat_id, image_paths, message_id):
-    media = []
-    handles = []
-    try:
-        for path in image_paths:
-            fh = open(path, 'rb')
-            handles.append(fh)
-            media.append(InputMediaPhoto(fh))
-        bot.send_media_group(chat_id, media)
-    finally:
-        for fh in handles:
-            fh.close()
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
 
 # ================= MENUS =================
 
@@ -444,6 +379,8 @@ def admin_menu():
     kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
     kb.add("Send verify")
     kb.add("🟢 Open SMS", "🔴 CLOSE SMS")
+    kb.add("🟢 Open Via whatsapp", "🔴 Close Via whatsapp")
+    kb.add("♻️ Reset all verify")
     kb.add("🔙 BACK MAIN MENU")
     return kb
 
@@ -478,6 +415,52 @@ def sms_admin_manager(m):
         try:
             bot.send_message(m.chat.id, "🔴 SMS Verification system is now CLOSED. Users will only use Gmail.")
         except: pass
+
+# ================= ADMIN WHATSAPP OTP CONTROL =================
+
+@bot.message_handler(func=lambda m: m.text in ["🟢 Open Via whatsapp", "🔴 Close Via whatsapp"])
+def whatsapp_admin_manager(m):
+    if not is_admin(m.from_user.id): return
+
+    if m.text == "🟢 Open Via whatsapp":
+        set_setting("whatsapp_enabled", True)
+        try:
+            bot.send_message(m.chat.id, "🟢 WhatsApp OTP verification is now OPEN. Users can choose it as a verification method.")
+        except: pass
+    elif m.text == "🔴 Close Via whatsapp":
+        set_setting("whatsapp_enabled", False)
+        try:
+            bot.send_message(m.chat.id, "🔴 WhatsApp OTP verification is now CLOSED. Users will no longer see this option.")
+        except: pass
+
+@bot.message_handler(func=lambda m: m.text == "♻️ Reset all verify")
+def reset_all_verify_start(m):
+    if not is_admin(m.from_user.id): return
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("✅ Yes, Unverify Everyone", callback_data="reset_verify_confirm"))
+    kb.add(InlineKeyboardButton("❌ Cancel", callback_data="reset_verify_cancel"))
+    try:
+        bot.send_message(m.chat.id, "⚠️ Are you sure you want to UNVERIFY all currently verified users? This cannot be undone.", reply_markup=kb)
+    except: pass
+
+@bot.callback_query_handler(func=lambda call: call.data in ["reset_verify_confirm", "reset_verify_cancel"])
+def reset_all_verify_callback(call):
+    if not is_admin(call.from_user.id): return
+    if call.data == "reset_verify_cancel":
+        try:
+            bot.edit_message_text("❌ Reset cancelled.", call.message.chat.id, call.message.message_id)
+        except: pass
+        return
+
+    count = 0
+    for uid in list(users.keys()):
+        if users[uid].get("verified"):
+            users[uid]["verified"] = False
+            save_user(uid)
+            count += 1
+    try:
+        bot.edit_message_text(f"✅ All verified users have been unverified. Total affected: {count}", call.message.chat.id, call.message.message_id)
+    except: pass
 
 # ================= PROFILE & VERIFICATION LOGIC =================
 
@@ -514,16 +497,33 @@ def profile_handler(m):
     except:
         pass
 
+# ================= VERIFY STATE MACHINE (callback-based, cancel-safe) =================
+# verify_pending / email_verify_pending / phone_verify_pending / whatsapp_verify_pending
+# hold a "stage" per user so any stray text messages get routed correctly and
+# Cancel always works no matter what step the user is on.
+
+def clear_all_verify_state(uid):
+    email_verify_pending.pop(uid, None)
+    phone_verify_pending.pop(uid, None)
+    whatsapp_verify_pending.pop(uid, None)
+
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
+    uid = str(call.from_user.id)
+    clear_all_verify_state(uid)
     try:
         sms_enabled = get_setting("sms_enabled", False)
-        if sms_enabled:
+        whatsapp_enabled = get_setting("whatsapp_enabled", False)
+
+        if sms_enabled or whatsapp_enabled:
             kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_choice_gmail"),
-                InlineKeyboardButton("📱 Verify via Number", callback_data="verify_choice_phone")
-            )
+            row = [InlineKeyboardButton("📧 Verify via Gmail", callback_data="verify_choice_gmail")]
+            if sms_enabled:
+                row.append(InlineKeyboardButton("📱 Verify via Number", callback_data="verify_choice_phone"))
+            kb.row(*row)
+            if whatsapp_enabled:
+                kb.add(InlineKeyboardButton("🟢 Verify via WhatsApp", callback_data="verify_choice_whatsapp"))
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
             bot.edit_message_text(
                 "Please choose your verification method:",
                 call.message.chat.id,
@@ -531,10 +531,10 @@ def start_verify_flow(call):
                 reply_markup=kb
             )
         else:
+            email_verify_pending[uid] = {"stage": "awaiting_email"}
             kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("Cancel Verification", callback_data="cancel_verify_process"))
-            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_email)
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
+            bot.edit_message_text("Please enter your Gmail address:", call.message.chat.id, call.message.message_id, reply_markup=kb)
         bot.answer_callback_query(call.id)
     except Exception as e:
         print(f"Verify flow error: {e}")
@@ -542,15 +542,20 @@ def start_verify_flow(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("verify_choice_"))
 def handle_verify_choice(call):
     choice = call.data.split("_")[2]
+    uid = str(call.from_user.id)
+    clear_all_verify_state(uid)
     try:
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("Cancel Verification", callback_data="cancel_verify_process"))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
         if choice == "gmail":
-            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_email)
+            email_verify_pending[uid] = {"stage": "awaiting_email"}
+            bot.edit_message_text("Please enter your Gmail address:", call.message.chat.id, call.message.message_id, reply_markup=kb)
         elif choice == "phone":
-            msg = bot.send_message(call.message.chat.id, "Please send your phone number with country code (e.g., +25261XXXXXXX or +2519XXXXXXX):", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_phone)
+            phone_verify_pending[uid] = {"stage": "awaiting_phone"}
+            bot.edit_message_text("Please send your phone number with country code (e.g., +25261XXXXXXX or +2519XXXXXXX):", call.message.chat.id, call.message.message_id, reply_markup=kb)
+        elif choice == "whatsapp":
+            whatsapp_verify_pending[uid] = {"stage": "awaiting_phone"}
+            bot.edit_message_text("Please send your WhatsApp number with country code (e.g., +25261XXXXXXX):", call.message.chat.id, call.message.message_id, reply_markup=kb)
         bot.answer_callback_query(call.id)
     except:
         pass
@@ -558,58 +563,69 @@ def handle_verify_choice(call):
 @bot.callback_query_handler(func=lambda call: call.data == "cancel_verify_process")
 def cancel_verify_process(call):
     uid = str(call.from_user.id)
-    email_verify_pending.pop(uid, None)
-    phone_verify_pending.pop(uid, None)
-    # FIX: this clears the pending register_next_step_handler for this chat.
-    # Without it, whatever the user types/taps next (even a menu button like
-    # BALANCE or REFERRAL) was still being swallowed by the old handler and
-    # shown as "Invalid email address" - this is the bug from the screenshot.
-    try:
-        bot.clear_step_handler_by_chat_id(call.message.chat.id)
-    except:
-        pass
+    clear_all_verify_state(uid)
     try:
         bot.edit_message_text("❌ Verification process cancelled.", call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.answer_callback_query(call.id, "Cancelled successfully!")
     except:
-        pass
+        try:
+            bot.answer_callback_query(call.id, "Cancelled successfully!")
+        except:
+            pass
 
-# Helper to auto delete message/cancel session after 1 min if requested or expired
-def delayed_cancel_session(chat_id, message_id, uid):
-    time.sleep(60)
-    if uid in email_verify_pending or uid in phone_verify_pending:
-        email_verify_pending.pop(uid, None)
-        phone_verify_pending.pop(uid, None)
-        # Same fix as cancel_verify_process - clear the stale next-step handler
-        # so it doesn't intercept the user's next message after expiry.
-        try:
-            bot.clear_step_handler_by_chat_id(chat_id)
-        except:
-            pass
-        try:
-            bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
-        except:
-            pass
+MENU_BUTTONS = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
+
+# Central text router for all verify stages. Because this uses a message_handler
+# (not register_next_step_handler chains), Cancel via callback always works
+# immediately regardless of which "step" the text-flow was on, since the
+# handler checks the pending dict fresh on every message instead of relying
+# on a queued next-step callback that cancel can't intercept.
+
+@bot.message_handler(func=lambda m: str(m.from_user.id) in email_verify_pending and email_verify_pending[str(m.from_user.id)].get("stage") in ("awaiting_email", "awaiting_email_code"))
+def email_verify_router(m):
+    uid = str(m.from_user.id)
+    stage = email_verify_pending[uid]["stage"]
+    if stage == "awaiting_email":
+        process_verification_email(m)
+    else:
+        process_verification_code(m)
+
+@bot.message_handler(func=lambda m: str(m.from_user.id) in phone_verify_pending and phone_verify_pending[str(m.from_user.id)].get("stage") in ("awaiting_phone", "awaiting_phone_code"))
+def phone_verify_router(m):
+    uid = str(m.from_user.id)
+    stage = phone_verify_pending[uid]["stage"]
+    if stage == "awaiting_phone":
+        process_verification_phone(m)
+    else:
+        process_phone_code(m)
+
+@bot.message_handler(func=lambda m: str(m.from_user.id) in whatsapp_verify_pending and whatsapp_verify_pending[str(m.from_user.id)].get("stage") in ("awaiting_phone", "awaiting_phone_code"))
+def whatsapp_verify_router(m):
+    uid = str(m.from_user.id)
+    stage = whatsapp_verify_pending[uid]["stage"]
+    if stage == "awaiting_phone":
+        process_verification_whatsapp(m)
+    else:
+        process_whatsapp_code(m)
 
 # ----- GMAIL VERIFICATION LOGIC ----- #
 
 def process_verification_email(m):
     uid = str(m.from_user.id)
     email = (m.text or "").strip()
-    
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if email in menu_buttons or "@" not in email:
+
+    if email in MENU_BUTTONS or "@" not in email:
         try:
             kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("Cancel Verification", callback_data="cancel_verify_process"))
-            msg = bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_email)
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
+            bot.send_message(m.chat.id, "❌ Invalid email address. Please enter a valid Gmail address:", reply_markup=kb)
         except: pass
         return
 
     code = str(random.randint(100000, 999999))
     current_time = time.time()
     email_verify_pending[uid] = {
+        "stage": "awaiting_email_code",
         "email": email,
         "code": code,
         "time": current_time,
@@ -642,11 +658,10 @@ def process_verification_email(m):
                 InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(m.chat.id, f"📩 A 6-digit verification code has been sent to your email ({email}). Please enter the code here:", reply_markup=kb)
         except: pass
     else:
+        email_verify_pending.pop(uid, None)
         try:
             bot.send_message(m.chat.id, "❌ Failed to send verification email. Please try again later.")
         except: pass
@@ -673,6 +688,7 @@ def resend_verify_code_callback(call):
     email = data["email"]
     code = str(random.randint(100000, 999999))
     data["code"] = code
+    data["stage"] = "awaiting_email_code"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -701,9 +717,7 @@ def resend_verify_code_callback(call):
                 InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(call.message.chat.id, f"📩 A new 6-digit verification code has been resent to your email ({email}). Please enter the code here:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_code)
-            threading.Thread(target=delayed_cancel_session, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(call.message.chat.id, f"📩 A new 6-digit verification code has been resent to your email ({email}). Please enter the code here:", reply_markup=kb)
         except: pass
     else:
         bot.answer_callback_query(call.id, "❌ Failed to resend verification email.", show_alert=True)
@@ -711,29 +725,21 @@ def resend_verify_code_callback(call):
 def process_verification_code(m):
     uid = str(m.from_user.id)
     code_input = (m.text or "").strip()
-    
-    if uid not in email_verify_pending:
-        try:
-            bot.send_message(m.chat.id, "❌ Verification session expired or already completed. Please start again from your profile.")
-        except: pass
-        return
 
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
+    if code_input in MENU_BUTTONS or not code_input.isdigit() or len(code_input) != 6:
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
                 InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(
+            bot.send_message(
                 m.chat.id,
                 "⚠️ <b>Action not allowed!</b>\n"
                 "You must enter the 6-digit code sent to your Gmail first.\n\n"
                 "Please enter the correct code:",
                 reply_markup=kb
             )
-            bot.register_next_step_handler(msg, process_verification_code)
         except: pass
         return
 
@@ -755,30 +761,27 @@ def process_verification_code(m):
                 InlineKeyboardButton("🔄 Resend", callback_data="resend_verify_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(m.chat.id, "❌ Incorrect verification code. Please enter the correct 6-digit code:", reply_markup=kb)
         except: pass
 
-# ----- PHONE VERIFICATION LOGIC ----- #
+# ----- PHONE (SMS) VERIFICATION LOGIC ----- #
 
 def process_verification_phone(m):
     uid = str(m.from_user.id)
     phone_input = (m.text or "").strip().replace(" ", "")
-    
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if phone_input in menu_buttons or not phone_input.startswith("+") or len(phone_input) < 10:
+
+    if phone_input in MENU_BUTTONS or not phone_input.startswith("+") or len(phone_input) < 10:
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-            msg = bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid phone number with country code (e.g., +252... or +251...):", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_phone)
+            bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid phone number with country code (e.g., +252... or +251...):", reply_markup=kb)
         except: pass
         return
 
     code = str(random.randint(100000, 999999))
     current_time = time.time()
     phone_verify_pending[uid] = {
+        "stage": "awaiting_phone_code",
         "phone": phone_input,
         "code": code,
         "time": current_time,
@@ -794,11 +797,10 @@ def process_verification_phone(m):
                 InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, f"📲 A 6-digit code has been sent via SMS to your number ({phone_input}). Please enter the code below:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_phone_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(m.chat.id, f"📲 A 6-digit code has been sent via SMS to your number ({phone_input}). Please enter the code below:", reply_markup=kb)
         except: pass
     else:
+        phone_verify_pending.pop(uid, None)
         try:
             kb = InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
@@ -830,6 +832,7 @@ def resend_phone_code_callback(call):
     phone = data["phone"]
     code = str(random.randint(100000, 999999))
     data["code"] = code
+    data["stage"] = "awaiting_phone_code"
     
     sms_text = f"Your New Verification Code is: {code}"
     success = send_d7_sms(phone, sms_text)
@@ -841,9 +844,7 @@ def resend_phone_code_callback(call):
                 InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(call.message.chat.id, f"📲 A new code has been sent to your number ({phone}). Please enter the code here:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_phone_code)
-            threading.Thread(target=delayed_cancel_session, args=(call.message.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(call.message.chat.id, f"📲 A new code has been sent to your number ({phone}). Please enter the code here:", reply_markup=kb)
         except: pass
     else:
         bot.answer_callback_query(call.id, "❌ Error sending SMS, please try again later.", show_alert=True)
@@ -851,29 +852,21 @@ def resend_phone_code_callback(call):
 def process_phone_code(m):
     uid = str(m.from_user.id)
     code_input = (m.text or "").strip()
-    
-    if uid not in phone_verify_pending:
-        try:
-            bot.send_message(m.chat.id, "❌ Verification session expired. Please start again from your profile.")
-        except: pass
-        return
 
-    menu_buttons = ["👤 Profile", "👑 ADMIN PANEL", "💰 BALANCE", "💸 WITHDRAWAL", "👥 REFERRAL", "🆔 GET ID", "☎️ CUSTOMER", "🤖CUSTOMER AI", "🔙 BACK MAIN MENU", "💳 PAY"]
-    if code_input in menu_buttons or not code_input.isdigit() or len(code_input) != 6:
+    if code_input in MENU_BUTTONS or not code_input.isdigit() or len(code_input) != 6:
         try:
             kb = InlineKeyboardMarkup()
             kb.row(
                 InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(
+            bot.send_message(
                 m.chat.id,
                 "⚠️ <b>Action not allowed!</b>\n"
                 "You must enter the 6-digit SMS code first.\n\n"
                 "Please enter the correct code:",
                 reply_markup=kb
             )
-            bot.register_next_step_handler(msg, process_phone_code)
         except: pass
         return
 
@@ -895,9 +888,134 @@ def process_phone_code(m):
                 InlineKeyboardButton("🔄 Resend SMS", callback_data="resend_phone_code"),
                 InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
             )
-            msg = bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via SMS:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_phone_code)
-            threading.Thread(target=delayed_cancel_session, args=(m.chat.id, msg.message_id, uid), daemon=True).start()
+            bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via SMS:", reply_markup=kb)
+        except: pass
+
+# ----- WHATSAPP OTP VERIFICATION LOGIC (SMESS.io) ----- #
+
+def process_verification_whatsapp(m):
+    uid = str(m.from_user.id)
+    phone_input = (m.text or "").strip().replace(" ", "")
+
+    if phone_input in MENU_BUTTONS or not phone_input.startswith("+") or len(phone_input) < 10:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
+            bot.send_message(m.chat.id, "❌ Invalid number. Please send a valid WhatsApp number with country code (e.g., +252... or +251...):", reply_markup=kb)
+        except: pass
+        return
+
+    code = str(random.randint(100000, 999999))
+    current_time = time.time()
+    whatsapp_verify_pending[uid] = {
+        "stage": "awaiting_phone_code",
+        "phone": phone_input,
+        "code": code,
+        "time": current_time,
+        "last_resend": current_time
+    }
+
+    wa_text = f"Your Downloader Bot WhatsApp Verification Code is: {code}"
+    success = send_whatsapp_otp(phone_input, wa_text)
+    if success:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("🔄 Resend Code", callback_data="resend_whatsapp_code"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
+            )
+            bot.send_message(m.chat.id, f"🟢 A 6-digit code has been sent via WhatsApp to your number ({phone_input}). Please enter the code below:", reply_markup=kb)
+        except: pass
+    else:
+        whatsapp_verify_pending.pop(uid, None)
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
+            bot.send_message(m.chat.id, "❌ Failed to send WhatsApp code. Please try again later or check your number.", reply_markup=kb)
+        except: pass
+
+@bot.callback_query_handler(func=lambda call: call.data == "resend_whatsapp_code")
+def resend_whatsapp_code_callback(call):
+    uid = str(call.from_user.id)
+    if uid not in whatsapp_verify_pending:
+        bot.answer_callback_query(call.id, "❌ Session expired. Please start again from your profile.", show_alert=True)
+        return
+
+    data = whatsapp_verify_pending[uid]
+    current_time = time.time()
+    last_resend_time = data.get("last_resend", data.get("time", 0))
+    cooldown = 300  # 5 minutes cooldown for WhatsApp resend
+    elapsed = current_time - last_resend_time
+
+    if elapsed < cooldown:
+        remaining = int(cooldown - elapsed)
+        mins = remaining // 60
+        secs = remaining % 60
+        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+        bot.answer_callback_query(call.id, f"⏳ Please wait {time_str} before requesting another code.", show_alert=True)
+        return
+
+    data["last_resend"] = current_time
+    phone = data["phone"]
+    code = str(random.randint(100000, 999999))
+    data["code"] = code
+    data["stage"] = "awaiting_phone_code"
+
+    wa_text = f"Your New WhatsApp Verification Code is: {code}"
+    success = send_whatsapp_otp(phone, wa_text)
+    if success:
+        bot.answer_callback_query(call.id, "✅ A new code has been sent via WhatsApp!")
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("🔄 Resend Code", callback_data="resend_whatsapp_code"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
+            )
+            bot.send_message(call.message.chat.id, f"🟢 A new code has been sent to your number ({phone}). Please enter the code here:", reply_markup=kb)
+        except: pass
+    else:
+        bot.answer_callback_query(call.id, "❌ Error sending WhatsApp code, please try again later.", show_alert=True)
+
+def process_whatsapp_code(m):
+    uid = str(m.from_user.id)
+    code_input = (m.text or "").strip()
+
+    if code_input in MENU_BUTTONS or not code_input.isdigit() or len(code_input) != 6:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("🔄 Resend Code", callback_data="resend_whatsapp_code"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
+            )
+            bot.send_message(
+                m.chat.id,
+                "⚠️ <b>Action not allowed!</b>\n"
+                "You must enter the 6-digit WhatsApp code first.\n\n"
+                "Please enter the correct code:",
+                reply_markup=kb
+            )
+        except: pass
+        return
+
+    data = whatsapp_verify_pending[uid]
+    if code_input == data["code"]:
+        users[uid]["verified"] = True
+        users[uid]["phone"] = data["phone"]
+        if "sticker" not in users[uid] or not users[uid]["sticker"]:
+            users[uid]["sticker"] = "🌟"
+        save_user(uid)
+        whatsapp_verify_pending.pop(uid, None)
+        try:
+            bot.send_message(m.chat.id, "✅ Congratulations! Your account is now Verified. You can check your profile status.", reply_markup=user_menu(is_admin(m.from_user.id)))
+        except: pass
+    else:
+        try:
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("🔄 Resend Code", callback_data="resend_whatsapp_code"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process")
+            )
+            bot.send_message(m.chat.id, "❌ Incorrect code. Please enter the correct code sent via WhatsApp:", reply_markup=kb)
         except: pass
 
 # ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
@@ -1210,62 +1328,162 @@ def reset_callback_handler(call):
 
 CHANNEL_USERNAME = "@tiktokvediodownload"
 
+# ================= MUSIC (VIDEO -> MP3) FEATURE =================
+# video_files[key] holds the local path to the last downloaded media file for
+# a given chat/message so the MUSIC button can find and convert it on demand.
+
+def convert_to_mp3(src_path):
+    mp3_path = os.path.splitext(src_path)[0] + ".mp3"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src_path, "-vn", "-acodec", "libmp3lame", "-q:a", "2", mp3_path],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return mp3_path if os.path.exists(mp3_path) else None
+    except Exception as e:
+        print(f"MP3 convert error: {e}")
+        return None
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("music_"))
+def music_button_handler(call):
+    key = call.data.replace("music_", "", 1)
+    entry = video_files.get(key)
+    if not entry or not os.path.exists(entry["path"]):
+        try:
+            bot.answer_callback_query(call.id, "❌ File no longer available. Please download again.", show_alert=True)
+        except: pass
+        return
+
+    try:
+        bot.answer_callback_query(call.id, "🎵 Converting to MP3...")
+    except: pass
+
+    def _do_convert():
+        mp3_path = convert_to_mp3(entry["path"])
+        if not mp3_path:
+            try:
+                bot.send_message(call.message.chat.id, "❌ Failed to convert to MP3.")
+            except: pass
+            return
+        try:
+            with open(mp3_path, 'rb') as f:
+                bot.send_audio(call.message.chat.id, f, caption="🎵 Converted to MP3 via @Downloadvedioytibot")
+        except Exception as e:
+            print(f"Send mp3 error: {e}")
+        finally:
+            try:
+                os.remove(mp3_path)
+            except: pass
+
+    threading.Thread(target=_do_convert, daemon=True).start()
+
 # ================= DOWNLOAD MEDIA FUNCTION =================
+
+# Only these platforms are actually downloaded. Facebook, Pinterest and
+# Snapchat links are explicitly rejected. TikTok photo posts (slideshows)
+# get sent as a single media group (album) instead of one-by-one.
+SUPPORTED_PLATFORMS = ("tiktok", "instagram", "twitter")
+
+def detect_platform(link):
+    if "tiktok.com" in link:
+        return "tiktok"
+    elif "instagram.com" in link:
+        return "instagram"
+    elif "twitter.com" in link or "x.com" in link:
+        return "twitter"
+    elif "facebook.com" in link or "fb.watch" in link:
+        return "facebook"
+    elif "pinterest.com" in link or "pin.it" in link:
+        return "pinterest"
+    elif "snapchat.com" in link:
+        return "snapchat"
+    elif "youtube.com" in link or "youtu.be" in link:
+        return "youtube"
+    return "unknown"
 
 def download_media(chat_id, link, message_id):
     platform = detect_platform(link)
 
-    # pin.it short-links: resolve to the final Pinterest URL first
-    if platform == "pinterest" and "pin.it" in link:
-        link = resolve_redirect(link)
+    if platform in ("facebook", "pinterest", "snapchat"):
+        try:
+            bot.edit_message_text(
+                "❌ This platform is not supported.\n\n✅ Supported: TikTok, Instagram, X/Twitter.",
+                chat_id,
+                message_id
+            )
+        except: pass
+        return
 
-    max_duration = MAX_YOUTUBE_DURATION
+    if platform not in SUPPORTED_PLATFORMS:
+        try:
+            bot.edit_message_text(
+                "❌ Unsupported or unrecognized link.\n\n✅ Supported: TikTok, Instagram, X/Twitter.",
+                chat_id,
+                message_id
+            )
+        except: pass
+        return
+
     uid_str = str(chat_id)
-    if platform == "youtube" and users.get(uid_str, {}).get("youtube_30m", False):
-        max_duration = 1800  # 30 minutes
-
     tmp_dir = f"downloads_{uuid.uuid4().hex}"
     os.makedirs(tmp_dir, exist_ok=True)
 
-    common_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    }
-    ydl_opts = {
-        'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
-        'format': 'bv*+ba/b',
-        'merge_output_format': 'mp4',
-        'max_filesize': 500 * 1024 * 1024,
-        'quiet': True,
-        'http_headers': common_headers,
-        'nocheckcertificate': True,
-    }
-    # Optional: point FACEBOOK_COOKIES_FILE at a Netscape cookies.txt exported
-    # from an account that can already see the content, to reduce Facebook's
-    # anonymous-request blocking.
-    if platform == "facebook" and FACEBOOK_COOKIES_FILE and os.path.exists(FACEBOOK_COOKIES_FILE):
-        ydl_opts['cookiefile'] = FACEBOOK_COOKIES_FILE
-
     try:
-        # TikTok "photo mode" posts are a slideshow of images, not one video -
-        # handle those separately and send as an album.
-        if platform == "tiktok":
-            slideshow_images = try_download_tiktok_slideshow_images(link, tmp_dir)
-            if slideshow_images:
-                send_tiktok_album(chat_id, slideshow_images, message_id)
-                update_stats_and_feedback(chat_id, platform, uid_str)
-                return
+        # ---- TikTok photo/slideshow posts: send as a single album (media group) ----
+        with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl_probe:
+            info_probe = ydl_probe.extract_info(link, download=False)
 
-        with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True}) as ydl:
-            info = ydl.extract_info(link, download=False)
-            if info and 'duration' in info and info['duration']:
-                if info['duration'] > max_duration and platform == "youtube":
-                    bot.edit_message_text(
-                        f"❌ Video is too long. Max allowed duration is {max_duration // 60} minutes.",
-                        chat_id,
-                        message_id
-                    )
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
-                    return
+        is_tiktok_photo = (
+            platform == "tiktok"
+            and isinstance(info_probe, dict)
+            and (info_probe.get("_type") == "playlist" or "images" in info_probe or info_probe.get("image_urls"))
+        )
+
+        image_urls = []
+        if is_tiktok_photo:
+            if info_probe.get("images"):
+                image_urls = info_probe["images"]
+            elif info_probe.get("image_urls"):
+                image_urls = info_probe["image_urls"]
+            elif info_probe.get("_type") == "playlist" and info_probe.get("entries"):
+                for entry in info_probe["entries"]:
+                    if entry and entry.get("url"):
+                        image_urls.append(entry["url"])
+
+        if is_tiktok_photo and image_urls:
+            media_group = []
+            for idx, img_url in enumerate(image_urls[:10]):
+                try:
+                    resp = http_session.get(img_url, timeout=30)
+                    if resp.status_code == 200:
+                        if idx == 0:
+                            media_group.append(InputMediaPhoto(resp.content, caption="🖼 Downloaded successfully via @Downloadvedioytibot"))
+                        else:
+                            media_group.append(InputMediaPhoto(resp.content))
+                except Exception as e:
+                    print(f"Photo fetch error: {e}")
+
+            if media_group:
+                bot.send_media_group(chat_id, media_group)
+                bot.delete_message(chat_id, message_id)
+                videos_data["total"] = videos_data.get("total", 0) + 1
+                if platform in videos_data["platforms"]:
+                    videos_data["platforms"][platform] += 1
+                videos_data["users"][uid_str] = videos_data["users"].get(uid_str, 0) + 1
+                save_videos()
+                if videos_data.get("feedback_enabled", False):
+                    send_feedback_request(chat_id, platform, uuid.uuid4().hex)
+                return
+            # if fetching images failed, fall through to normal video download attempt
+
+        # ---- Normal video download (TikTok video / Instagram / X/Twitter) ----
+        ydl_opts = {
+            'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
+            'format': 'best',
+            'max_filesize': 500 * 1024 * 1024,
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(link, download=True)
             filename = ydl.prepare_filename(info)
@@ -1275,81 +1493,39 @@ def download_media(chat_id, link, message_id):
                     filename = os.path.join(tmp_dir, files[0])
                 else:
                     raise Exception("Downloaded file not found.")
+
+            # Keep a persistent copy for the MUSIC button (moved out of tmp_dir
+            # so it survives the shutil.rmtree cleanup below).
+            persist_dir = "media_store"
+            os.makedirs(persist_dir, exist_ok=True)
+            persist_path = os.path.join(persist_dir, os.path.basename(filename))
+            shutil.copy2(filename, persist_path)
+            music_key = uuid.uuid4().hex
+            video_files[music_key] = {"path": persist_path, "chat_id": chat_id}
+
+            music_kb = InlineKeyboardMarkup()
+            music_kb.add(InlineKeyboardButton("MUSIC🎵", callback_data=f"music_{music_key}"))
+
             with open(filename, 'rb') as f:
                 if filename.endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi', '.gif')):
-                    vid_id = uuid.uuid4().hex[:10]
-                    prune_video_files()
-                    video_files[vid_id] = {"link": link, "time": time.time()}
-                    kb = InlineKeyboardMarkup()
-                    kb.add(InlineKeyboardButton("MUSIC🎵", callback_data=f"tomp3_{vid_id}"))
-                    bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot", reply_markup=kb)
+                    bot.send_video(chat_id, f, caption="🎬 Downloaded successfully via @Downloadvedioytibot", reply_markup=music_kb)
                 elif filename.endswith(('.mp3', '.m4a', '.wav', '.ogg')):
                     bot.send_audio(chat_id, f, caption="🎵 Audio downloaded successfully via @Downloadvedioytibot")
                 else:
                     bot.send_document(chat_id, f, caption="📁 File downloaded successfully via @Downloadvedioytibot")
+
             bot.delete_message(chat_id, message_id)
-            update_stats_and_feedback(chat_id, platform, uid_str)
+            videos_data["total"] = videos_data.get("total", 0) + 1
+            if platform in videos_data["platforms"]:
+                videos_data["platforms"][platform] += 1
+            videos_data["users"][uid_str] = videos_data["users"].get(uid_str, 0) + 1
+            save_videos()
+            if videos_data.get("feedback_enabled", False):
+                send_feedback_request(chat_id, platform, uuid.uuid4().hex)
     except Exception as e:
         print(f"Download error: {e}")
         try:
             bot.edit_message_text(f"❌ Failed to download media. Error: {str(e)[:100]}", chat_id, message_id)
-        except: pass
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-# ================= MUSIC 🎵 -> MP3 BUTTON =================
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("tomp3_"))
-def convert_to_mp3_callback(call):
-    vid_id = call.data.replace("tomp3_", "")
-    data = video_files.get(vid_id)
-    if not data:
-        try:
-            bot.answer_callback_query(call.id, "❌ This link expired. Please download the video again.", show_alert=True)
-        except: pass
-        return
-    link = data["link"]
-    chat_id = call.message.chat.id
-    try:
-        bot.answer_callback_query(call.id, "🎵 Converting...")
-    except: pass
-    try:
-        msg = bot.send_message(chat_id, "⏳ Converting to MP3...")
-    except:
-        return
-    if is_quick_access(call.from_user.id):
-        vip_executor.submit(extract_audio_and_send, chat_id, link, msg.message_id)
-    else:
-        normal_executor.submit(extract_audio_and_send, chat_id, link, msg.message_id)
-
-def extract_audio_and_send(chat_id, link, message_id):
-    tmp_dir = f"audio_{uuid.uuid4().hex}"
-    os.makedirs(tmp_dir, exist_ok=True)
-    ydl_opts = {
-        'outtmpl': f'{tmp_dir}/%(id)s.%(ext)s',
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.extract_info(link, download=True)
-        files = [os.path.join(tmp_dir, f) for f in os.listdir(tmp_dir) if f.lower().endswith('.mp3')]
-        if not files:
-            raise Exception("MP3 was not created - make sure ffmpeg is installed on the server.")
-        with open(files[0], 'rb') as f:
-            bot.send_audio(chat_id, f, caption="🎵 Converted via @Downloadvedioytibot")
-        try:
-            bot.delete_message(chat_id, message_id)
-        except: pass
-    except Exception as e:
-        print(f"MP3 conversion error: {e}")
-        try:
-            bot.edit_message_text(f"❌ Failed to convert to MP3: {str(e)[:100]}", chat_id, message_id)
         except: pass
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1398,7 +1574,7 @@ def view_cmd(message):
             "🤖 BOT INFO\n\n"
             "📌 Name: Video Downloader Bot\n"
             "⚡ Features:\n"
-            "• TikTok, Instagram, Facebook, Pinterest, YouTube, Snapchat, X/Twitter support\n"
+            "• TikTok, Instagram, X/Twitter support\n"
             "• Referral system\n"
             "• Withdrawal system"
         )
@@ -1427,7 +1603,7 @@ def refer_cmd(m):
         promo = (
             "🚀 Download videos instantly with DownloadVedioYTBot!\n\n"
             "Supports:\n"
-            "🎬 TikTok | ▶️ YouTube | 📘 Facebook | 📸 Instagram | 👻 Snapchat | 📌 Pinterest | 🐦 X / Twitter\n\n"
+            "🎬 TikTok | 📸 Instagram | 🐦 X / Twitter\n\n"
             "⚡ Fast downloads\n"
             "🎵 Video to MP3\n"
             "💎 Premium features\n"
@@ -1505,7 +1681,7 @@ def check_membership(user_id):
                 user_id,
                 """🎬 Welcome to Video Downloader Bot!
 
-This bot helps you easily download videos and music from many popular platforms directly to Telegram.
+This bot helps you easily download videos and music from TikTok, Instagram and X/Twitter directly to Telegram.
 
 📥 How to use the bot:
 
@@ -2140,11 +2316,7 @@ def raadi_stats(m):
         top_downloader = f'<a href="tg://user?id={top_uid}">{top_uid}</a> ({top_cnt} videos)'
 
     tt = platform_stats.get("tiktok", 0)
-    yt = platform_stats.get("youtube", 0)
-    fb = platform_stats.get("facebook", 0)
-    pin = platform_stats.get("pinterest", 0)
     ig = platform_stats.get("instagram", 0)
-    snap = platform_stats.get("snapchat", 0)
     tw = platform_stats.get("twitter", 0)
 
     msg_lines = [
@@ -2153,11 +2325,7 @@ def raadi_stats(m):
         f"🏆 Top Downloader: {top_downloader}\n",
         "📊 Downloads by Platform:",
         f"• TikTok: {tt}",
-        f"• YouTube: {yt}",
-        f"• Facebook: {fb}",
         f"• Instagram: {ig}",
-        f"• Pinterest: {pin}",
-        f"• Snapchat: {snap}",
         f"• X/Twitter: {tw}\n",
         "🥇 Top 40 Users:"
     ]
