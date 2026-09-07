@@ -431,12 +431,14 @@ def language_kb(prefix="lang"):
 
 
 def currency_kb():
-    # Exactly three columns, so users see the requested 1-2-3 / 4-5-6 style grid.
+    # 3 columns: 1 2 3 / 4 5 6 / 7 8 9 ...
     kb=InlineKeyboardMarkup(row_width=3)
+    buttons=[]
     for code,(flag,name,_) in FIAT_CURRENCIES.items():
-        kb.add(InlineKeyboardButton(f"{flag} {code}",callback_data=f"currency:{code}"))
+        buttons.append(InlineKeyboardButton(f"{flag} {code}",callback_data=f"currency:{code}"))
     for code,(icon,name,_) in CRYPTO_CURRENCIES.items():
-        kb.add(InlineKeyboardButton(f"{icon} {code}",callback_data=f"currency:{code}"))
+        buttons.append(InlineKeyboardButton(f"{icon} {code}",callback_data=f"currency:{code}"))
+    kb.add(*buttons)
     kb.add(InlineKeyboardButton("🔄 UPDATE MARKET",callback_data="currency_refresh"))
     return kb
 
@@ -5006,7 +5008,7 @@ def change_currency_button(m):
         f"💱 <b>CHANGE CURRENCY</b>\n\n"
         f"Current: <b>{current}</b>\n"
         f"Rate: 1 USD = <b>{rate:,.4f} {current}</b>\n\n"
-        "⚠️ <b>Important:</b> your account balance is stored in USD. Changing currency does not lock a local-currency value. The local amount is recalculated from the current/live exchange rate, so it can rise or fall later.",
+        "⚠️ <b>Important:</b> changing currency converts your entire balance at the current market rate. The currency you select becomes the asset your balance is held in.\n\n📈📉 <b>Market rates can change at any time.</b> After conversion, the value of your balance may increase or decrease when measured in USD or converted back to another currency.",
         reply_markup=currency_kb())
 
 @bot.callback_query_handler(func=lambda c: c.data == "currency_refresh")
