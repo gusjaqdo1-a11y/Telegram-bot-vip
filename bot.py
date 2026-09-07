@@ -71,8 +71,8 @@ RAPIDAPI_YT_KEY = os.getenv("RAPIDAPI_YT_KEY", "").strip()
 RAPIDAPI_TIMEOUT = int(os.getenv("RAPIDAPI_TIMEOUT", "60"))
 # Instagram RapidAPI configuration. Values can also be managed from Admin Panel
 # and are persisted in MongoDB settings (no environment variable required for limits).
-RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "instagram-reels-downloader-api.p.rapidapi.com").strip()
-RAPIDAPI_IG_URL = os.getenv("RAPIDAPI_IG_URL", "https://instagram-reels-downloader-api.p.rapidapi.com/download").strip()
+RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "").strip()
+RAPIDAPI_IG_URL = os.getenv("RAPIDAPI_IG_URL", "").strip()
 RAPIDAPI_IG_KEY = os.getenv("RAPIDAPI_IG_KEY", "").strip()
 
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
@@ -1856,70 +1856,74 @@ def _instagram_api_walk(obj):
         for v in obj: yield from _instagram_api_walk(v)
 
 def _instagram_api_urls(data):
-    """Accept common RapidAPI Instagram response shapes: url/downloadUrl/mediaUrl/items/downloads."""
+    """Extract direct media URLs from the RapidAPI Instagram Reels response.
+
+    The API commonly returns data.medias[].url. We also accept a few
+    equivalent shapes so the downloader remains compatible with response
+    revisions.
+    """
     out=[]; seen=set()
+
+    def add(v, media_type=None):
+        if not isinstance(v,str) or not v.startswith(("http://","https://")) or v in seen:
+            return
+        seen.add(v)
+        low=v.lower()
+        is_video = (str(media_type or '').lower() in {'video','mp4','reel'} or
+                    any(x in low for x in ('.mp4','video','videoplayback')))
+        out.append((v, '.mp4' if is_video else '.jpg'))
+
+    # Exact/current shape: {"data":{"medias":[{"url":"...","type":"video"}]}}
+    medias = data.get('data',{}).get('medias',[]) if isinstance(data,dict) else []
+    if isinstance(medias,list):
+        for item in medias:
+            if isinstance(item,dict):
+                add(item.get('url'), item.get('type') or item.get('mediaType'))
+                add(item.get('downloadUrl') or item.get('download_url'), item.get('type'))
+
+    # Generic fallback for API response revisions.
     for d in _instagram_api_walk(data):
-        for k in ("url","downloadUrl","download_url","mediaUrl","media_url","videoUrl","video_url","imageUrl","image_url","link"):
-            v=d.get(k) if isinstance(d,dict) else None
-            if isinstance(v,str) and v.startswith(("http://","https://")) and v not in seen:
-                low=v.lower(); seen.add(v)
-                ext=".mp4" if any(x in low for x in (".mp4","video")) else ".jpg"
-                out.append((v,ext))
+        if not isinstance(d,dict):
+            continue
+        media_type=d.get('type') or d.get('mediaType') or d.get('media_type')
+        for k in ('url','downloadUrl','download_url','mediaUrl','media_url','videoUrl','video_url','imageUrl','image_url'):
+            add(d.get(k), media_type)
     return out
 
 def _instagram_api_download(link,tmp_dir):
-    """Download Instagram media through the exact RapidAPI endpoint supplied by the owner.
-    The API is GET /download?url=<instagram_url>.
-    """
     url,host,key=_instagram_api_config()
-    if not (url and host and key):
-        raise RuntimeError("Instagram RapidAPI is not configured. Admin must save URL, Host and API key.")
-    headers={
-        "x-rapidapi-host":host,
-        "x-rapidapi-key":key,
-        "Accept":"application/json",
-        "User-Agent":"Mozilla/5.0"
-    }
+    if not (url and host and key): raise RuntimeError("Instagram RapidAPI is not configured in Admin Panel.")
+    headers={"x-rapidapi-host":host,"x-rapidapi-key":key,"Accept":"application/json","User-Agent":"Mozilla/5.0"}
     try:
+        # This endpoint is GET-only: /download?url=<instagram_url>.
         r=requests.get(url,params={"url":link},headers=headers,timeout=RAPIDAPI_TIMEOUT)
-    except requests.RequestException as e:
-        raise RuntimeError(f"Instagram RapidAPI network error: {e}")
-    if r.status_code in (401,403):
-        raise RuntimeError("Instagram RapidAPI authentication/subscription failed. Check the API key and RapidAPI plan.")
-    if r.status_code==429:
-        raise RuntimeError("Instagram RapidAPI quota/rate limit reached.")
-    if r.status_code==404:
-        raise RuntimeError("Instagram RapidAPI endpoint was not found. Check the saved endpoint URL.")
-    r.raise_for_status()
-    try:
+        if r.status_code in (401,403):
+            raise RuntimeError("Instagram RapidAPI authentication/subscription failed.")
+        if r.status_code==429:
+            raise RuntimeError("Instagram RapidAPI quota/rate limit reached.")
+        r.raise_for_status()
         data=r.json()
-    except ValueError:
-        raise RuntimeError("Instagram RapidAPI returned non-JSON data.")
-    links=_instagram_api_urls(data)
-    if not links:
-        raise RuntimeError("Instagram RapidAPI returned no downloadable media URL. Check the API response/schema.")
-    paths=[]
-    for i,(media_url,ext) in enumerate(links[:20]):
-        path=os.path.join(tmp_dir,f"instagram_{i}{ext}")
-        try:
+        links=_instagram_api_urls(data)
+        if not links:
+            raise RuntimeError(f"Instagram API returned no media URL. Response: {str(data)[:500]}")
+        paths=[]
+        for i,(media_url,ext) in enumerate(links[:20]):
+            path=os.path.join(tmp_dir,f"instagram_{i}{ext}")
             with requests.get(media_url,headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as rr:
-                if rr.status_code in (401,403): raise RuntimeError("The Instagram media URL rejected the download request.")
-                rr.raise_for_status()
-                total=0
+                rr.raise_for_status(); total=0
                 with open(path,"wb") as f:
                     for c in rr.iter_content(1024*256):
                         if not c: continue
                         total+=len(c)
-                        if total > 2*1024*1024*1024:
-                            raise RuntimeError("Instagram media exceeds the 2 GB safety ceiling.")
+                        if total > 1024*1024*1024:
+                            raise RuntimeError("Instagram media is too large.")
                         f.write(c)
             paths.append(path)
-        except Exception:
-            if os.path.exists(path):
-                try: os.remove(path)
-                except Exception: pass
-            raise
-    return paths
+        return paths
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Instagram RapidAPI HTTP error: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Instagram RapidAPI failed: {e}") from e
 
 def _cobalt_headers():
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -2072,6 +2076,17 @@ def send_action(chat_id, action):
         bot.send_chat_action(chat_id, action)
     except Exception:
         pass
+
+def _send_action_for_file(chat_id, path):
+    """Show Telegram's native upload action immediately before each upload."""
+    if _is_video_file(path):
+        send_action(chat_id, "upload_video")
+    elif _is_audio_file(path):
+        send_action(chat_id, "upload_audio")
+    elif _is_image_file(path):
+        send_action(chat_id, "upload_photo")
+    else:
+        send_action(chat_id, "upload_document")
 
 def is_premium(uid):
     data = users.get(str(uid), {})
@@ -2241,13 +2256,20 @@ def download_media(chat_id, link, message_id, quality=None):
             except Exception as e: print("Cobalt Instagram fallback:",repr(e))
         if not media:
             cookie_args={}
-            if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE): cookie_args["cookiefile"]=YTDLP_COOKIES_FILE
-            opts={"quiet":True,"no_warnings":True,"noplaylist":True,"retries":5,"fragment_retries":5,"extractor_retries":3,"socket_timeout":45,"http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},"concurrent_fragment_downloads":4 if premium else 1,**cookie_args}
-            with yt_dlp.YoutubeDL({**opts,"extract_flat":True}) as ydl: info=ydl.extract_info(link,download=False)
-            if platform=="youtube" and info and info.get("duration") and info["duration"]>max_seconds: raise RuntimeError(f"YouTube video is too long. Maximum is {max_seconds//60} minutes.")
+            if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
+                cookie_args["cookiefile"]=YTDLP_COOKIES_FILE
+            opts={
+                "quiet":True,"no_warnings":True,"noplaylist":True,
+                "retries":8,"fragment_retries":8,"extractor_retries":5,
+                "socket_timeout":60,
+                "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+                "concurrent_fragment_downloads":4 if premium else 1,
+                **cookie_args
+            }
             fmt=_quality_format(uid,quality)
-            if platform=="tiktok": fmt="bestvideo*+bestaudio/best"
-            with yt_dlp.YoutubeDL({**opts,"outtmpl":os.path.join(tmp,"%(id)s.%(ext)s"),"format":fmt,"merge_output_format":"mp4","max_filesize":max(_download_max_mb(uid),49)*1024*1024}) as ydl: ydl.extract_info(link,download=True)
+            if platform in {"tiktok","instagram","facebook","pinterest","snapchat","twitter"}:
+                fmt="bestvideo*+bestaudio/best"
+            info=_run_ytdlp_download(link,tmp,platform,fmt,opts,max_seconds)
             media=[p for p in _collect_downloaded_files(tmp) if _is_image_file(p) or _is_video_file(p) or _is_audio_file(p)]
         if not media: raise RuntimeError("No downloadable media was produced.")
         sent=0
@@ -2255,6 +2277,7 @@ def download_media(chat_id, link, message_id, quality=None):
             markup=None
             if _is_video_file(path):
                 token=uuid.uuid4().hex[:24]; music_pending[token]={"uid":uid,"link":link,"created":time.time()}; markup=InlineKeyboardMarkup(); markup.add(InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}"))
+            _send_action_for_file(chat_id,path)
             _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup); sent+=1
         try: bot.delete_message(chat_id,message_id)
         except: pass
