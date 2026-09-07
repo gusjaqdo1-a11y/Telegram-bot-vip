@@ -38,9 +38,11 @@ D7_TOKEN = os.getenv("D7_TOKEN")
 WAFORGE_API_KEY = os.getenv("WAFORGE_API_KEY", "").strip()
 # WaForge v1 is the API contract verified with the working Termux curl request.
 # If Railway still has the old /api value, automatically normalize it to /api/v1.
-WAFORGE_BASE_URL = os.getenv("WAFORGE_BASE_URL", "https://www.waforge.online/api/v1").rstrip("/")
-if WAFORGE_BASE_URL.endswith("/api"):
-    WAFORGE_BASE_URL += "/v1"
+WAFORGE_BASE_URL = os.getenv("WAFORGE_BASE_URL", "https://waforge.online/api").rstrip("/")
+# Accept older environment values such as .../api/v1, but normalize them to
+# the current WaForge API path so OTP send/verify use the same endpoint family.
+if WAFORGE_BASE_URL.endswith("/api/v1"):
+    WAFORGE_BASE_URL = WAFORGE_BASE_URL[:-3]
 WAFORGE_OTP_SEND_URL = f"{WAFORGE_BASE_URL}/otp/send"
 WAFORGE_OTP_VERIFY_URL = f"{WAFORGE_BASE_URL}/otp/verify"
 WAFORGE_OTP_TTL = 300  # 5 minutes
@@ -119,6 +121,7 @@ ADS_URL = ""
 # Premium/download state
 premium_pending = {}
 premium_quality_pending = {}
+PREMIUM_DEFAULT_QUALITY = "1080"
 PREMIUM_WARNING_SENT_DAYS = 7
 PREMIUM_CHECK_INTERVAL = 3600
 LANGUAGES = {
@@ -431,6 +434,12 @@ def save_user(uid):
         users_col.update_one({"_id": uid_str}, {"$set": data}, upsert=True)
 
 users = load_users()
+# Backfill persistent Premium quality for existing users. This does not alter
+# balances, verification state, or any existing Premium expiry.
+for _uid, _data in users.items():
+    if _data.get("premium_quality") not in PREMIUM_QUALITY_FORMATS:
+        _data["premium_quality"] = PREMIUM_DEFAULT_QUALITY
+        save_user(_uid)
 
 def log_activity(uid, action, details=None):
     try:
@@ -623,8 +632,13 @@ def send_waforge_whatsapp(phone_number, user_id):
         return False, str(e), None
 
 
-def verify_waforge_whatsapp(phone_number, code):
-    """Verify the user-entered code against the same WaForge v1 session."""
+def verify_waforge_whatsapp(phone_number, code, request_id=None):
+    """Verify a WaForge WhatsApp OTP.
+
+    Current WaForge accepts phone+code. Some compatible deployments return a
+    request id and expect that id on verification, so we try request_id first
+    when available and safely fall back to phone+code if the endpoint rejects it.
+    """
     if not WAFORGE_API_KEY:
         return False, "WAFORGE_API_KEY is not configured"
 
@@ -633,25 +647,35 @@ def verify_waforge_whatsapp(phone_number, code):
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    payload = {"phone": phone_number, "code": str(code)}
 
+    payloads = []
+    if request_id:
+        payloads.append({"request_id": request_id, "code": str(code)})
+    payloads.append({"phone": phone_number, "code": str(code)})
+
+    last_detail = "Verification failed"
     try:
-        r = requests.post(
-            WAFORGE_OTP_VERIFY_URL,
-            json=payload,
-            headers=headers,
-            timeout=30,
-        )
-        try:
-            body = r.json()
-        except Exception:
-            body = {"raw": r.text}
-
-        verified = (
-            r.status_code == 200
-            and (body.get("verified") is True or body.get("success") is True)
-        )
-        return verified, body
+        for payload in payloads:
+            r = requests.post(
+                WAFORGE_OTP_VERIFY_URL,
+                json=payload,
+                headers=headers,
+                timeout=30,
+            )
+            try:
+                body = r.json()
+            except Exception:
+                body = {"raw": r.text}
+            last_detail = body
+            if r.status_code == 200 and (body.get("verified") is True or body.get("success") is True):
+                return True, body
+            # If this was a request-id deployment and it rejected that shape,
+            # continue to the documented phone+code fallback.
+            if r.status_code in (400, 404, 422) and len(payloads) > 1 and payload is payloads[0]:
+                continue
+            if r.status_code not in (400, 404, 422):
+                break
+        return False, last_detail
     except Exception as e:
         return False, str(e)
 
@@ -859,10 +883,14 @@ def profile_handler(m):
     uid = str(m.from_user.id)
     u_data = users.get(uid, {})
     
-    verified = u_data.get("verified", False)
+    verified = bool(u_data.get("verified", False))
+    # The admin-controlled sticker is a VERIFIED badge. Never let it turn an
+    # unverified account into a visually verified account.
     global_sticker = str(get_setting("global_sticker", "") or "").strip()
-    sticker = global_sticker or u_data.get("sticker", "Verified" if verified else "Not Verified")
-    status_str = f"Verified {sticker}" if verified else (f"{sticker}" if global_sticker else "Not Verified")
+    if verified:
+        status_str = f"Verified {global_sticker}" if global_sticker else "Verified ✅"
+    else:
+        status_str = "Not verified ⚠️"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -968,9 +996,14 @@ def cancel_verify_process(call):
 # Helper to auto delete message/cancel session after 1 min if requested or expired
 def delayed_cancel_session(chat_id, message_id, uid):
     time.sleep(60)
-    if uid in email_verify_pending or uid in phone_verify_pending:
+    if uid in email_verify_pending or uid in phone_verify_pending or uid in whatsapp_verify_pending:
         email_verify_pending.pop(uid, None)
         phone_verify_pending.pop(uid, None)
+        whatsapp_verify_pending.pop(uid, None)
+        try:
+            bot.clear_step_handler_by_chat_id(chat_id)
+        except Exception:
+            pass
         try:
             bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
         except:
@@ -1126,8 +1159,9 @@ def process_verification_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["email"] = data["email"]
-        if "sticker" not in users[uid] or not users[uid]["sticker"]:
-            users[uid]["sticker"] = "🌟"
+        # Sticker is controlled globally by the admin; do not create a fake
+        # per-user verification badge here.
+        users[uid].pop("sticker", None)
         save_user(uid)
         email_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1267,8 +1301,9 @@ def process_phone_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["phone"] = data["phone"]
-        if "sticker" not in users[uid] or not users[uid]["sticker"]:
-            users[uid]["sticker"] = "🌟"
+        # Sticker is controlled globally by the admin; do not create a fake
+        # per-user verification badge here.
+        users[uid].pop("sticker", None)
         save_user(uid)
         phone_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1374,7 +1409,7 @@ def process_whatsapp_code(m):
         bot.register_next_step_handler(msg, process_whatsapp_code)
         return
 
-    ok, detail = verify_waforge_whatsapp(data["phone"], code)
+    ok, detail = verify_waforge_whatsapp(data["phone"], code, data.get("request_id"))
     if not ok:
         print("WaForge verify error:", detail)
         # WaForge may report an expired code; show the requested exact message.
@@ -1390,7 +1425,7 @@ def process_whatsapp_code(m):
     users[uid]["verified"] = True
     users[uid]["phone"] = data["phone"]
     users[uid]["whatsapp_verified"] = True
-    users[uid]["sticker"] = users[uid].get("sticker") or "🌟"
+    users[uid].pop("sticker", None)
     save_user(uid)
     whatsapp_verify_pending.pop(uid, None)
     trial_activated = activate_pending_trial(uid, m.chat.id)
@@ -2153,11 +2188,50 @@ def convert_link_to_mp3(chat_id, link, status_message_id):
             raise RuntimeError("The MP3 is too large for Telegram upload.")
         send_action(chat_id, "upload_audio")
         info = info or {}
-        title = info.get("track") or info.get("title") or "Unknown title"
-        artist = info.get("artist") or info.get("creator") or info.get("uploader") or info.get("channel") or "Unknown artist"
-        caption = f"🎵 {title}\n👤 Artist: {artist}\n\n{DOWNLOAD_CAPTION}"
+        # Prefer real music metadata. For TikTok/Reels/etc. where no artist is
+        # supplied, keep the original sound identity instead of inventing an artist.
+        title = (info.get("track") or info.get("title") or info.get("alt_title") or "Original Sound").strip()
+        artist = (
+            info.get("artist")
+            or info.get("creator")
+            or info.get("album_artist")
+            or info.get("uploader")
+            or info.get("channel")
+        )
+        artist = str(artist).strip() if artist else "Original Sound"
+        # Avoid ugly placeholder text such as 'Unknown artist' in Telegram metadata.
+        if artist.lower() in {"unknown", "unknown artist", "n/a", "none"}:
+            artist = "Original Sound"
+
+        caption = f"🎵 <b>{html.escape(title)}</b>\n👤 <b>{html.escape(artist)}</b>\n\n{DOWNLOAD_CAPTION}"
+        thumbnail_path = None
+        thumb_url = info.get("thumbnail")
+        if thumb_url:
+            try:
+                thumb_resp = requests.get(thumb_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+                if thumb_resp.ok and thumb_resp.content:
+                    thumbnail_path = os.path.join(tmp_dir, "cover.jpg")
+                    with open(thumbnail_path, "wb") as thumb_file:
+                        thumb_file.write(thumb_resp.content)
+            except Exception as thumb_error:
+                print("Music thumbnail error:", thumb_error)
+
         with open(path, "rb") as audio:
-            bot.send_audio(chat_id, audio, caption=caption, title=title, performer=artist)
+            kwargs = {
+                "caption": caption,
+                "title": title[:64],
+                "performer": artist[:64],
+            }
+            if thumbnail_path and os.path.isfile(thumbnail_path):
+                kwargs["thumbnail"] = thumbnail_path
+            try:
+                bot.send_audio(chat_id, audio, **kwargs)
+            except TypeError:
+                # Older pyTelegramBotAPI versions may not accept thumbnail as a
+                # keyword; resend the audio without it rather than failing music.
+                kwargs.pop("thumbnail", None)
+                audio.seek(0)
+                bot.send_audio(chat_id, audio, **kwargs)
         try: bot.delete_message(chat_id, status_message_id)
         except Exception: pass
     except Exception as e:
@@ -2190,7 +2264,7 @@ def music_callback_handler(call):
 @bot.message_handler(func=lambda m: m.text == "🎵 MUSIC")
 def music_menu_button(m):
     if bot_locked_guard(m) or banned_guard(m): return
-    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3 and show the song title and artist. If artist metadata is missing, it will be shown as <b>Unknown artist</b>.")
+    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3, use the available song/artist metadata and attach the source cover when available. If no artist is available, the audio will be labeled <b>Original Sound</b> instead of inventing an artist.")
 
 # ================= START HANDLER =================
 
@@ -2199,7 +2273,7 @@ def start_handler(message):
     if bot_locked_guard(message): return
     uid=str(message.from_user.id); args=message.text.split()
     if uid not in users:
-        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
+        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"premium_quality":PREMIUM_DEFAULT_QUALITY,"pending_ref":args[1] if len(args)>1 else None}
         save_user(uid)
     users[uid].setdefault("currency","USD")
     users[uid].setdefault("first_name", message.from_user.first_name or "there")
@@ -3289,6 +3363,7 @@ def import_users_process(m):
                 "referred_by": None,
                 "last_seen_at": datetime.now(timezone.utc).isoformat(),
                 "currency": "USD",
+                "premium_quality": PREMIUM_DEFAULT_QUALITY,
                 "language": None,
                 "gender": None,
                 "city": None,
@@ -3575,13 +3650,37 @@ def premium_plan_keyboard():
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
-def send_quality_menu(chat_id, link):
-    uid = str(chat_id)
-    premium_quality_pending[uid] = {"link": link, "created": time.time()}
+def premium_quality_for_user(uid):
+    uid = str(uid)
+    q = str(users.get(uid, {}).get("premium_quality") or get_setting("premium_default_quality", PREMIUM_DEFAULT_QUALITY))
+    return q if q in PREMIUM_QUALITY_FORMATS else PREMIUM_DEFAULT_QUALITY
+
+def premium_quality_label(q):
+    return "4K" if str(q) == "2160" else f"{q}p"
+
+def premium_quality_keyboard():
     kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("720p", callback_data="quality:720"), InlineKeyboardButton("1080p", callback_data="quality:1080"))
-    kb.add(InlineKeyboardButton("1440p", callback_data="quality:1440"), InlineKeyboardButton("4K", callback_data="quality:2160"))
-    bot.send_message(chat_id, "💎 <b>Premium Quality</b>\n\nChoose your download quality:", reply_markup=kb)
+    kb.add(
+        InlineKeyboardButton("720p", callback_data="premium_set_quality:720"),
+        InlineKeyboardButton("1080p", callback_data="premium_set_quality:1080"),
+    )
+    kb.add(
+        InlineKeyboardButton("1440p", callback_data="premium_set_quality:1440"),
+        InlineKeyboardButton("4K", callback_data="premium_set_quality:2160"),
+    )
+    return kb
+
+def send_quality_menu(chat_id, link=None):
+    # Kept for backwards compatibility with older callback references. It now
+    # changes the saved Premium quality instead of asking on every download.
+    uid = str(chat_id)
+    bot.send_message(
+        chat_id,
+        f"💎 <b>Premium Quality</b>\n\n"
+        f"Current quality: <b>{premium_quality_label(premium_quality_for_user(uid))}</b>\n"
+        "Choose the quality that Premium should use automatically for future downloads.",
+        reply_markup=premium_quality_keyboard(),
+    )
 
 @bot.message_handler(func=lambda m: m.text == "💎 PREMIUM")
 def premium_button(m):
@@ -3597,9 +3696,17 @@ def premium_menu_callback(call):
 def show_premium_menu(chat_id):
     uid = str(chat_id)
     if is_premium(uid):
+        current_q = premium_quality_for_user(uid)
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🎥 Choose Quality", callback_data="premium_quality_info"))
-        bot.send_message(chat_id, premium_features_text() + f"\n\n✅ <b>Active until:</b> {premium_until_text(uid)}", reply_markup=kb)
+        kb.add(InlineKeyboardButton(f"🎥 QUALITY: {premium_quality_label(current_q)}", callback_data="premium_quality_info"))
+        bot.send_message(
+            chat_id,
+            premium_features_text()
+            + f"\n\n✅ <b>Active until:</b> {premium_until_text(uid)}"
+            + f"\n🎥 <b>Download quality:</b> {premium_quality_label(current_q)}"
+            + "\n\nThis quality is saved and will be used automatically for your next downloads.",
+            reply_markup=kb,
+        )
     else:
         if not users.get(uid, {}).get("verified", False):
             kb = InlineKeyboardMarkup()
@@ -3667,22 +3774,41 @@ def premium_cancel(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "premium_quality_info")
 def premium_quality_info(call):
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, "💎 Premium quality is selected automatically when you send a link. Choose 720p, 1080p, 1440p or 4K.")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("quality:"))
-def quality_callback(call):
     uid = str(call.from_user.id)
     if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True); return
-    q = call.data.split(":",1)[1]
-    data = premium_quality_pending.get(uid)
-    if not data:
-        bot.answer_callback_query(call.id, "❌ Quality session expired. Send the link again.", show_alert=True); return
-    premium_quality_pending.pop(uid, None)
-    bot.answer_callback_query(call.id, f"✅ {q if q != '2160' else '4K'} selected")
-    msg = bot.send_message(call.message.chat.id, f"✍️ Typing...\n⬇️ Downloading at {q if q != '2160' else '4K'} quality...")
-    vip_executor.submit(download_media, call.message.chat.id, data["link"], msg.message_id, q)
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    q = premium_quality_for_user(uid)
+    bot.send_message(
+        call.message.chat.id,
+        f"🎥 <b>PREMIUM DOWNLOAD QUALITY</b>\n\n"
+        f"Current: <b>{premium_quality_label(q)}</b>\n\n"
+        "Choose once. Your selection will be saved and used automatically for every Premium download.",
+        reply_markup=premium_quality_keyboard(),
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("premium_set_quality:"))
+def premium_set_quality_callback(call):
+    uid = str(call.from_user.id)
+    if not is_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
+        return
+    q = call.data.split(":", 1)[1]
+    if q not in PREMIUM_QUALITY_FORMATS:
+        bot.answer_callback_query(call.id, "❌ Invalid quality.", show_alert=True)
+        return
+    users[uid]["premium_quality"] = q
+    save_user(uid)
+    bot.answer_callback_query(call.id, f"✅ {premium_quality_label(q)} saved")
+    try:
+        bot.edit_message_text(
+            f"✅ <b>Premium quality saved</b>\n\nYour videos will now download automatically at <b>{premium_quality_label(q)}</b>.\n\nNo quality question will appear for every link.",
+            call.message.chat.id,
+            call.message.message_id,
+        )
+    except Exception:
+        bot.send_message(call.message.chat.id, f"✅ Premium quality saved: <b>{premium_quality_label(q)}</b>")
 
 def send_premium_email(uid, subject, months, price, until):
     email=users.get(str(uid),{}).get("email")
@@ -3772,17 +3898,14 @@ def handle_links(message):
         kb.add(InlineKeyboardButton("💎 OPEN PREMIUM", callback_data="premium_menu"))
         bot.send_message(message.chat.id, "❌ YouTube is not available to download.\n\n💎 Open Premium to unlock normal YouTube downloads, higher quality, faster speed and extra platforms.", reply_markup=kb); return
 
-    # Premium users choose quality for each download. Free users get 720p/best available.
-    if is_premium(uid) and platform != "youtube":
-        send_quality_menu(message.chat.id, link)
-        return
-    if is_premium(uid) and platform == "youtube":
-        send_quality_menu(message.chat.id, link)
-        return
-
+    # Premium quality is persistent. Users choose it from the Premium menu once;
+    # sending a link never asks them to choose quality again.
+    selected_quality = premium_quality_for_user(uid) if is_premium(uid) else None
     try:
         msg = bot.send_message(message.chat.id, "✍️ Typing...\n⬇️ Preparing your download...")
-        (vip_executor if is_premium(uid) else normal_executor).submit(download_media, message.chat.id, link, msg.message_id, None)
+        (vip_executor if is_premium(uid) else normal_executor).submit(
+            download_media, message.chat.id, link, msg.message_id, selected_quality
+        )
     except Exception: pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
