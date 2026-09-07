@@ -13,6 +13,7 @@ import asyncio
 import uuid
 import time
 import html
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
@@ -46,8 +47,34 @@ WAFORGE_OTP_VERIFY_URL = f"{WAFORGE_BASE_URL}/otp/verify"
 WAFORGE_OTP_TTL = 300  # 5 minutes
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "49"))
 YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
+YOUTUBE_PO_TOKEN = os.getenv("YOUTUBE_PO_TOKEN", "").strip()
+YOUTUBE_PLAYER_CLIENT = os.getenv("YOUTUBE_PLAYER_CLIENT", "").strip()
 
-MAX_YOUTUBE_DURATION = int(os.getenv("MAX_YOUTUBE_DURATION", "900")) # 15 Minutes in seconds
+# Download limits (admin-configurable at runtime).
+FREE_MAX_MINUTES_DEFAULT = int(os.getenv("FREE_MAX_MINUTES", "10"))
+PREMIUM_MAX_MINUTES_DEFAULT = int(os.getenv("PREMIUM_MAX_MINUTES", "120"))
+MAX_YOUTUBE_DURATION = FREE_MAX_MINUTES_DEFAULT * 60
+
+# Cobalt: no API key is required when your own Cobalt instance is configured
+# without authentication. The bot uses POST / on the configured instance.
+# For a monetized/premium bot, use a self-hosted Cobalt instance rather than
+# relying on the public api.cobalt.tools service.
+COBALT_API_URL = os.getenv("COBALT_API_URL", "").strip().rstrip("/")
+COBALT_API_KEY = os.getenv("COBALT_API_KEY", "").strip()
+COBALT_TIMEOUT = int(os.getenv("COBALT_TIMEOUT", "180"))
+
+# ================= RAPIDAPI YOUTUBE DOWNLOADER =================
+RAPIDAPI_YT_HOST = os.getenv("RAPIDAPI_YT_HOST", "youtube-media-downloader.p.rapidapi.com").strip()
+RAPIDAPI_YT_DETAILS_URL = os.getenv("RAPIDAPI_YT_DETAILS_URL", "https://youtube-media-downloader.p.rapidapi.com/v2/video/details").strip()
+# Keep the key in your hosting provider's secret/environment settings.
+RAPIDAPI_YT_KEY = os.getenv("RAPIDAPI_YT_KEY", "").strip()
+RAPIDAPI_TIMEOUT = int(os.getenv("RAPIDAPI_TIMEOUT", "60"))
+# Instagram RapidAPI configuration. Values can also be managed from Admin Panel
+# and are persisted in MongoDB settings (no environment variable required for limits).
+RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "instagram-reels-downloader-api.p.rapidapi.com").strip()
+RAPIDAPI_IG_URL = os.getenv("RAPIDAPI_IG_URL", "https://instagram-reels-downloader-api.p.rapidapi.com/download").strip()
+RAPIDAPI_IG_KEY = os.getenv("RAPIDAPI_IG_KEY", "").strip()
+
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
 # Premium configuration
@@ -81,9 +108,7 @@ tg_client = TelegramClient(
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 bot2 = telebot.TeleBot(BOT2_TOKEN, parse_mode="HTML")
 
-ROOT_ADMIN_ID = int(os.getenv("ROOT_ADMIN_ID", "7983838654"))
-# The root admin is permanent and cannot be removed through the bot.
-ADMIN_IDS = [ROOT_ADMIN_ID]
+ADMIN_IDS = [7983838654]
 
 CHANNEL_ID = "@tiktokvediodownload"
 
@@ -282,41 +307,6 @@ def get_setting(key, default):
 
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
-
-# ================= PERSISTENT ADMIN / CUSTOMER SETTINGS =================
-# ADMIN_IDS is kept in memory for fast permission checks, while MongoDB keeps
-# added admins across Railway/Render restarts. ROOT_ADMIN_ID is permanent.
-def load_admin_ids():
-    stored = get_setting("admin_ids", None)
-    ids = {int(ROOT_ADMIN_ID)}
-    if isinstance(stored, list):
-        for value in stored:
-            try:
-                ids.add(int(value))
-            except Exception:
-                pass
-    admin_list = sorted(ids)
-    set_setting("admin_ids", admin_list)
-    return admin_list
-
-ADMIN_IDS = load_admin_ids()
-
-def save_admin_ids():
-    global ADMIN_IDS
-    ids = {int(ROOT_ADMIN_ID)}
-    for value in ADMIN_IDS:
-        try:
-            ids.add(int(value))
-        except Exception:
-            pass
-    ADMIN_IDS = sorted(ids)
-    set_setting("admin_ids", ADMIN_IDS)
-
-def admin_label(uid):
-    data = users.get(str(uid), {})
-    username = data.get("username") or ""
-    name = data.get("first_name") or ""
-    return f"@{username}" if username else (name or str(uid))
 
 def touch_user(uid, save=True):
     uid=str(uid)
@@ -726,10 +716,12 @@ def admin_menu():
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
     kb.add("🗑️ REMOVE ALL")
     kb.add("📢 Send Email All")
+    kb.add("⏱️ FREE MAX MIN", "⏱️ PREMIUM MAX MIN")
+    kb.add("📦 FREE MAX MB", "📦 TRIAL MAX MB")
+    kb.add("📦 PREMIUM MAX MB", "⚙️ DOWNLOAD LIMITS")
+    kb.add("📸 INSTAGRAM API", "📸 INSTAGRAM STATUS")
+    kb.add("🛰️ COBALT STATUS")
     kb.add("✅ Verified Users", "🏷️ Sticker")
-    kb.add("➕ ADD NEW ADMIN", "➖ REMOVE ADMIN")
-    kb.add("💰 SEE BALANCE", "📊 SEE ALL BALANCE")
-    kb.add("✏️ EDIT COSTUMER")
     kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
     kb.add("Send verify")
     kb.add("🟢 Open SMS", "🔴 CLOSE SMS")
@@ -849,55 +841,6 @@ def sms_admin_manager(m):
             bot.send_message(m.chat.id, f"♻️ Reset complete. {changed} users are now Unverified and can verify again.")
         except: pass
 
-# ================= TELEGRAM CUSTOM EMOJI / GLOBAL PROFILE BADGE =================
-# Telegram Premium Custom Emoji are represented in incoming messages as a
-# MessageEntity with type="custom_emoji" and a custom_emoji_id.  We persist
-# the ID, not only the visible Unicode fallback, so the badge stays a real
-# Telegram Custom Emoji when the bot renders a profile.
-
-def extract_custom_emoji_id(message):
-    """Return the first Telegram custom_emoji_id from a text message."""
-    for entity in (getattr(message, "entities", None) or []):
-        if getattr(entity, "type", None) == "custom_emoji":
-            cid = getattr(entity, "custom_emoji_id", None)
-            if cid:
-                return str(cid)
-    return None
-
-
-def custom_emoji_html(custom_emoji_id, fallback="🔹"):
-    """Build Bot API HTML for a real Telegram custom emoji."""
-    if not custom_emoji_id:
-        return html.escape(fallback or "🔹")
-    return f'<tg-emoji emoji-id="{html.escape(str(custom_emoji_id), quote=True)}">{html.escape(fallback or "🔹")}</tg-emoji>'
-
-
-def global_profile_badge_html(verified=True):
-    """Return the configured global badge as renderable HTML."""
-    if not verified:
-        return ""
-    cid = str(get_setting("global_custom_emoji_id", "") or "").strip()
-    if cid:
-        fallback = str(get_setting("global_custom_emoji_fallback", "🔹") or "🔹")
-        return custom_emoji_html(cid, fallback)
-    # Do not render the legacy plain-text sticker. The requested badge must be
-    # a real Telegram Custom Emoji, not a Unicode emoji masquerading as one.
-    return ""
-
-
-def set_global_custom_emoji(custom_emoji_id, fallback="🔹"):
-    set_setting("global_custom_emoji_id", str(custom_emoji_id))
-    set_setting("global_custom_emoji_fallback", fallback or "🔹")
-    # Clear the legacy plain-text global sticker so it can never override the
-    # real Custom Emoji badge.
-    set_setting("global_sticker", "")
-
-
-def clear_global_custom_emoji():
-    set_setting("global_custom_emoji_id", "")
-    set_setting("global_custom_emoji_fallback", "🔹")
-    set_setting("global_sticker", "")
-
 # ================= PROFILE & VERIFICATION LOGIC =================
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
@@ -908,9 +851,9 @@ def profile_handler(m):
     uid = str(m.from_user.id)
     u_data = users.get(uid, {})
     
-    verified = bool(u_data.get("verified", False))
-    badge = global_profile_badge_html(verified)
-    status_str = f"Verified {badge}" if verified else "Not verified ⚠️"
+    verified = u_data.get("verified", False)
+    sticker = u_data.get("sticker", "Verified" if verified else "Not Verified")
+    status_str = f"Verified ({sticker})" if verified else "Not Verified"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -951,26 +894,27 @@ def profile_language_callback(call):
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
     try:
-        sms_enabled = bool(get_setting("sms_enabled", False))
-        whatsapp_enabled = bool(get_setting("whatsapp_verify_enabled", False)) and bool(WAFORGE_API_KEY)
-
-        # Gmail is always available through the configured Resend email system.
-        # SMS and WhatsApp are independently controlled by their admin toggles.
-        kb = InlineKeyboardMarkup(row_width=2)
-        kb.add(InlineKeyboardButton("📧 Gmail", callback_data="verify_choice_gmail"))
+        sms_enabled = get_setting("sms_enabled", False)
+        whatsapp_enabled = get_setting("whatsapp_verify_enabled", False) and bool(WAFORGE_API_KEY)
         if sms_enabled:
-            kb.add(InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone"))
-        if whatsapp_enabled:
-            kb.add(InlineKeyboardButton("🟢 WhatsApp OTP", callback_data="verify_choice_whatsapp"))
-        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
-        bot.edit_message_text(
-            "🔐 <b>Choose verification method</b>\n\n"
-            "📧 Gmail" + ("\n📱 SMS" if sms_enabled else "") +
-            ("\n🟢 WhatsApp OTP" if whatsapp_enabled else ""),
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=kb
-        )
+            kb = InlineKeyboardMarkup()
+            kb.row(
+                InlineKeyboardButton("📧 Gmail", callback_data="verify_choice_gmail"),
+                InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone")
+            )
+            if whatsapp_enabled:
+                kb.add(InlineKeyboardButton("🟢 WhatsApp OTP", callback_data="verify_choice_whatsapp"))
+            bot.edit_message_text(
+                "Please choose your verification method:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=kb
+            )
+        else:
+            kb = InlineKeyboardMarkup()
+            kb.add(InlineKeyboardButton("Cancel Verification", callback_data="cancel_verify_process"))
+            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
+            bot.register_next_step_handler(msg, process_verification_email)
         bot.answer_callback_query(call.id)
     except Exception as e:
         print(f"Verify flow error: {e}")
@@ -1004,10 +948,6 @@ def cancel_verify_process(call):
     phone_verify_pending.pop(uid, None)
     whatsapp_verify_pending.pop(uid, None)
     try:
-        bot.clear_step_handler_by_chat_id(call.message.chat.id)
-    except Exception:
-        pass
-    try:
         bot.edit_message_text("❌ Verification process cancelled.", call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.answer_callback_query(call.id, "Cancelled successfully!")
     except:
@@ -1016,10 +956,9 @@ def cancel_verify_process(call):
 # Helper to auto delete message/cancel session after 1 min if requested or expired
 def delayed_cancel_session(chat_id, message_id, uid):
     time.sleep(60)
-    if uid in email_verify_pending or uid in phone_verify_pending or uid in whatsapp_verify_pending:
+    if uid in email_verify_pending or uid in phone_verify_pending:
         email_verify_pending.pop(uid, None)
         phone_verify_pending.pop(uid, None)
-        whatsapp_verify_pending.pop(uid, None)
         try:
             bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
         except:
@@ -1175,6 +1114,8 @@ def process_verification_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["email"] = data["email"]
+        if "sticker" not in users[uid] or not users[uid]["sticker"]:
+            users[uid]["sticker"] = "🌟"
         save_user(uid)
         email_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1314,6 +1255,8 @@ def process_phone_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["phone"] = data["phone"]
+        if "sticker" not in users[uid] or not users[uid]["sticker"]:
+            users[uid]["sticker"] = "🌟"
         save_user(uid)
         phone_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1435,6 +1378,7 @@ def process_whatsapp_code(m):
     users[uid]["verified"] = True
     users[uid]["phone"] = data["phone"]
     users[uid]["whatsapp_verified"] = True
+    users[uid]["sticker"] = users[uid].get("sticker") or "🌟"
     save_user(uid)
     whatsapp_verify_pending.pop(uid, None)
     trial_activated = activate_pending_trial(uid, m.chat.id)
@@ -1461,7 +1405,7 @@ def verified_users_list(m):
     text = f"✅ VERIFIED USERS ({len(verified_list)})\n\n"
     for uid in verified_list[:30]:
         u_data = users[uid]
-        sticker = global_profile_badge_html(True) or "None"
+        sticker = u_data.get("sticker", "N/A")
         email = u_data.get('email', '')
         phone = u_data.get('phone', '')
         contact = email if email else (phone if phone else "No Contact Info")
@@ -1475,76 +1419,33 @@ def sticker_admin_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        cid = str(get_setting("global_custom_emoji_id", "") or "").strip()
-        fallback = str(get_setting("global_custom_emoji_fallback", "🔹") or "🔹")
-        if cid:
-            current = custom_emoji_html(cid, fallback)
-            current_note = f"Current Custom Emoji: {current}\n<code>ID: {html.escape(cid)}</code>"
-        else:
-            current_note = "Current Custom Emoji: None"
-        msg = bot.send_message(
-            m.chat.id,
-            "🏷️ <b>GLOBAL TELEGRAM CUSTOM EMOJI</b>\n\n"
-            "Send a <b>Telegram Premium Custom Emoji</b> in your message.\n"
-            "The bot will save its real <code>custom_emoji_id</code> and use the same Custom Emoji on every verified user's profile.\n\n"
-            "⚠️ A normal Unicode emoji such as ⭐ is not stored as a Telegram Custom Emoji.\n"
-            "To remove the global badge, send <code>CLEAR</code>.\n\n"
-            f"{current_note}"
-        )
+        msg = bot.send_message(m.chat.id, "Send User ID or BOT ID and the sticker/badge separated by pipe (|)\nExample:\n123456789 | 🌟 Verified")
         bot.register_next_step_handler(msg, sticker_admin_process)
-    except Exception as e:
-        print("Sticker start error:", e)
-
+    except: pass
 
 def sticker_admin_process(m):
     if not is_admin(m.from_user.id):
         return
-
-    raw = (m.text or "").strip()
-    if raw.upper() == "CLEAR":
-        clear_global_custom_emoji()
-        for uid in users:
-            users[uid].pop("global_sticker", None)
-            users[uid].pop("global_custom_emoji_id", None)
-            save_user(uid)
-        try:
-            bot.send_message(m.chat.id, "🗑️ <b>Global Custom Emoji removed.</b>\nVerified profiles will no longer show the admin badge.")
-        except Exception:
-            pass
-        return
-
-    custom_id = extract_custom_emoji_id(m)
-    if not custom_id:
-        bot.send_message(
-            m.chat.id,
-            "❌ <b>That is not a Telegram Custom Emoji.</b>\n\n"
-            "Please send the Premium Custom Emoji itself. Do not send a normal Unicode emoji such as ⭐."
-        )
-        return
-
-    # Store the visible fallback as well. Telegram clients use it as the
-    # textual child of <tg-emoji>; the actual visual badge is identified by ID.
-    fallback = raw[:16] if raw else "🔹"
-    set_global_custom_emoji(custom_id, fallback)
-
-    updated = 0
-    rendered = custom_emoji_html(custom_id, fallback)
-    for uid in users:
-        users[uid]["global_custom_emoji_id"] = custom_id
-        users[uid]["global_custom_emoji_fallback"] = fallback
-        # Remove old legacy value so profile code cannot accidentally use it.
-        users[uid].pop("global_sticker", None)
+    try:
+        parts = m.text.split("|")
+        if len(parts) < 2:
+            bot.send_message(m.chat.id, "❌ Format error. Use: UserID | StickerText")
+            return
+        uid_str = parts[0].strip()
+        sticker_text = parts[1].strip()
+        
+        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
+        if not uid or uid not in users:
+            bot.send_message(m.chat.id, "❌ User not found.")
+            return
+        users[uid]["sticker"] = sticker_text
         save_user(uid)
-        updated += 1
-
-    bot.send_message(
-        m.chat.id,
-        f"✅ <b>Global Custom Emoji set successfully!</b>\n\n"
-        f"🏷️ Badge: {rendered}\n"
-        f"🆔 Custom Emoji ID: <code>{html.escape(custom_id)}</code>\n"
-        f"👥 Synced to {updated} users.\n\n"
-        "Only verified profiles will display this badge."
-    )
+        bot.send_message(m.chat.id, f"✅ Sticker successfully updated for user {uid}!")
+        try:
+            bot.send_message(int(uid), f"🌟 Your profile status sticker has been updated to: {sticker_text}")
+        except: pass
+    except Exception as e:
+        bot.send_message(m.chat.id, f"❌ Error: {e}")
 
 # ================= ADMIN SEND EMAIL ALL =================
 
@@ -1572,175 +1473,6 @@ def send_email_all_process(m):
     try:
         bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
     except: pass
-
-# ================= ADMIN / BALANCE / CUSTOMER MANAGEMENT =================
-
-@bot.message_handler(func=lambda m: m.text == "➕ ADD NEW ADMIN")
-def add_new_admin_start(m):
-    if not is_admin(m.from_user.id): return
-    msg = bot.send_message(
-        m.chat.id,
-        "➕ <b>ADD NEW ADMIN</b>\n\n"
-        "Send the user's Telegram ID or BOT ID.\n"
-        "The new admin will get access to the full Admin Panel."
-    )
-    bot.register_next_step_handler(msg, add_new_admin_process)
-
-
-def add_new_admin_process(m):
-    if not is_admin(m.from_user.id): return
-    raw = (m.text or "").strip()
-    uid = raw if raw in users else find_user_by_botid(raw)
-    if not uid or not str(uid).isdigit():
-        bot.send_message(m.chat.id, "❌ User not found. Send a valid Telegram ID or BOT ID.")
-        return
-    uid_int = int(uid)
-    if uid_int in ADMIN_IDS:
-        bot.send_message(m.chat.id, f"ℹ️ {admin_label(uid)} is already an admin.")
-        return
-    ADMIN_IDS.append(uid_int)
-    save_admin_ids()
-    users.setdefault(str(uid), {})
-    users[str(uid)]["is_admin"] = True
-    save_user(str(uid))
-    bot.send_message(m.chat.id, f"✅ {admin_label(uid)} ({uid}) is now an admin.")
-    try:
-        bot.send_message(uid_int, "👑 <b>You are now an admin.</b>\n\nYou can use the full Admin Panel.", reply_markup=admin_menu())
-    except Exception:
-        pass
-
-
-@bot.message_handler(func=lambda m: m.text == "➖ REMOVE ADMIN")
-def remove_admin_start(m):
-    if not is_admin(m.from_user.id): return
-    msg = bot.send_message(
-        m.chat.id,
-        "➖ <b>REMOVE ADMIN</b>\n\n"
-        "Send the admin's Telegram ID or BOT ID.\n"
-        "⚠️ The General/Root Admin cannot be removed."
-    )
-    bot.register_next_step_handler(msg, remove_admin_process)
-
-
-def remove_admin_process(m):
-    if not is_admin(m.from_user.id): return
-    raw = (m.text or "").strip()
-    uid = raw if raw in users else find_user_by_botid(raw)
-    try:
-        uid_int = int(uid) if uid else 0
-    except Exception:
-        uid_int = 0
-    if not uid_int or uid_int not in ADMIN_IDS:
-        bot.send_message(m.chat.id, "❌ That user is not an admin.")
-        return
-    if uid_int == ROOT_ADMIN_ID:
-        bot.send_message(m.chat.id, "🛡️ The General/Root Admin cannot be removed.")
-        return
-    ADMIN_IDS.remove(uid_int)
-    save_admin_ids()
-    if str(uid_int) in users:
-        users[str(uid_int)]["is_admin"] = False
-        save_user(str(uid_int))
-    bot.send_message(m.chat.id, f"✅ Admin {uid_int} has been removed.")
-    try:
-        bot.send_message(uid_int, "ℹ️ Your admin access has been removed.")
-    except Exception:
-        pass
-
-
-@bot.message_handler(func=lambda m: m.text == "💰 SEE BALANCE")
-def see_balance_start(m):
-    if not is_admin(m.from_user.id): return
-    msg = bot.send_message(
-        m.chat.id,
-        "💰 <b>SEE BALANCE — SEND TO ALL USERS</b>\n\n"
-        "Send the message template to deliver to every user.\n\n"
-        "Available placeholders:\n"
-        "<code>{balance}</code> = USD balance\n"
-        "<code>{username}</code> = username\n"
-        "<code>{name}</code> = first name\n"
-        "<code>{id}</code> = Telegram ID\n\n"
-        "Example:\n<code>You have ${balance} balance. Come use your balance.</code>"
-    )
-    bot.register_next_step_handler(msg, see_balance_process)
-
-
-def see_balance_process(m):
-    if not is_admin(m.from_user.id): return
-    template = (m.text or "").strip()
-    if not template:
-        bot.send_message(m.chat.id, "❌ Message cannot be empty.")
-        return
-    sent = 0
-    for uid, data in users.items():
-        bal = float(data.get("balance", 0.0) or 0.0)
-        username = data.get("username") or ""
-        name = data.get("first_name") or "there"
-        text = template.replace("{balance}", f"{bal:.2f}") \
-                       .replace("{username}", username) \
-                       .replace("{name}", name) \
-                       .replace("{id}", str(uid))
-        try:
-            bot.send_message(int(uid), text)
-            sent += 1
-        except Exception:
-            pass
-    bot.send_message(m.chat.id, f"✅ Balance message sent to {sent}/{len(users)} users.")
-
-
-@bot.message_handler(func=lambda m: m.text == "📊 SEE ALL BALANCE")
-def see_all_balance(m):
-    if not is_admin(m.from_user.id): return
-    rows = []
-    for uid, data in users.items():
-        username = data.get("username") or "N/A"
-        if not str(username).startswith("@") and username != "N/A":
-            username = "@" + str(username)
-        bal = float(data.get("balance", 0.0) or 0.0)
-        rows.append((username.lower(), username, uid, bal))
-    rows.sort(key=lambda x: x[3], reverse=True)
-    total = sum(r[3] for r in rows)
-    lines = [f"📊 <b>ALL USER BALANCES</b> ({len(rows)})", "", f"💰 Total: <b>${total:.2f}</b>", ""]
-    for i, (_, username, uid, bal) in enumerate(rows, 1):
-        lines.append(f"{i}. {username} — <b>${bal:.2f}</b> — <code>{uid}</code>")
-        if len(lines) >= 90:
-            try: bot.send_message(m.chat.id, "\n".join(lines), parse_mode="HTML")
-            except Exception: pass
-            lines = []
-    if lines:
-        try: bot.send_message(m.chat.id, "\n".join(lines), parse_mode="HTML")
-        except Exception: pass
-    if not rows:
-        bot.send_message(m.chat.id, "No users found.")
-
-
-@bot.message_handler(func=lambda m: m.text == "✏️ EDIT COSTUMER")
-def edit_customer_start(m):
-    if not is_admin(m.from_user.id): return
-    current = str(get_setting("customer_username", "@scholes1") or "@scholes1")
-    msg = bot.send_message(
-        m.chat.id,
-        f"✏️ <b>EDIT COSTUMER</b>\n\nCurrent customer: <b>{current}</b>\n\n"
-        "Send the new Telegram username, for example <code>@userkale</code>."
-    )
-    bot.register_next_step_handler(msg, edit_customer_process)
-
-
-def edit_customer_process(m):
-    if not is_admin(m.from_user.id): return
-    username = (m.text or "").strip()
-    if username.upper() == "CLEAR":
-        set_setting("customer_username", "")
-        bot.send_message(m.chat.id, "✅ Customer username cleared.")
-        return
-    username = username.lstrip("@").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
-        bot.send_message(m.chat.id, "❌ Invalid username. Use a Telegram username such as @userkale.")
-        return
-    username = "@" + username
-    set_setting("customer_username", username)
-    bot.send_message(m.chat.id, f"✅ Customer support updated to <b>{username}</b>.")
-
 
 # ================= YOUTUBE 30 MIN ADMIN CONTROL =================
 
@@ -1995,10 +1727,327 @@ def _is_video_file(path):
 def _is_audio_file(path):
     return os.path.splitext(path)[1].lower() in {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus"}
 
+def _download_limit_seconds(uid):
+    """Return the current admin-configurable duration limit for this user."""
+    if is_premium(uid):
+        minutes = int(get_setting("premium_max_minutes", PREMIUM_MAX_MINUTES_DEFAULT))
+    else:
+        minutes = int(get_setting("free_max_minutes", FREE_MAX_MINUTES_DEFAULT))
+    return max(1, minutes) * 60
+
+
+def _extract_youtube_video_id(link):
+    try:
+        u = urllib.parse.urlparse(link.strip())
+        host = (u.netloc or "").lower().split(":")[0]
+        path = u.path or ""
+        if host in {"youtu.be", "www.youtu.be"}:
+            return path.strip("/").split("/")[0] or None
+        if "youtube.com" in host or "youtube-nocookie.com" in host:
+            qs = urllib.parse.parse_qs(u.query)
+            if qs.get("v"): return qs["v"][0]
+            parts = [x for x in path.split("/") if x]
+            if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}: return parts[1]
+    except Exception:
+        pass
+    return None
+
+def _rapidapi_youtube_details(video_id):
+    if not RAPIDAPI_YT_KEY: raise RuntimeError("RAPIDAPI_YT_KEY is not configured.")
+    headers = {"X-RapidAPI-Key": RAPIDAPI_YT_KEY, "X-RapidAPI-Host": RAPIDAPI_YT_HOST, "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    r = requests.get(RAPIDAPI_YT_DETAILS_URL, params={"videoId": video_id}, headers=headers, timeout=RAPIDAPI_TIMEOUT)
+    if r.status_code == 429: raise RuntimeError("RapidAPI YouTube quota/rate limit reached.")
+    if r.status_code in (401,403): raise RuntimeError("RapidAPI YouTube authentication/subscription failed.")
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, dict): raise RuntimeError("RapidAPI returned an invalid response.")
+    return data
+
+def _rapid_walk(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values(): yield from _rapid_walk(v)
+    elif isinstance(obj, list):
+        for v in obj: yield from _rapid_walk(v)
+
+def _rapid_num(d, keys):
+    for k in keys:
+        v=d.get(k)
+        if isinstance(v,(int,float)): return float(v)
+        if isinstance(v,str):
+            m=re.search(r"\d+(?:\.\d+)?",v)
+            if m:
+                try:return float(m.group())
+                except:pass
+    return None
+
+def _rapid_url(d):
+    for k in ("url","downloadUrl","download_url","videoUrl","video_url","playbackUrl","playback_url","link"):
+        v=d.get(k)
+        if isinstance(v,str) and v.startswith(("http://","https://")): return v
+    return None
+
+def _rapid_formats(data):
+    out=[]; seen=set()
+    for d in _rapid_walk(data):
+        url=_rapid_url(d)
+        if not url or url in seen: continue
+        text=" ".join(str(d.get(k,"")) for k in ("type","mimeType","mime","quality","qualityLabel","format","container")).lower()
+        height=_rapid_num(d,("height","videoHeight")) or 0
+        width=_rapid_num(d,("width","videoWidth")) or 0
+        fps=_rapid_num(d,("fps","frameRate")) or 0
+        audio=any(x in text for x in ("audio","mp4a","m4a","opus"))
+        video=height>0 or any(x in text for x in ("video","mp4","webm","avc","h264"))
+        if video or audio:
+            seen.add(url); out.append({"url":url,"height":int(height),"width":int(width),"fps":fps,"audio":audio,"video":video,"text":text})
+    return out
+
+def _rapid_duration(data):
+    for d in _rapid_walk(data):
+        v=_rapid_num(d,("duration","durationSeconds","lengthSeconds","length"))
+        if v and 0<v<172800:return int(v)
+    return None
+
+def _rapid_choose(data, quality):
+    fs=[x for x in _rapid_formats(data) if x["video"]]
+    if not fs: raise RuntimeError("RapidAPI returned no downloadable video formats.")
+    target=2160 if str(quality)=="2160" else int(quality or 720)
+    under=[x for x in fs if x["height"] and x["height"]<=target]
+    pool=under or fs
+    pool.sort(key=lambda x:(0 if "mp4" in x["text"] else 1, abs((x["height"] or target)-target), 0 if x["audio"] else 1, -x["fps"]))
+    return pool[0]
+
+def _rapid_download(link,tmp_dir,quality,max_seconds):
+    vid=_extract_youtube_video_id(link)
+    if not vid: raise RuntimeError("Could not extract the YouTube video ID.")
+    data=_rapidapi_youtube_details(vid)
+    duration=_rapid_duration(data)
+    if duration and duration>max_seconds: raise RuntimeError(f"YouTube video is too long. Maximum is {max_seconds//60} minutes.")
+    chosen=_rapid_choose(data,quality)
+    path=os.path.join(tmp_dir,f"youtube_{vid}.mp4")
+    max_bytes=max(1,_download_max_mb(str(chat_id)))*1024*1024
+    with requests.get(chosen["url"],headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as r:
+        r.raise_for_status(); total=0
+        with open(path,"wb") as f:
+            for chunk in r.iter_content(chunk_size=1024*256):
+                if not chunk: continue
+                total+=len(chunk)
+                if total>max_bytes: raise RuntimeError("Downloaded file is larger than the temporary 2GB safety limit.")
+                f.write(chunk)
+    return [path]
+
+def _instagram_api_config():
+    """Load Instagram downloader API config from MongoDB first, env vars second."""
+    return (
+        str(get_setting("instagram_api_url", RAPIDAPI_IG_URL) or "").strip(),
+        str(get_setting("instagram_api_host", RAPIDAPI_IG_HOST) or "").strip(),
+        str(get_setting("instagram_api_key", RAPIDAPI_IG_KEY) or "").strip(),
+    )
+
+def _instagram_api_enabled():
+    url,host,key=_instagram_api_config()
+    return bool(url and host and key)
+
+def _instagram_api_walk(obj):
+    if isinstance(obj,dict):
+        yield obj
+        for v in obj.values(): yield from _instagram_api_walk(v)
+    elif isinstance(obj,list):
+        for v in obj: yield from _instagram_api_walk(v)
+
+def _instagram_api_urls(data):
+    """Accept common RapidAPI Instagram response shapes: url/downloadUrl/mediaUrl/items/downloads."""
+    out=[]; seen=set()
+    for d in _instagram_api_walk(data):
+        for k in ("url","downloadUrl","download_url","mediaUrl","media_url","videoUrl","video_url","imageUrl","image_url","link"):
+            v=d.get(k) if isinstance(d,dict) else None
+            if isinstance(v,str) and v.startswith(("http://","https://")) and v not in seen:
+                low=v.lower(); seen.add(v)
+                ext=".mp4" if any(x in low for x in (".mp4","video")) else ".jpg"
+                out.append((v,ext))
+    return out
+
+def _instagram_api_download(link,tmp_dir):
+    """Download Instagram media through the exact RapidAPI endpoint supplied by the owner.
+    The API is GET /download?url=<instagram_url>.
+    """
+    url,host,key=_instagram_api_config()
+    if not (url and host and key):
+        raise RuntimeError("Instagram RapidAPI is not configured. Admin must save URL, Host and API key.")
+    headers={
+        "x-rapidapi-host":host,
+        "x-rapidapi-key":key,
+        "Accept":"application/json",
+        "User-Agent":"Mozilla/5.0"
+    }
+    try:
+        r=requests.get(url,params={"url":link},headers=headers,timeout=RAPIDAPI_TIMEOUT)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Instagram RapidAPI network error: {e}")
+    if r.status_code in (401,403):
+        raise RuntimeError("Instagram RapidAPI authentication/subscription failed. Check the API key and RapidAPI plan.")
+    if r.status_code==429:
+        raise RuntimeError("Instagram RapidAPI quota/rate limit reached.")
+    if r.status_code==404:
+        raise RuntimeError("Instagram RapidAPI endpoint was not found. Check the saved endpoint URL.")
+    r.raise_for_status()
+    try:
+        data=r.json()
+    except ValueError:
+        raise RuntimeError("Instagram RapidAPI returned non-JSON data.")
+    links=_instagram_api_urls(data)
+    if not links:
+        raise RuntimeError("Instagram RapidAPI returned no downloadable media URL. Check the API response/schema.")
+    paths=[]
+    for i,(media_url,ext) in enumerate(links[:20]):
+        path=os.path.join(tmp_dir,f"instagram_{i}{ext}")
+        try:
+            with requests.get(media_url,headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as rr:
+                if rr.status_code in (401,403): raise RuntimeError("The Instagram media URL rejected the download request.")
+                rr.raise_for_status()
+                total=0
+                with open(path,"wb") as f:
+                    for c in rr.iter_content(1024*256):
+                        if not c: continue
+                        total+=len(c)
+                        if total > 2*1024*1024*1024:
+                            raise RuntimeError("Instagram media exceeds the 2 GB safety ceiling.")
+                        f.write(c)
+            paths.append(path)
+        except Exception:
+            if os.path.exists(path):
+                try: os.remove(path)
+                except Exception: pass
+            raise
+    return paths
+
+def _cobalt_headers():
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if COBALT_API_KEY:
+        headers["Authorization"] = f"Api-Key {COBALT_API_KEY}"
+    return headers
+
+
+def _cobalt_enabled():
+    return bool(COBALT_API_URL)
+
+
+def _cobalt_process(link, tmp_dir, quality="720", mode="auto"):
+    """Resolve a public media URL through a Cobalt instance and save returned media."""
+    if not _cobalt_enabled():
+        raise RuntimeError("Cobalt is not configured. Set COBALT_API_URL to your own Cobalt instance.")
+
+    q = str(quality or "720")
+    if q not in {"144", "240", "360", "480", "720", "1080", "1440", "2160", "4320", "max"}:
+        q = "720"
+    payload = {
+        "url": link,
+        "videoQuality": q,
+        "downloadMode": mode,
+        "filenameStyle": "basic",
+        "alwaysProxy": True,
+        "youtubeVideoCodec": "h264",
+        "disableMetadata": False,
+        "youtubeHLS": True,
+    }
+    r = requests.post(COBALT_API_URL + "/", json=payload, headers=_cobalt_headers(), timeout=COBALT_TIMEOUT)
+    r.raise_for_status()
+    data = r.json()
+    status = data.get("status")
+
+    if status == "error":
+        err = data.get("error") or {}
+        code = err.get("code", "unknown") if isinstance(err, dict) else str(err)
+        context = err.get("context", {}) if isinstance(err, dict) else {}
+        limit = context.get("limit") if isinstance(context, dict) else None
+        extra = f" (limit: {limit}s)" if limit else ""
+        raise RuntimeError(f"Cobalt error: {code}{extra}")
+
+    items = []
+    if status in {"tunnel", "redirect"} and data.get("url"):
+        items = [{"type": "video", "url": data["url"], "filename": data.get("filename") or "download.mp4"}]
+    elif status == "picker":
+        items = list(data.get("picker") or [])
+        if not items:
+            raise RuntimeError("Cobalt returned an empty media picker.")
+    else:
+        raise RuntimeError(f"Unsupported Cobalt response: {status}")
+
+    saved = []
+    for index, item in enumerate(items[:20]):
+        url = item.get("url")
+        if not url:
+            continue
+        kind = item.get("type", "video")
+        filename = item.get("filename") or os.path.basename(url.split("?", 1)[0]) or f"media_{index}.mp4"
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename)[:180] or f"media_{index}.mp4"
+        ext = os.path.splitext(filename)[1].lower()
+        if not ext:
+            ext = {"photo": ".jpg", "gif": ".gif", "video": ".mp4"}.get(kind, ".mp4")
+            filename += ext
+        path = os.path.join(tmp_dir, f"{index:02d}_{filename}")
+
+        with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=COBALT_TIMEOUT) as dl:
+            dl.raise_for_status()
+            total = 0
+            max_bytes = max(1, MAX_UPLOAD_MB) * 1024 * 1024
+            with open(path, "wb") as f:
+                for chunk in dl.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise RuntimeError(f"Downloaded file is larger than Telegram limit ({MAX_UPLOAD_MB} MB).")
+                    f.write(chunk)
+        saved.append(path)
+    if not saved:
+        raise RuntimeError("Cobalt returned no downloadable media.")
+    return saved
+
+
+def _cobalt_health():
+    if not _cobalt_enabled():
+        return False, "COBALT_API_URL is not configured."
+    try:
+        r = requests.get(COBALT_API_URL + "/", headers=_cobalt_headers(), timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        c = data.get("cobalt", {})
+        services = c.get("services") or []
+        return True, f"Cobalt {c.get('version','unknown')} • {len(services)} services • duration limit {c.get('durationLimit','?')}s"
+    except Exception as e:
+        return False, str(e)[:180]
+
+
+def _is_trial_active(uid):
+    """True only while the current Premium access came from a trial campaign."""
+    uid=str(uid); u=users.get(uid,{})
+    if not u.get("trial_used"): return False
+    until=u.get("premium_until")
+    try:
+        dt=until if isinstance(until,datetime) else datetime.fromisoformat(str(until).replace("Z","+00:00"))
+        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+        return dt > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+def _download_max_mb(uid):
+    """Admin-controlled per-account upload/download ceiling, persisted in MongoDB."""
+    uid=str(uid)
+    if _is_trial_active(uid):
+        return max(1,int(get_setting("trial_max_mb",49) or 49))
+    if is_premium(uid):
+        return max(1,int(get_setting("premium_max_mb",49) or 49))
+    return max(1,int(get_setting("free_max_mb",49) or 49))
+
+def _download_max_mb_label(uid):
+    if _is_trial_active(uid): return "TRIAL"
+    return "PREMIUM" if is_premium(uid) else "FREE"
+
 def _safe_send_file(chat_id, path, caption="", reply_markup=None):
     size_mb = os.path.getsize(path) / (1024 * 1024)
-    if size_mb > MAX_UPLOAD_MB:
-        raise RuntimeError(f"Telegram upload limit exceeded: {size_mb:.1f} MB > {MAX_UPLOAD_MB} MB. Choose a lower quality/smaller media.")
+    if size_mb > _download_max_mb(chat_id):
+        raise RuntimeError(f"Telegram upload limit exceeded: {size_mb:.1f} MB > {_download_max_mb(chat_id)} MB. Choose a lower quality/smaller media.")
     with open(path, "rb") as f:
         if _is_image_file(path):
             bot.send_photo(chat_id, f, caption=caption, reply_markup=reply_markup)
@@ -2053,138 +2102,182 @@ def premium_until_text(uid):
         return str(until)
 
 def youtube_is_short(link, info=None):
-    if info and info.get("webpage_url_domain"):
+    """Return True for YouTube Shorts URLs or metadata identified as a short."""
+    try:
+        low = (link or "").lower()
+        if re.search(r"(?:youtube\.com/(?:shorts|shorts/)|youtube\.com/shorts/)", low):
+            return True
+        if info:
+            url = str(info.get("webpage_url") or info.get("original_url") or "").lower()
+            if "/shorts/" in url:
+                return True
+            if info.get("ie_key", "").lower() == "youtube" and info.get("channel_is_verified") is not None:
+                # Do not infer a Short only from duration; many normal videos are <60s.
+                pass
+    except Exception:
         pass
-    return bool(re.search(r"youtube\.com/shorts/", link.lower()))
+    return False
+
 
 def _quality_format(uid, quality=None):
     if is_premium(uid) and quality in PREMIUM_QUALITY_FORMATS:
         return PREMIUM_QUALITY_FORMATS[quality]
     return FREE_QUALITY_FORMAT
 
+
+def _youtube_extractor_args():
+    """Build optional yt-dlp YouTube extractor arguments from environment variables."""
+    args = {}
+    if YOUTUBE_PLAYER_CLIENT or YOUTUBE_PO_TOKEN:
+        client = YOUTUBE_PLAYER_CLIENT or "mweb"
+        yt_args = {"player_client": [client]}
+        if YOUTUBE_PO_TOKEN:
+            yt_args["po_token"] = [f"{client}.player+{YOUTUBE_PO_TOKEN}"]
+        args["youtube"] = yt_args
+    return args
+
+
+def _youtube_duration_filter(max_duration):
+    """Reject YouTube entries above the configured duration without a second metadata request."""
+    def _filter(info, *, incomplete=False):
+        if incomplete:
+            return None
+        duration = info.get("duration")
+        if duration and duration > max_duration:
+            return f"YouTube video is too long. Maximum is {max_duration // 60} minutes."
+        return None
+    return _filter
+
+
+def _instagram_opts(base_opts):
+    """Options that make Instagram extraction more resilient to current API changes."""
+    opts = dict(base_opts)
+    # Current yt-dlp Instagram extractor uses the web app ID by default and has a
+    # GraphQL logged-out fallback. Keeping the explicit web app ID avoids old
+    # installations accidentally selecting an unsupported app ID.
+    opts["extractor_args"] = {"instagram": {"app_id": ["web"]}}
+    opts["noplaylist"] = True
+    return opts
+
+
+def _is_retryable_instagram_error(exc):
+    text = str(exc).lower()
+    markers = (
+        "http error 404", "video info extraction failed", "no csrf token",
+        "requested content is not available", "rate-limit", "login required",
+        "unable to extract", "instagram api is not granting access",
+    )
+    return any(x in text for x in markers)
+
+
+def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration):
+    """Download once, with Instagram cookie fallback and YouTube Shorts-safe settings."""
+    common = dict(base_opts)
+    common["outtmpl"] = os.path.join(tmp_dir, "%(playlist_index&{}-)s%(id)s.%(ext)s")
+    common["format"] = fmt
+    common["merge_output_format"] = "mp4"
+    common.pop("max_filesize", None)
+    common["overwrites"] = False
+    common["continuedl"] = True
+    common["ignoreerrors"] = False
+    common["noplaylist"] = True
+
+    if platform == "youtube":
+        yt_args = _youtube_extractor_args()
+        if yt_args:
+            common["extractor_args"] = yt_args
+        common["match_filter"] = _youtube_duration_filter(max_duration)
+
+    if platform == "instagram":
+        common = _instagram_opts(common)
+
+    attempts = [common]
+    if platform == "instagram" and common.get("cookiefile"):
+        # Instagram can invalidate session cookies or return 404 with a stale
+        # cookie jar. Retry the public GraphQL path without cookies.
+        public_opts = dict(common)
+        public_opts.pop("cookiefile", None)
+        attempts.append(public_opts)
+
+    last_error = None
+    for idx, opts in enumerate(attempts):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(link, download=True)
+        except Exception as exc:
+            last_error = exc
+            if not (platform == "instagram" and idx + 1 < len(attempts) and _is_retryable_instagram_error(exc)):
+                raise
+            print("Instagram authenticated extraction failed; retrying public extractor:", repr(exc))
+    raise last_error or RuntimeError("yt-dlp download failed")
+
+
 def download_media(chat_id, link, message_id, quality=None):
-    platform = detect_platform(link)
-    if platform == "unknown":
-        bot.edit_message_text("❌ Unsupported or invalid link. Supported: TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter, YouTube and premium extra platforms.", chat_id, message_id)
-        return
-
-    uid_str = str(chat_id)
-    premium = is_premium(uid_str)
-    max_duration = MAX_YOUTUBE_DURATION
-    if platform == "youtube" and (premium or users.get(uid_str, {}).get("youtube_30m", False)):
-        max_duration = 1800
-
-    tmp_dir = os.path.join("downloads", uuid.uuid4().hex)
-    os.makedirs(tmp_dir, exist_ok=True)
-    cookie_args = {}
-    if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
-        cookie_args["cookiefile"] = YTDLP_COOKIES_FILE
-
-    base_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": False,
-        "retries": 3,
-        "fragment_retries": 3,
-        "socket_timeout": 30,
-        "http_headers": {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
-        "concurrent_fragment_downloads": 4 if premium else 1,
-        **cookie_args
-    }
-
+    platform=detect_platform(link)
+    if platform=="unknown":
+        bot.edit_message_text("❌ Unsupported or invalid link. Supported: TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and YouTube.",chat_id,message_id); return
+    uid=str(chat_id); premium=is_premium(uid); max_seconds=_download_limit_seconds(uid)
+    quality=quality or (users.get(uid,{}).get("premium_quality") if premium else "720") or "720"
+    tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     try:
-        send_action(chat_id, "typing")
-        try:
-            bot.edit_message_text("✍️ Preparing download...", chat_id, message_id)
-        except Exception:
-            pass
-
-        # For YouTube, inspect first so we can enforce limits and give a clean premium message.
-        with yt_dlp.YoutubeDL({**base_opts, "extract_flat": True}) as ydl:
-            info = ydl.extract_info(link, download=False)
-        if platform == "youtube":
-            duration = info.get("duration") if info else None
-            if duration and duration > max_duration:
-                bot.edit_message_text(f"❌ YouTube video is too long. Maximum is {max_duration // 60} minutes.", chat_id, message_id)
-                return
-
-        send_action(chat_id, "upload_video")
-        fmt = _quality_format(uid_str, quality)
-        # TikTok photo slides need separate image files; do not force a video-only format.
-        if platform == "tiktok":
-            fmt = "bestvideo*+bestaudio/best"
-
-        ydl_opts = {
-            **base_opts,
-            "outtmpl": os.path.join(tmp_dir, "%(playlist_index&{}-)s%(id)s.%(ext)s"),
-            "format": fmt,
-            "merge_output_format": "mp4",
-            "max_filesize": max(MAX_UPLOAD_MB, 49) * 1024 * 1024,
-            "overwrites": False,
-            "continuedl": True,
-            "ignoreerrors": False,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link, download=True)
-
-        files = _collect_downloaded_files(tmp_dir)
-        media_files = [p for p in files if _is_image_file(p) or _is_video_file(p) or _is_audio_file(p)]
-        if not media_files:
-            raise RuntimeError("No downloadable media was produced.")
-
-        sent = 0
-        for path in media_files[:50 if platform == "tiktok" else 20]:
-            if _is_image_file(path):
-                send_action(chat_id, "upload_photo")
-            elif _is_audio_file(path):
-                send_action(chat_id, "upload_audio")
-            else:
-                send_action(chat_id, "upload_video")
-            reply_markup = None
+        bot.edit_message_text("✍️ Preparing download...",chat_id,message_id)
+    except: pass
+    try:
+        media=[]
+        provider="yt-dlp"
+        if platform=="youtube" and RAPIDAPI_YT_KEY:
+            try:
+                media=_rapid_download(link,tmp,quality,max_seconds); provider="rapidapi-youtube"
+            except Exception as e:
+                print("RapidAPI YouTube fallback:",repr(e))
+        if not media and platform=="instagram" and _instagram_api_enabled():
+            try:
+                media=_instagram_api_download(link,tmp); provider="rapidapi-instagram"
+            except Exception as e:
+                print("RapidAPI Instagram fallback:",repr(e))
+        if not media and platform=="instagram" and _cobalt_enabled():
+            try:
+                media=_cobalt_process(link,tmp,quality=quality); provider="cobalt"
+            except Exception as e: print("Cobalt Instagram fallback:",repr(e))
+        if not media:
+            cookie_args={}
+            if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE): cookie_args["cookiefile"]=YTDLP_COOKIES_FILE
+            opts={"quiet":True,"no_warnings":True,"noplaylist":True,"retries":5,"fragment_retries":5,"extractor_retries":3,"socket_timeout":45,"http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},"concurrent_fragment_downloads":4 if premium else 1,**cookie_args}
+            with yt_dlp.YoutubeDL({**opts,"extract_flat":True}) as ydl: info=ydl.extract_info(link,download=False)
+            if platform=="youtube" and info and info.get("duration") and info["duration"]>max_seconds: raise RuntimeError(f"YouTube video is too long. Maximum is {max_seconds//60} minutes.")
+            fmt=_quality_format(uid,quality)
+            if platform=="tiktok": fmt="bestvideo*+bestaudio/best"
+            with yt_dlp.YoutubeDL({**opts,"outtmpl":os.path.join(tmp,"%(id)s.%(ext)s"),"format":fmt,"merge_output_format":"mp4","max_filesize":max(_download_max_mb(uid),49)*1024*1024}) as ydl: ydl.extract_info(link,download=True)
+            media=[p for p in _collect_downloaded_files(tmp) if _is_image_file(p) or _is_video_file(p) or _is_audio_file(p)]
+        if not media: raise RuntimeError("No downloadable media was produced.")
+        sent=0
+        for path in media[:50 if platform=="tiktok" else 20]:
+            markup=None
             if _is_video_file(path):
-                music_token = uuid.uuid4().hex[:24]
-                music_pending[music_token] = {"uid": uid_str, "link": link, "created": time.time()}
-                reply_markup = InlineKeyboardMarkup()
-                reply_markup.add(InlineKeyboardButton("🎵 MUSIC", callback_data=f"music:{music_token}"))
-            _safe_send_file(chat_id, path, DOWNLOAD_CAPTION, reply_markup=reply_markup)
-            sent += 1
-
-        try:
-            bot.delete_message(chat_id, message_id)
-        except Exception:
-            pass
-
-        videos_data["total"] = videos_data.get("total", 0) + sent
-        videos_data.setdefault("platforms", {}).setdefault(platform, 0)
-        videos_data["platforms"][platform] += sent
-        videos_data.setdefault("users", {}).setdefault(uid_str, 0)
-        videos_data["users"][uid_str] += sent
-        save_videos()
-        log_activity(uid_str, "download", {"platform": platform, "count": sent})
-        if videos_data.get("feedback_enabled", False):
-            send_feedback_request(chat_id, platform, uuid.uuid4().hex)
+                token=uuid.uuid4().hex[:24]; music_pending[token]={"uid":uid,"link":link,"created":time.time()}; markup=InlineKeyboardMarkup(); markup.add(InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}"))
+            _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup); sent+=1
+        try: bot.delete_message(chat_id,message_id)
+        except: pass
+        videos_data["total"]=videos_data.get("total",0)+sent; videos_data.setdefault("platforms",{}).setdefault(platform,0); videos_data["platforms"][platform]+=sent; videos_data.setdefault("users",{}).setdefault(uid,0); videos_data["users"][uid]+=sent; save_videos(); log_activity(uid,"download",{"platform":platform,"count":sent,"provider":provider})
     except Exception as e:
-        print(f"Download error [{platform}] {link}: {repr(e)}")
-        err = str(e)
-        friendly = "❌ Download failed. Please try again."
-        if platform == "youtube" and ("Sign in to confirm" in err or "not a bot" in err or "cookies" in err.lower()):
-            friendly = "❌ YouTube is not available to download right now.\n\n💎 Open Premium for higher-quality downloads and extended YouTube access."
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("💎 OPEN PREMIUM", callback_data="premium_menu"))
-            try:
-                bot.edit_message_text(friendly, chat_id, message_id, reply_markup=kb)
-            except Exception:
-                bot.send_message(chat_id, friendly, reply_markup=kb)
-        else:
-            try:
-                bot.edit_message_text(friendly, chat_id, message_id)
-            except Exception:
-                try:
-                    bot.send_message(chat_id, friendly)
-                except Exception:
-                    pass
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        print(f"Download error [{platform}] {link}: {e!r}")
+        msg="❌ Download failed. Please try again."
+        if "too long" in str(e).lower(): msg=f"❌ {e}"
+        try: bot.edit_message_text(msg,chat_id,message_id)
+        except:
+            try: bot.send_message(chat_id,msg)
+            except: pass
+    finally: shutil.rmtree(tmp,ignore_errors=True)
+
+@bot.message_handler(func=lambda m: m.text == "📡 RAPIDAPI STATUS")
+def rapidapi_status_handler(m):
+    if not is_admin(m.from_user.id): return
+    if not RAPIDAPI_YT_KEY:
+        bot.send_message(m.chat.id,"❌ RAPIDAPI_YT_KEY is not configured."); return
+    try:
+        _rapidapi_youtube_details("dQw4w9WgXcQ")
+        bot.send_message(m.chat.id,"✅ RapidAPI YouTube is responding.")
+    except Exception as e: bot.send_message(m.chat.id,f"❌ RapidAPI failed: {str(e)[:700]}")
 
 # ================= MUSIC / MP3 CONVERTER =================
 def _cleanup_music_pending():
@@ -2220,14 +2313,12 @@ def convert_link_to_mp3(chat_id, link, status_message_id):
         if not mp3_files:
             raise RuntimeError("MP3 file was not created. Make sure FFmpeg is installed.")
         path = mp3_files[0]
-        if os.path.getsize(path) > MAX_UPLOAD_MB * 1024 * 1024:
+        if os.path.getsize(path) > _download_max_mb(chat_id) * 1024 * 1024:
             raise RuntimeError("The MP3 is too large for Telegram upload.")
         send_action(chat_id, "upload_audio")
         info = info or {}
         title = info.get("track") or info.get("title") or "Unknown title"
-        artist = info.get("artist") or info.get("creator") or info.get("album_artist") or info.get("uploader") or info.get("channel")
-        if not artist:
-            artist = "Original Sound"
+        artist = info.get("artist") or info.get("creator") or info.get("uploader") or info.get("channel") or "Unknown artist"
         caption = f"🎵 {title}\n👤 Artist: {artist}\n\n{DOWNLOAD_CAPTION}"
         with open(path, "rb") as audio:
             bot.send_audio(chat_id, audio, caption=caption, title=title, performer=artist)
@@ -2263,7 +2354,7 @@ def music_callback_handler(call):
 @bot.message_handler(func=lambda m: m.text == "🎵 MUSIC")
 def music_menu_button(m):
     if bot_locked_guard(m) or banned_guard(m): return
-    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3 and show the song title and artist. If artist metadata is missing, it will be labeled <b>Original Sound</b>.")
+    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3 and show the song title and artist. If artist metadata is missing, it will be shown as <b>Unknown artist</b>.")
 
 # ================= START HANDLER =================
 
@@ -2275,7 +2366,6 @@ def start_handler(message):
         users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
         save_user(uid)
     users[uid].setdefault("currency","USD")
-    users[uid].setdefault("premium_quality","1080")
     users[uid].setdefault("first_name", message.from_user.first_name or "there")
     users[uid]["first_name"] = message.from_user.first_name or users[uid].get("first_name") or "there"
     users[uid]["username"] = message.from_user.username or users[uid].get("username") or ""
@@ -2527,9 +2617,7 @@ def customer_handler(m):
     if bot_locked_guard(m) or banned_guard(m):
         return
     try:
-        customer = str(get_setting("customer_username", "@scholes1") or "@scholes1").strip()
-        if customer and not customer.startswith("@"): customer = "@" + customer
-        bot.send_message(m.chat.id, f"☎️ Customer Support:\n{customer}")
+        bot.send_message(m.chat.id, "☎️ Customer Support:\n@scholes1")
     except: pass
 
 @bot.message_handler(func=lambda m: m.text == "🤖CUSTOMER AI")
@@ -2894,6 +2982,125 @@ def stats_handler(m):
     try:
         bot.send_message(m.chat.id, msg)
     except: pass
+
+@bot.message_handler(func=lambda m: m.text == "⏱️ FREE MAX MIN")
+def free_max_minutes_start(m):
+    if not is_admin(m.from_user.id): return
+    current = int(get_setting("free_max_minutes", FREE_MAX_MINUTES_DEFAULT))
+    msg = bot.send_message(m.chat.id, f"⏱️ Current FREE limit: {current} minutes\n\nSend new maximum minutes for FREE users (example: 10):")
+    bot.register_next_step_handler(msg, free_max_minutes_process)
+
+
+def free_max_minutes_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        minutes = int((m.text or "").strip())
+        if minutes < 1 or minutes > 1440: raise ValueError
+        set_setting("free_max_minutes", minutes)
+        bot.send_message(m.chat.id, f"✅ FREE maximum download duration set to {minutes} minutes.")
+    except Exception:
+        bot.send_message(m.chat.id, "❌ Enter a whole number from 1 to 1440 minutes.")
+
+
+@bot.message_handler(func=lambda m: m.text == "⏱️ PREMIUM MAX MIN")
+def premium_max_minutes_start(m):
+    if not is_admin(m.from_user.id): return
+    current = int(get_setting("premium_max_minutes", PREMIUM_MAX_MINUTES_DEFAULT))
+    msg = bot.send_message(m.chat.id, f"⏱️ Current PREMIUM limit: {current} minutes\n\nSend new maximum minutes for PREMIUM users (example: 120):")
+    bot.register_next_step_handler(msg, premium_max_minutes_process)
+
+
+def premium_max_minutes_process(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        minutes = int((m.text or "").strip())
+        if minutes < 1 or minutes > 1440: raise ValueError
+        set_setting("premium_max_minutes", minutes)
+        bot.send_message(m.chat.id, f"✅ PREMIUM maximum download duration set to {minutes} minutes.")
+    except Exception:
+        bot.send_message(m.chat.id, "❌ Enter a whole number from 1 to 1440 minutes.")
+
+
+@bot.message_handler(func=lambda m: m.text == "📦 FREE MAX MB")
+def admin_free_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("free_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>FREE MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for FREE users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_free_max_mb_step)
+
+def admin_free_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("free_max_mb",v); bot.send_message(m.chat.id,f"✅ FREE max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "📦 TRIAL MAX MB")
+def admin_trial_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("trial_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>TRIAL MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for Trial users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_trial_max_mb_step)
+
+def admin_trial_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("trial_max_mb",v); bot.send_message(m.chat.id,f"✅ TRIAL max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "📦 PREMIUM MAX MB")
+def admin_premium_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("premium_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>PREMIUM MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for Premium users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_premium_max_mb_step)
+
+def admin_premium_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("premium_max_mb",v); bot.send_message(m.chat.id,f"✅ PREMIUM max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "⚙️ DOWNLOAD LIMITS")
+def admin_download_limits(m):
+    if not is_admin(m.from_user.id): return
+    fm=int(get_setting("free_max_minutes",FREE_MAX_MINUTES_DEFAULT)); pm=int(get_setting("premium_max_minutes",PREMIUM_MAX_MINUTES_DEFAULT))
+    fmb=int(get_setting("free_max_mb",49)); tmb=int(get_setting("trial_max_mb",49)); pmb=int(get_setting("premium_max_mb",49))
+    bot.send_message(m.chat.id,f"⚙️ <b>DOWNLOAD LIMITS</b>\n\n🆓 FREE: {fm} min / {fmb} MB\n🎁 TRIAL: {tmb} MB\n💎 PREMIUM: {pm} min / {pmb} MB\n\nAll values are stored in MongoDB and controlled from Admin Panel.")
+
+@bot.message_handler(func=lambda m: m.text == "📸 INSTAGRAM API")
+def admin_instagram_api_setup(m):
+    if not is_admin(m.from_user.id): return
+    url,host,key=_instagram_api_config(); mask=("••••"+key[-4:] if len(key)>4 else ("set" if key else "not set"))
+    msg=bot.send_message(m.chat.id,f"📸 <b>Instagram RapidAPI Setup</b>\n\nCurrent URL: <code>{html.escape(url or 'not set')}</code>\nHost: <code>{html.escape(host or 'not set')}</code>\nKey: <code>{mask}</code>\n\nSend in ONE message:\n<code>URL | HOST | API_KEY</code>\n\nExample: <code>https://example.p.rapidapi.com/download | example.p.rapidapi.com | YOUR_KEY</code>")
+    bot.register_next_step_handler(msg,admin_instagram_api_setup_step)
+
+def admin_instagram_api_setup_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        parts=[x.strip() for x in (m.text or '').split('|')]
+        if len(parts)!=3 or not parts[0].startswith('http') or not parts[1] or not parts[2]: raise ValueError
+        set_setting('instagram_api_url',parts[0]); set_setting('instagram_api_host',parts[1]); set_setting('instagram_api_key',parts[2])
+        bot.send_message(m.chat.id,"✅ Instagram RapidAPI configuration saved in MongoDB. It is no longer required to put these settings in environment variables.")
+    except Exception: bot.send_message(m.chat.id,"❌ Format: URL | HOST | API_KEY")
+
+@bot.message_handler(func=lambda m: m.text == "📸 INSTAGRAM STATUS")
+def admin_instagram_status(m):
+    if not is_admin(m.from_user.id): return
+    url,host,key=_instagram_api_config(); status='🟢 CONFIGURED' if url and host and key else '🔴 NOT CONFIGURED'
+    bot.send_message(m.chat.id,f"📸 <b>INSTAGRAM API STATUS</b>\n\n{status}\nURL: <code>{html.escape(url or '—')}</code>\nHost: <code>{html.escape(host or '—')}</code>\nKey: {'set' if key else 'missing'}")
+
+@bot.message_handler(func=lambda m: m.text == "🛰️ COBALT STATUS")
+def cobalt_status_admin(m):
+    if not is_admin(m.from_user.id): return
+    ok, info = _cobalt_health()
+    free_m = int(get_setting("free_max_minutes", FREE_MAX_MINUTES_DEFAULT))
+    prem_m = int(get_setting("premium_max_minutes", PREMIUM_MAX_MINUTES_DEFAULT))
+    status = "🟢 ONLINE" if ok else "🔴 OFFLINE / NOT CONFIGURED"
+    bot.send_message(m.chat.id, f"🛰️ <b>COBALT STATUS</b>\n\n{status}\n{html.escape(str(info))}\n\n⏱️ FREE: {free_m} min\n💎 PREMIUM: {prem_m} min\n\nCOBALT_API_URL: {'configured' if COBALT_API_URL else 'not configured'}")
+
 
 @bot.message_handler(func=lambda m: m.text == "📉 CHANGE MINIMUM")
 def change_min_start(m):
@@ -3354,7 +3561,6 @@ def import_users_process(m):
                 "quick_access": False,
                 "youtube_30m": False,
                 "premium_until": None,
-                "premium_quality": "1080",
                 "premium_warning_sent": False,
                 "trial_used": False,
                 "trial_pending": False,
@@ -3622,7 +3828,7 @@ def grant_premium_days(uid,days,reason="admin"):
     try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now
     except Exception: old_dt=now
     if old_dt.tzinfo is None: old_dt=old_dt.replace(tzinfo=timezone.utc)
-    until=max(now,old_dt)+timedelta(days=int(days)); users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; save_user(uid)
+    until=max(now,old_dt)+timedelta(days=int(days)); users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; users[uid]["premium_source"]=("trial" if "trial" in str(reason).lower() else "paid"); save_user(uid)
     premium_logs_col.insert_one({"user_id":uid,"days":int(days),"until":until.isoformat(),"time":now.isoformat(),"type":reason}); log_activity(uid,"premium_grant",{"days":days,"reason":reason})
     return until
 
@@ -3650,27 +3856,13 @@ def premium_plan_keyboard():
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
-def premium_quality_keyboard(current="1080"):
-    kb = InlineKeyboardMarkup(row_width=2)
-    labels = [("720", "720p"), ("1080", "1080p"), ("1440", "1440p"), ("2160", "4K")]
-    for value, label in labels:
-        prefix = "✅ " if str(current) == value else ""
-        kb.add(InlineKeyboardButton(f"{prefix}{label}", callback_data=f"setquality:{value}"))
-    kb.add(InlineKeyboardButton("🔙 Back to Premium", callback_data="premium_menu"))
-    return kb
-
-
 def send_quality_menu(chat_id, link):
-    """Backward-compatible helper: store the link and let the user pick once."""
     uid = str(chat_id)
-    current = str(users.get(uid, {}).get("premium_quality", "1080"))
     premium_quality_pending[uid] = {"link": link, "created": time.time()}
-    bot.send_message(
-        chat_id,
-        f"💎 <b>Premium Quality</b>\n\nCurrent quality: <b>{'4K' if current == '2160' else current + 'p'}</b>\n"
-        "Choose a new quality if you want to change your saved Premium quality.",
-        reply_markup=premium_quality_keyboard(current)
-    )
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("720p", callback_data="quality:720"), InlineKeyboardButton("1080p", callback_data="quality:1080"))
+    kb.add(InlineKeyboardButton("1440p", callback_data="quality:1440"), InlineKeyboardButton("4K", callback_data="quality:2160"))
+    bot.send_message(chat_id, "💎 <b>Premium Quality</b>\n\nChoose your download quality:", reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "💎 PREMIUM")
 def premium_button(m):
@@ -3686,11 +3878,9 @@ def premium_menu_callback(call):
 def show_premium_menu(chat_id):
     uid = str(chat_id)
     if is_premium(uid):
-        current_q = str(users.get(uid, {}).get("premium_quality", "1080"))
-        q_label = "4K" if current_q == "2160" else f"{current_q}p"
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(f"🎥 QUALITY: {q_label}", callback_data="premium_quality_info"))
-        bot.send_message(chat_id, premium_features_text() + f"\n\n🎥 <b>Saved Quality:</b> {q_label}\n✅ <b>Active until:</b> {premium_until_text(uid)}", reply_markup=kb)
+        kb.add(InlineKeyboardButton("🎥 Choose Quality", callback_data="premium_quality_info"))
+        bot.send_message(chat_id, premium_features_text() + f"\n\n✅ <b>Active until:</b> {premium_until_text(uid)}", reply_markup=kb)
     else:
         if not users.get(uid, {}).get("verified", False):
             kb = InlineKeyboardMarkup()
@@ -3744,6 +3934,7 @@ def premium_confirm_callback(call):
     users[uid]["balance"] = round(bal - price, 8)
     users[uid]["premium_until"] = until.isoformat()
     users[uid]["premium_warning_sent"] = False
+    users[uid]["premium_source"] = "paid"
     save_user(uid)
     premium_logs_col.insert_one({"user_id": uid, "months": int(months), "price": price, "until": until.isoformat(), "time": now.isoformat(), "type": "purchase"})
     bot.answer_callback_query(call.id, "✅ Premium activated!")
@@ -3758,67 +3949,42 @@ def premium_cancel(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "premium_quality_info")
 def premium_quality_info(call):
-    uid = str(call.from_user.id)
-    if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
-        return
-    current = str(users.get(uid, {}).get("premium_quality", "1080"))
     bot.answer_callback_query(call.id)
-    bot.send_message(
-        call.message.chat.id,
-        f"🎥 <b>Premium Download Quality</b>\n\n"
-        f"Current: <b>{'4K' if current == '2160' else current + 'p'}</b>\n"
-        "Select the quality you want Premium downloads to use.\n"
-        "You will NOT be asked again for every link.",
-        reply_markup=premium_quality_keyboard(current)
-    )
+    current = users.get(str(call.from_user.id), {}).get("premium_quality", "Not selected")
+    bot.send_message(call.message.chat.id, f"💎 <b>Premium quality</b> is saved per account.\n\nCurrent: <b>{current if current != '2160' else '4K'}</b>\n\nSend a new link and the saved quality will be used automatically.")
 
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("setquality:"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("set_quality:"))
 def set_quality_callback(call):
     uid = str(call.from_user.id)
     if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
-        return
-    q = call.data.split(":", 1)[1]
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True); return
+    q = call.data.split(":",1)[1]
     if q not in PREMIUM_QUALITY_FORMATS:
-        bot.answer_callback_query(call.id, "❌ Invalid quality.", show_alert=True)
-        return
+        bot.answer_callback_query(call.id, "Invalid quality.", show_alert=True); return
     users[uid]["premium_quality"] = q
     save_user(uid)
-    bot.answer_callback_query(call.id, f"✅ {'4K' if q == '2160' else q + 'p'} saved")
-    try:
-        back_kb = InlineKeyboardMarkup()
-        back_kb.add(InlineKeyboardButton("🔙 Premium", callback_data="premium_menu"))
-        bot.edit_message_text(
-            f"✅ <b>Premium quality saved:</b> {'4K' if q == '2160' else q + 'p'}\n\n"
-            "All future Premium downloads will use this quality automatically.",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=back_kb
-        )
-    except Exception:
-        bot.send_message(call.message.chat.id, f"✅ Premium quality saved: {'4K' if q == '2160' else q + 'p'}")
+    pending = premium_quality_pending.pop(uid, None)
+    bot.answer_callback_query(call.id, "✅ Quality saved")
+    bot.edit_message_text(f"✅ Premium quality saved: {q if q != '2160' else '4K'}\n\nFuture downloads will use this quality automatically.", call.message.chat.id, call.message.message_id)
+    if pending and pending.get("link") and not pending.get("set_only"):
+        msg = bot.send_message(call.message.chat.id, "✍️ Typing...\n⬇️ Downloading...")
+        vip_executor.submit(download_media, call.message.chat.id, pending["link"], msg.message_id, q)
 
 
-# Legacy callback kept for any old messages that still contain quality: buttons.
 @bot.callback_query_handler(func=lambda call: call.data.startswith("quality:"))
 def quality_callback(call):
     uid = str(call.from_user.id)
     if not is_premium(uid):
-        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
-        return
-    q = call.data.split(":", 1)[1]
-    if q not in PREMIUM_QUALITY_FORMATS:
-        bot.answer_callback_query(call.id, "❌ Invalid quality.", show_alert=True)
-        return
-    users[uid]["premium_quality"] = q
-    save_user(uid)
-    data = premium_quality_pending.pop(uid, None)
-    bot.answer_callback_query(call.id, f"✅ {'4K' if q == '2160' else q + 'p'} saved")
-    if data:
-        msg = bot.send_message(call.message.chat.id, f"✍️ Typing...\n⬇️ Downloading at {'4K' if q == '2160' else q + 'p'} quality...")
-        vip_executor.submit(download_media, call.message.chat.id, data["link"], msg.message_id, q)
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True); return
+    q = call.data.split(":",1)[1]
+    data = premium_quality_pending.get(uid)
+    if not data:
+        bot.answer_callback_query(call.id, "❌ Quality session expired. Send the link again.", show_alert=True); return
+    premium_quality_pending.pop(uid, None)
+    users.setdefault(uid,{})["premium_quality"]=q; save_user(uid)
+    bot.answer_callback_query(call.id, f"✅ {q if q != '2160' else '4K'} saved")
+    msg = bot.send_message(call.message.chat.id, f"✍️ Typing...\n⬇️ Downloading at {q if q != '2160' else '4K'} quality...")
+    vip_executor.submit(download_media, call.message.chat.id, data["link"], msg.message_id, q)
 
 def send_premium_email(uid, subject, months, price, until):
     email=users.get(str(uid),{}).get("email")
@@ -3908,12 +4074,22 @@ def handle_links(message):
         kb.add(InlineKeyboardButton("💎 OPEN PREMIUM", callback_data="premium_menu"))
         bot.send_message(message.chat.id, "❌ YouTube is not available to download.\n\n💎 Open Premium to unlock normal YouTube downloads, higher quality, faster speed and extra platforms.", reply_markup=kb); return
 
-    # Premium quality is selected once in the Premium menu and reused for all
-    # future links. Do not prompt on every download.
+    # Premium quality is selected once and stored on the user.
+    # If no quality has been selected yet, ask once; future links use the saved quality.
+    if is_premium(uid):
+        saved_quality = users.get(uid, {}).get("premium_quality")
+        if saved_quality not in PREMIUM_QUALITY_FORMATS:
+            kb = InlineKeyboardMarkup(row_width=2)
+            kb.add(InlineKeyboardButton("720p", callback_data="set_quality:720"), InlineKeyboardButton("1080p", callback_data="set_quality:1080"))
+            kb.add(InlineKeyboardButton("1440p", callback_data="set_quality:1440"), InlineKeyboardButton("4K", callback_data="set_quality:2160"))
+            bot.send_message(message.chat.id, "💎 <b>Choose your Premium quality once.</b>\nYour choice will be used automatically for future downloads.", reply_markup=kb)
+            premium_quality_pending[uid] = {"link": link, "created": time.time(), "set_only": True}
+            return
+        quality = saved_quality
 
     try:
         msg = bot.send_message(message.chat.id, "✍️ Typing...\n⬇️ Preparing your download...")
-        (vip_executor if is_premium(uid) else normal_executor).submit(download_media, message.chat.id, link, msg.message_id, None)
+        (vip_executor if is_premium(uid) else normal_executor).submit(download_media, message.chat.id, link, msg.message_id, quality if is_premium(uid) else None)
     except Exception: pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
@@ -4163,7 +4339,7 @@ def open_premium_process(m):
             if old_dt.tzinfo is None: old_dt=old_dt.replace(tzinfo=timezone.utc)
         except Exception: old_dt=now
         until=max(now,old_dt)+timedelta(days=30*months)
-        users[uid]['premium_until']=until.isoformat(); users[uid]['premium_warning_sent']=False; save_user(uid)
+        users[uid]['premium_until']=until.isoformat(); users[uid]['premium_warning_sent']=False; users[uid]['premium_source']='paid'; save_user(uid)
         premium_logs_col.insert_one({'user_id':uid,'months':months,'until':until.isoformat(),'time':now.isoformat(),'type':'admin_open'})
         bot.send_message(m.chat.id,f"✅ Premium opened for {uid} for {months} month(s). Expires {until.strftime('%Y-%m-%d %H:%M UTC')}")
         bot.send_message(int(uid),f"🎉 <b>Downloader Bot Premium opened by Admin</b>\n\n⏰ Expires: {until.strftime('%Y-%m-%d %H:%M UTC')}\n💎 You now have high quality, faster downloads, full YouTube and extra platforms.")
@@ -4615,7 +4791,7 @@ if __name__ == "__main__":
     threading.Thread(target=premium_expiry_worker, daemon=True).start()
     print("🤖 Bot 1 and Bot 2 are starting...")
     print(f"🟢 WaForge WhatsApp configured: {bool(WAFORGE_API_KEY)} | D7 SMS configured: {bool(D7_TOKEN)}")
-    print(f"📦 Telegram upload target: {MAX_UPLOAD_MB} MB")
+    print("📦 Telegram upload limits: Admin-controlled FREE/TRIAL/PREMIUM values stored in MongoDB")
     
     def run_bot2():
         try:
