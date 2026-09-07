@@ -38,11 +38,9 @@ D7_TOKEN = os.getenv("D7_TOKEN")
 WAFORGE_API_KEY = os.getenv("WAFORGE_API_KEY", "").strip()
 # WaForge v1 is the API contract verified with the working Termux curl request.
 # If Railway still has the old /api value, automatically normalize it to /api/v1.
-WAFORGE_BASE_URL = os.getenv("WAFORGE_BASE_URL", "https://waforge.online/api").rstrip("/")
-# Accept older environment values such as .../api/v1, but normalize them to
-# the current WaForge API path so OTP send/verify use the same endpoint family.
-if WAFORGE_BASE_URL.endswith("/api/v1"):
-    WAFORGE_BASE_URL = WAFORGE_BASE_URL[:-3]
+WAFORGE_BASE_URL = os.getenv("WAFORGE_BASE_URL", "https://www.waforge.online/api/v1").rstrip("/")
+if WAFORGE_BASE_URL.endswith("/api"):
+    WAFORGE_BASE_URL += "/v1"
 WAFORGE_OTP_SEND_URL = f"{WAFORGE_BASE_URL}/otp/send"
 WAFORGE_OTP_VERIFY_URL = f"{WAFORGE_BASE_URL}/otp/verify"
 WAFORGE_OTP_TTL = 300  # 5 minutes
@@ -121,7 +119,6 @@ ADS_URL = ""
 # Premium/download state
 premium_pending = {}
 premium_quality_pending = {}
-PREMIUM_DEFAULT_QUALITY = "1080"
 PREMIUM_WARNING_SENT_DAYS = 7
 PREMIUM_CHECK_INTERVAL = 3600
 LANGUAGES = {
@@ -434,12 +431,6 @@ def save_user(uid):
         users_col.update_one({"_id": uid_str}, {"$set": data}, upsert=True)
 
 users = load_users()
-# Backfill persistent Premium quality for existing users. This does not alter
-# balances, verification state, or any existing Premium expiry.
-for _uid, _data in users.items():
-    if _data.get("premium_quality") not in PREMIUM_QUALITY_FORMATS:
-        _data["premium_quality"] = PREMIUM_DEFAULT_QUALITY
-        save_user(_uid)
 
 def log_activity(uid, action, details=None):
     try:
@@ -632,13 +623,8 @@ def send_waforge_whatsapp(phone_number, user_id):
         return False, str(e), None
 
 
-def verify_waforge_whatsapp(phone_number, code, request_id=None):
-    """Verify a WaForge WhatsApp OTP.
-
-    Current WaForge accepts phone+code. Some compatible deployments return a
-    request id and expect that id on verification, so we try request_id first
-    when available and safely fall back to phone+code if the endpoint rejects it.
-    """
+def verify_waforge_whatsapp(phone_number, code):
+    """Verify the user-entered code against the same WaForge v1 session."""
     if not WAFORGE_API_KEY:
         return False, "WAFORGE_API_KEY is not configured"
 
@@ -647,35 +633,25 @@ def verify_waforge_whatsapp(phone_number, code, request_id=None):
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    payload = {"phone": phone_number, "code": str(code)}
 
-    payloads = []
-    if request_id:
-        payloads.append({"request_id": request_id, "code": str(code)})
-    payloads.append({"phone": phone_number, "code": str(code)})
-
-    last_detail = "Verification failed"
     try:
-        for payload in payloads:
-            r = requests.post(
-                WAFORGE_OTP_VERIFY_URL,
-                json=payload,
-                headers=headers,
-                timeout=30,
-            )
-            try:
-                body = r.json()
-            except Exception:
-                body = {"raw": r.text}
-            last_detail = body
-            if r.status_code == 200 and (body.get("verified") is True or body.get("success") is True):
-                return True, body
-            # If this was a request-id deployment and it rejected that shape,
-            # continue to the documented phone+code fallback.
-            if r.status_code in (400, 404, 422) and len(payloads) > 1 and payload is payloads[0]:
-                continue
-            if r.status_code not in (400, 404, 422):
-                break
-        return False, last_detail
+        r = requests.post(
+            WAFORGE_OTP_VERIFY_URL,
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text}
+
+        verified = (
+            r.status_code == 200
+            and (body.get("verified") is True or body.get("success") is True)
+        )
+        return verified, body
     except Exception as e:
         return False, str(e)
 
@@ -873,6 +849,55 @@ def sms_admin_manager(m):
             bot.send_message(m.chat.id, f"♻️ Reset complete. {changed} users are now Unverified and can verify again.")
         except: pass
 
+# ================= TELEGRAM CUSTOM EMOJI / GLOBAL PROFILE BADGE =================
+# Telegram Premium Custom Emoji are represented in incoming messages as a
+# MessageEntity with type="custom_emoji" and a custom_emoji_id.  We persist
+# the ID, not only the visible Unicode fallback, so the badge stays a real
+# Telegram Custom Emoji when the bot renders a profile.
+
+def extract_custom_emoji_id(message):
+    """Return the first Telegram custom_emoji_id from a text message."""
+    for entity in (getattr(message, "entities", None) or []):
+        if getattr(entity, "type", None) == "custom_emoji":
+            cid = getattr(entity, "custom_emoji_id", None)
+            if cid:
+                return str(cid)
+    return None
+
+
+def custom_emoji_html(custom_emoji_id, fallback="🔹"):
+    """Build Bot API HTML for a real Telegram custom emoji."""
+    if not custom_emoji_id:
+        return html.escape(fallback or "🔹")
+    return f'<tg-emoji emoji-id="{html.escape(str(custom_emoji_id), quote=True)}">{html.escape(fallback or "🔹")}</tg-emoji>'
+
+
+def global_profile_badge_html(verified=True):
+    """Return the configured global badge as renderable HTML."""
+    if not verified:
+        return ""
+    cid = str(get_setting("global_custom_emoji_id", "") or "").strip()
+    if cid:
+        fallback = str(get_setting("global_custom_emoji_fallback", "🔹") or "🔹")
+        return custom_emoji_html(cid, fallback)
+    # Do not render the legacy plain-text sticker. The requested badge must be
+    # a real Telegram Custom Emoji, not a Unicode emoji masquerading as one.
+    return ""
+
+
+def set_global_custom_emoji(custom_emoji_id, fallback="🔹"):
+    set_setting("global_custom_emoji_id", str(custom_emoji_id))
+    set_setting("global_custom_emoji_fallback", fallback or "🔹")
+    # Clear the legacy plain-text global sticker so it can never override the
+    # real Custom Emoji badge.
+    set_setting("global_sticker", "")
+
+
+def clear_global_custom_emoji():
+    set_setting("global_custom_emoji_id", "")
+    set_setting("global_custom_emoji_fallback", "🔹")
+    set_setting("global_sticker", "")
+
 # ================= PROFILE & VERIFICATION LOGIC =================
 
 @bot.message_handler(func=lambda m: m.text == "👤 Profile")
@@ -884,13 +909,8 @@ def profile_handler(m):
     u_data = users.get(uid, {})
     
     verified = bool(u_data.get("verified", False))
-    # The admin-controlled sticker is a VERIFIED badge. Never let it turn an
-    # unverified account into a visually verified account.
-    global_sticker = str(get_setting("global_sticker", "") or "").strip()
-    if verified:
-        status_str = f"Verified {global_sticker}" if global_sticker else "Verified ✅"
-    else:
-        status_str = "Not verified ⚠️"
+    badge = global_profile_badge_html(verified)
+    status_str = f"Verified {badge}" if verified else "Not verified ⚠️"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -1000,10 +1020,6 @@ def delayed_cancel_session(chat_id, message_id, uid):
         email_verify_pending.pop(uid, None)
         phone_verify_pending.pop(uid, None)
         whatsapp_verify_pending.pop(uid, None)
-        try:
-            bot.clear_step_handler_by_chat_id(chat_id)
-        except Exception:
-            pass
         try:
             bot.edit_message_text("❌ Verification session expired or cancelled after 1 minute.", chat_id, message_id, reply_markup=None)
         except:
@@ -1159,9 +1175,6 @@ def process_verification_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["email"] = data["email"]
-        # Sticker is controlled globally by the admin; do not create a fake
-        # per-user verification badge here.
-        users[uid].pop("sticker", None)
         save_user(uid)
         email_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1301,9 +1314,6 @@ def process_phone_code(m):
     if code_input == data["code"]:
         users[uid]["verified"] = True
         users[uid]["phone"] = data["phone"]
-        # Sticker is controlled globally by the admin; do not create a fake
-        # per-user verification badge here.
-        users[uid].pop("sticker", None)
         save_user(uid)
         phone_verify_pending.pop(uid, None)
         trial_activated=activate_pending_trial(uid,m.chat.id)
@@ -1409,7 +1419,7 @@ def process_whatsapp_code(m):
         bot.register_next_step_handler(msg, process_whatsapp_code)
         return
 
-    ok, detail = verify_waforge_whatsapp(data["phone"], code, data.get("request_id"))
+    ok, detail = verify_waforge_whatsapp(data["phone"], code)
     if not ok:
         print("WaForge verify error:", detail)
         # WaForge may report an expired code; show the requested exact message.
@@ -1425,7 +1435,6 @@ def process_whatsapp_code(m):
     users[uid]["verified"] = True
     users[uid]["phone"] = data["phone"]
     users[uid]["whatsapp_verified"] = True
-    users[uid].pop("sticker", None)
     save_user(uid)
     whatsapp_verify_pending.pop(uid, None)
     trial_activated = activate_pending_trial(uid, m.chat.id)
@@ -1452,7 +1461,7 @@ def verified_users_list(m):
     text = f"✅ VERIFIED USERS ({len(verified_list)})\n\n"
     for uid in verified_list[:30]:
         u_data = users[uid]
-        sticker = u_data.get("sticker", "N/A")
+        sticker = global_profile_badge_html(True) or "None"
         email = u_data.get('email', '')
         phone = u_data.get('phone', '')
         contact = email if email else (phone if phone else "No Contact Info")
@@ -1466,49 +1475,76 @@ def sticker_admin_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        current = str(get_setting("global_sticker", "") or "").strip()
+        cid = str(get_setting("global_custom_emoji_id", "") or "").strip()
+        fallback = str(get_setting("global_custom_emoji_fallback", "🔹") or "🔹")
+        if cid:
+            current = custom_emoji_html(cid, fallback)
+            current_note = f"Current Custom Emoji: {current}\n<code>ID: {html.escape(cid)}</code>"
+        else:
+            current_note = "Current Custom Emoji: None"
         msg = bot.send_message(
             m.chat.id,
-            "🏷️ <b>GLOBAL PROFILE STICKER</b>\n\n"
-            "Send an emoji, custom emoji text, or badge text. It will appear on EVERY user's profile.\n\n"
-            "Example: <code>💙</code> or <code>🔵 Verified</code>\n"
-            "To remove it, send: <code>CLEAR</code>\n\n"
-            f"Current: <b>{current or 'None'}</b>"
+            "🏷️ <b>GLOBAL TELEGRAM CUSTOM EMOJI</b>\n\n"
+            "Send a <b>Telegram Premium Custom Emoji</b> in your message.\n"
+            "The bot will save its real <code>custom_emoji_id</code> and use the same Custom Emoji on every verified user's profile.\n\n"
+            "⚠️ A normal Unicode emoji such as ⭐ is not stored as a Telegram Custom Emoji.\n"
+            "To remove the global badge, send <code>CLEAR</code>.\n\n"
+            f"{current_note}"
         )
         bot.register_next_step_handler(msg, sticker_admin_process)
     except Exception as e:
         print("Sticker start error:", e)
 
+
 def sticker_admin_process(m):
     if not is_admin(m.from_user.id):
         return
-    sticker_text = (m.text or "").strip()
-    if not sticker_text:
-        bot.send_message(m.chat.id, "❌ Sticker cannot be empty.")
-        return
-    if sticker_text.upper() == "CLEAR":
-        set_setting("global_sticker", "")
+
+    raw = (m.text or "").strip()
+    if raw.upper() == "CLEAR":
+        clear_global_custom_emoji()
         for uid in users:
             users[uid].pop("global_sticker", None)
+            users[uid].pop("global_custom_emoji_id", None)
             save_user(uid)
-        bot.send_message(m.chat.id, "🗑️ Global sticker removed from all profiles.")
-        return
-
-    set_setting("global_sticker", sticker_text)
-    # Keep a copy on user documents too, so existing database records are
-    # immediately consistent with the global setting.
-    updated = 0
-    for uid in users:
-        users[uid]["global_sticker"] = sticker_text
-        save_user(uid)
-        updated += 1
-    bot.send_message(m.chat.id, f"✅ Global sticker set to: {sticker_text}\n👥 Applied to {updated} users.")
-    # Notify users best-effort; the profile itself reads the persistent global value.
-    for uid in users:
         try:
-            bot.send_message(int(uid), f"🏷️ Profile sticker updated: {sticker_text}")
+            bot.send_message(m.chat.id, "🗑️ <b>Global Custom Emoji removed.</b>\nVerified profiles will no longer show the admin badge.")
         except Exception:
             pass
+        return
+
+    custom_id = extract_custom_emoji_id(m)
+    if not custom_id:
+        bot.send_message(
+            m.chat.id,
+            "❌ <b>That is not a Telegram Custom Emoji.</b>\n\n"
+            "Please send the Premium Custom Emoji itself. Do not send a normal Unicode emoji such as ⭐."
+        )
+        return
+
+    # Store the visible fallback as well. Telegram clients use it as the
+    # textual child of <tg-emoji>; the actual visual badge is identified by ID.
+    fallback = raw[:16] if raw else "🔹"
+    set_global_custom_emoji(custom_id, fallback)
+
+    updated = 0
+    rendered = custom_emoji_html(custom_id, fallback)
+    for uid in users:
+        users[uid]["global_custom_emoji_id"] = custom_id
+        users[uid]["global_custom_emoji_fallback"] = fallback
+        # Remove old legacy value so profile code cannot accidentally use it.
+        users[uid].pop("global_sticker", None)
+        save_user(uid)
+        updated += 1
+
+    bot.send_message(
+        m.chat.id,
+        f"✅ <b>Global Custom Emoji set successfully!</b>\n\n"
+        f"🏷️ Badge: {rendered}\n"
+        f"🆔 Custom Emoji ID: <code>{html.escape(custom_id)}</code>\n"
+        f"👥 Synced to {updated} users.\n\n"
+        "Only verified profiles will display this badge."
+    )
 
 # ================= ADMIN SEND EMAIL ALL =================
 
@@ -2188,50 +2224,13 @@ def convert_link_to_mp3(chat_id, link, status_message_id):
             raise RuntimeError("The MP3 is too large for Telegram upload.")
         send_action(chat_id, "upload_audio")
         info = info or {}
-        # Prefer real music metadata. For TikTok/Reels/etc. where no artist is
-        # supplied, keep the original sound identity instead of inventing an artist.
-        title = (info.get("track") or info.get("title") or info.get("alt_title") or "Original Sound").strip()
-        artist = (
-            info.get("artist")
-            or info.get("creator")
-            or info.get("album_artist")
-            or info.get("uploader")
-            or info.get("channel")
-        )
-        artist = str(artist).strip() if artist else "Original Sound"
-        # Avoid ugly placeholder text such as 'Unknown artist' in Telegram metadata.
-        if artist.lower() in {"unknown", "unknown artist", "n/a", "none"}:
+        title = info.get("track") or info.get("title") or "Unknown title"
+        artist = info.get("artist") or info.get("creator") or info.get("album_artist") or info.get("uploader") or info.get("channel")
+        if not artist:
             artist = "Original Sound"
-
-        caption = f"🎵 <b>{html.escape(title)}</b>\n👤 <b>{html.escape(artist)}</b>\n\n{DOWNLOAD_CAPTION}"
-        thumbnail_path = None
-        thumb_url = info.get("thumbnail")
-        if thumb_url:
-            try:
-                thumb_resp = requests.get(thumb_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-                if thumb_resp.ok and thumb_resp.content:
-                    thumbnail_path = os.path.join(tmp_dir, "cover.jpg")
-                    with open(thumbnail_path, "wb") as thumb_file:
-                        thumb_file.write(thumb_resp.content)
-            except Exception as thumb_error:
-                print("Music thumbnail error:", thumb_error)
-
+        caption = f"🎵 {title}\n👤 Artist: {artist}\n\n{DOWNLOAD_CAPTION}"
         with open(path, "rb") as audio:
-            kwargs = {
-                "caption": caption,
-                "title": title[:64],
-                "performer": artist[:64],
-            }
-            if thumbnail_path and os.path.isfile(thumbnail_path):
-                kwargs["thumbnail"] = thumbnail_path
-            try:
-                bot.send_audio(chat_id, audio, **kwargs)
-            except TypeError:
-                # Older pyTelegramBotAPI versions may not accept thumbnail as a
-                # keyword; resend the audio without it rather than failing music.
-                kwargs.pop("thumbnail", None)
-                audio.seek(0)
-                bot.send_audio(chat_id, audio, **kwargs)
+            bot.send_audio(chat_id, audio, caption=caption, title=title, performer=artist)
         try: bot.delete_message(chat_id, status_message_id)
         except Exception: pass
     except Exception as e:
@@ -2264,7 +2263,7 @@ def music_callback_handler(call):
 @bot.message_handler(func=lambda m: m.text == "🎵 MUSIC")
 def music_menu_button(m):
     if bot_locked_guard(m) or banned_guard(m): return
-    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3, use the available song/artist metadata and attach the source cover when available. If no artist is available, the audio will be labeled <b>Original Sound</b> instead of inventing an artist.")
+    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3 and show the song title and artist. If artist metadata is missing, it will be labeled <b>Original Sound</b>.")
 
 # ================= START HANDLER =================
 
@@ -2273,9 +2272,10 @@ def start_handler(message):
     if bot_locked_guard(message): return
     uid=str(message.from_user.id); args=message.text.split()
     if uid not in users:
-        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"premium_quality":PREMIUM_DEFAULT_QUALITY,"pending_ref":args[1] if len(args)>1 else None}
+        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
         save_user(uid)
     users[uid].setdefault("currency","USD")
+    users[uid].setdefault("premium_quality","1080")
     users[uid].setdefault("first_name", message.from_user.first_name or "there")
     users[uid]["first_name"] = message.from_user.first_name or users[uid].get("first_name") or "there"
     users[uid]["username"] = message.from_user.username or users[uid].get("username") or ""
@@ -3354,6 +3354,7 @@ def import_users_process(m):
                 "quick_access": False,
                 "youtube_30m": False,
                 "premium_until": None,
+                "premium_quality": "1080",
                 "premium_warning_sent": False,
                 "trial_used": False,
                 "trial_pending": False,
@@ -3363,7 +3364,6 @@ def import_users_process(m):
                 "referred_by": None,
                 "last_seen_at": datetime.now(timezone.utc).isoformat(),
                 "currency": "USD",
-                "premium_quality": PREMIUM_DEFAULT_QUALITY,
                 "language": None,
                 "gender": None,
                 "city": None,
@@ -3650,36 +3650,26 @@ def premium_plan_keyboard():
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
-def premium_quality_for_user(uid):
-    uid = str(uid)
-    q = str(users.get(uid, {}).get("premium_quality") or get_setting("premium_default_quality", PREMIUM_DEFAULT_QUALITY))
-    return q if q in PREMIUM_QUALITY_FORMATS else PREMIUM_DEFAULT_QUALITY
-
-def premium_quality_label(q):
-    return "4K" if str(q) == "2160" else f"{q}p"
-
-def premium_quality_keyboard():
+def premium_quality_keyboard(current="1080"):
     kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("720p", callback_data="premium_set_quality:720"),
-        InlineKeyboardButton("1080p", callback_data="premium_set_quality:1080"),
-    )
-    kb.add(
-        InlineKeyboardButton("1440p", callback_data="premium_set_quality:1440"),
-        InlineKeyboardButton("4K", callback_data="premium_set_quality:2160"),
-    )
+    labels = [("720", "720p"), ("1080", "1080p"), ("1440", "1440p"), ("2160", "4K")]
+    for value, label in labels:
+        prefix = "✅ " if str(current) == value else ""
+        kb.add(InlineKeyboardButton(f"{prefix}{label}", callback_data=f"setquality:{value}"))
+    kb.add(InlineKeyboardButton("🔙 Back to Premium", callback_data="premium_menu"))
     return kb
 
-def send_quality_menu(chat_id, link=None):
-    # Kept for backwards compatibility with older callback references. It now
-    # changes the saved Premium quality instead of asking on every download.
+
+def send_quality_menu(chat_id, link):
+    """Backward-compatible helper: store the link and let the user pick once."""
     uid = str(chat_id)
+    current = str(users.get(uid, {}).get("premium_quality", "1080"))
+    premium_quality_pending[uid] = {"link": link, "created": time.time()}
     bot.send_message(
         chat_id,
-        f"💎 <b>Premium Quality</b>\n\n"
-        f"Current quality: <b>{premium_quality_label(premium_quality_for_user(uid))}</b>\n"
-        "Choose the quality that Premium should use automatically for future downloads.",
-        reply_markup=premium_quality_keyboard(),
+        f"💎 <b>Premium Quality</b>\n\nCurrent quality: <b>{'4K' if current == '2160' else current + 'p'}</b>\n"
+        "Choose a new quality if you want to change your saved Premium quality.",
+        reply_markup=premium_quality_keyboard(current)
     )
 
 @bot.message_handler(func=lambda m: m.text == "💎 PREMIUM")
@@ -3696,17 +3686,11 @@ def premium_menu_callback(call):
 def show_premium_menu(chat_id):
     uid = str(chat_id)
     if is_premium(uid):
-        current_q = premium_quality_for_user(uid)
+        current_q = str(users.get(uid, {}).get("premium_quality", "1080"))
+        q_label = "4K" if current_q == "2160" else f"{current_q}p"
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton(f"🎥 QUALITY: {premium_quality_label(current_q)}", callback_data="premium_quality_info"))
-        bot.send_message(
-            chat_id,
-            premium_features_text()
-            + f"\n\n✅ <b>Active until:</b> {premium_until_text(uid)}"
-            + f"\n🎥 <b>Download quality:</b> {premium_quality_label(current_q)}"
-            + "\n\nThis quality is saved and will be used automatically for your next downloads.",
-            reply_markup=kb,
-        )
+        kb.add(InlineKeyboardButton(f"🎥 QUALITY: {q_label}", callback_data="premium_quality_info"))
+        bot.send_message(chat_id, premium_features_text() + f"\n\n🎥 <b>Saved Quality:</b> {q_label}\n✅ <b>Active until:</b> {premium_until_text(uid)}", reply_markup=kb)
     else:
         if not users.get(uid, {}).get("verified", False):
             kb = InlineKeyboardMarkup()
@@ -3778,18 +3762,20 @@ def premium_quality_info(call):
     if not is_premium(uid):
         bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
         return
+    current = str(users.get(uid, {}).get("premium_quality", "1080"))
     bot.answer_callback_query(call.id)
-    q = premium_quality_for_user(uid)
     bot.send_message(
         call.message.chat.id,
-        f"🎥 <b>PREMIUM DOWNLOAD QUALITY</b>\n\n"
-        f"Current: <b>{premium_quality_label(q)}</b>\n\n"
-        "Choose once. Your selection will be saved and used automatically for every Premium download.",
-        reply_markup=premium_quality_keyboard(),
+        f"🎥 <b>Premium Download Quality</b>\n\n"
+        f"Current: <b>{'4K' if current == '2160' else current + 'p'}</b>\n"
+        "Select the quality you want Premium downloads to use.\n"
+        "You will NOT be asked again for every link.",
+        reply_markup=premium_quality_keyboard(current)
     )
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("premium_set_quality:"))
-def premium_set_quality_callback(call):
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("setquality:"))
+def set_quality_callback(call):
     uid = str(call.from_user.id)
     if not is_premium(uid):
         bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
@@ -3800,15 +3786,39 @@ def premium_set_quality_callback(call):
         return
     users[uid]["premium_quality"] = q
     save_user(uid)
-    bot.answer_callback_query(call.id, f"✅ {premium_quality_label(q)} saved")
+    bot.answer_callback_query(call.id, f"✅ {'4K' if q == '2160' else q + 'p'} saved")
     try:
+        back_kb = InlineKeyboardMarkup()
+        back_kb.add(InlineKeyboardButton("🔙 Premium", callback_data="premium_menu"))
         bot.edit_message_text(
-            f"✅ <b>Premium quality saved</b>\n\nYour videos will now download automatically at <b>{premium_quality_label(q)}</b>.\n\nNo quality question will appear for every link.",
+            f"✅ <b>Premium quality saved:</b> {'4K' if q == '2160' else q + 'p'}\n\n"
+            "All future Premium downloads will use this quality automatically.",
             call.message.chat.id,
             call.message.message_id,
+            reply_markup=back_kb
         )
     except Exception:
-        bot.send_message(call.message.chat.id, f"✅ Premium quality saved: <b>{premium_quality_label(q)}</b>")
+        bot.send_message(call.message.chat.id, f"✅ Premium quality saved: {'4K' if q == '2160' else q + 'p'}")
+
+
+# Legacy callback kept for any old messages that still contain quality: buttons.
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quality:"))
+def quality_callback(call):
+    uid = str(call.from_user.id)
+    if not is_premium(uid):
+        bot.answer_callback_query(call.id, "❌ Premium required.", show_alert=True)
+        return
+    q = call.data.split(":", 1)[1]
+    if q not in PREMIUM_QUALITY_FORMATS:
+        bot.answer_callback_query(call.id, "❌ Invalid quality.", show_alert=True)
+        return
+    users[uid]["premium_quality"] = q
+    save_user(uid)
+    data = premium_quality_pending.pop(uid, None)
+    bot.answer_callback_query(call.id, f"✅ {'4K' if q == '2160' else q + 'p'} saved")
+    if data:
+        msg = bot.send_message(call.message.chat.id, f"✍️ Typing...\n⬇️ Downloading at {'4K' if q == '2160' else q + 'p'} quality...")
+        vip_executor.submit(download_media, call.message.chat.id, data["link"], msg.message_id, q)
 
 def send_premium_email(uid, subject, months, price, until):
     email=users.get(str(uid),{}).get("email")
@@ -3898,14 +3908,12 @@ def handle_links(message):
         kb.add(InlineKeyboardButton("💎 OPEN PREMIUM", callback_data="premium_menu"))
         bot.send_message(message.chat.id, "❌ YouTube is not available to download.\n\n💎 Open Premium to unlock normal YouTube downloads, higher quality, faster speed and extra platforms.", reply_markup=kb); return
 
-    # Premium quality is persistent. Users choose it from the Premium menu once;
-    # sending a link never asks them to choose quality again.
-    selected_quality = premium_quality_for_user(uid) if is_premium(uid) else None
+    # Premium quality is selected once in the Premium menu and reused for all
+    # future links. Do not prompt on every download.
+
     try:
         msg = bot.send_message(message.chat.id, "✍️ Typing...\n⬇️ Preparing your download...")
-        (vip_executor if is_premium(uid) else normal_executor).submit(
-            download_media, message.chat.id, link, msg.message_id, selected_quality
-        )
+        (vip_executor if is_premium(uid) else normal_executor).submit(download_media, message.chat.id, link, msg.message_id, None)
     except Exception: pass
 
 @bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
