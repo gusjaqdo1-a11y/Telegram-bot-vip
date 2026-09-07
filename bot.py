@@ -71,8 +71,8 @@ RAPIDAPI_YT_KEY = os.getenv("RAPIDAPI_YT_KEY", "").strip()
 RAPIDAPI_TIMEOUT = int(os.getenv("RAPIDAPI_TIMEOUT", "60"))
 # Instagram RapidAPI configuration. Values can also be managed from Admin Panel
 # and are persisted in MongoDB settings (no environment variable required for limits).
-RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "").strip()
-RAPIDAPI_IG_URL = os.getenv("RAPIDAPI_IG_URL", "").strip()
+RAPIDAPI_IG_HOST = "instagram-reels-downloader-api.p.rapidapi.com"
+RAPIDAPI_IG_URL = "https://instagram-reels-downloader-api.p.rapidapi.com/download"
 RAPIDAPI_IG_KEY = os.getenv("RAPIDAPI_IG_KEY", "").strip()
 
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
@@ -185,26 +185,244 @@ MAIN_LABELS = {
 def lang_of(uid):
     return users.get(str(uid),{}).get("language") or "en"
 
-AVAILABLE_CURRENCIES = {
-    "USD": 1.0, "SOS": 570.0, "ETB": 188.0, "EUR": 0.85,
-    "SAR": 3.75, "BRL": 5.40, "TRY": 41.0, "INR": 83.5,
-    "IDR": 16500.0, "JPY": 147.0, "KRW": 1380.0, "CNY": 7.10,
+# Currency/asset catalogue. Balances remain canonical in USD; these are display
+# and transaction denominations only. Fiat rates come from live FX providers,
+# while crypto prices come from a crypto-market feed.
+FIAT_CURRENCIES = {
+    "USD": ("🇺🇸", "US Dollar", 1.0), "SOS": ("🇸🇴", "Somali Shilling", 570.0),
+    "ETB": ("🇪🇹", "Ethiopian Birr", 188.0), "EUR": ("🇪🇺", "Euro", 0.85),
+    "SAR": ("🇸🇦", "Saudi Riyal", 3.75), "BRL": ("🇧🇷", "Brazilian Real", 5.40),
+    "TRY": ("🇹🇷", "Turkish Lira", 41.0), "INR": ("🇮🇳", "Indian Rupee", 83.5),
+    "IDR": ("🇮🇩", "Indonesian Rupiah", 16500.0), "JPY": ("🇯🇵", "Japanese Yen", 147.0),
+    "KRW": ("🇰🇷", "South Korean Won", 1380.0), "CNY": ("🇨🇳", "Chinese Yuan", 7.10),
 }
+
+# Ten market-tracked crypto assets. CoinGecko IDs are used for automatic USD pricing.
+CRYPTO_CURRENCIES = {
+    "BTC": ("₿", "Bitcoin", "bitcoin"),
+    "ETH": ("Ξ", "Ethereum", "ethereum"),
+    "USDT": ("₮", "Tether", "tether"),
+    "BNB": ("🟡", "BNB", "binancecoin"),
+    "SOL": ("◎", "Solana", "solana"),
+    "XRP": ("✕", "XRP", "ripple"),
+    "USDC": ("◉", "USD Coin", "usd-coin"),
+    "ADA": ("₳", "Cardano", "cardano"),
+    "DOGE": ("Ð", "Dogecoin", "dogecoin"),
+    "TRX": ("🔺", "TRON", "tron"),
+}
+
+AVAILABLE_CURRENCIES = {k: v[2] if k in CRYPTO_CURRENCIES else v[2] for k,v in {**{c:(a,b,r) for c,(a,b,r) in FIAT_CURRENCIES.items()}, **{c:(a,b,1.0) for c,(a,b,_) in CRYPTO_CURRENCIES.items()}}.items()}
+
+# Cache stores USD->fiat rates and USD prices for crypto.
+FX_CACHE = {"fiat": {}, "crypto": {}, "updated_at": 0, "sources": {}}
+FX_CACHE_TTL = 300
+CRYPTO_CACHE_TTL = 120
+FX_LOCK = threading.Lock()
+
+# ================= PORTFOLIO-STYLE CURRENCY BALANCE =================
+# A user's `balance` is the amount of the currently held asset. `balance_currency`
+# identifies that asset. USD is only the initial/default asset, not a permanent
+# source-of-truth. When the user changes asset, the entire holding is converted
+# at the current market rate, and future market moves change its USD value.
+def asset_usd_price(code):
+    code=str(code or "USD").upper()
+    if code == "USD":
+        return 1.0
+    rate=market_rate(code)
+    if rate <= 0:
+        if code in FIAT_CURRENCIES:
+            rate=float(FIAT_CURRENCIES[code][2])
+        else:
+            return 0.0
+    return float(rate) if is_crypto(code) else (1.0/float(rate))
+
+def ensure_balance_asset(uid):
+    uid=str(uid)
+    u=users.get(uid)
+    if not u: return "USD"
+    code=str(u.get("balance_currency") or u.get("currency") or "USD").upper()
+    if code not in AVAILABLE_CURRENCIES: code="USD"
+    u.setdefault("balance_currency", code)
+    u.setdefault("balance", 0.0)
+    return code
+
+def balance_asset_amount(uid):
+    ensure_balance_asset(uid)
+    return float(users.get(str(uid),{}).get("balance",0.0) or 0.0)
+
+def balance_usd_value(uid):
+    code=ensure_balance_asset(uid); amount=balance_asset_amount(uid)
+    px=asset_usd_price(code)
+    return amount*px if px>0 else 0.0
+
+def balance_text(uid):
+    code=ensure_balance_asset(uid); amount=balance_asset_amount(uid)
+    if is_crypto(code): return f"{amount:,.8f} {code}"
+    return f"{amount:,.2f} {code}"
+
+def convert_balance_asset(uid,new_code,save=True):
+    uid=str(uid); new_code=str(new_code or "USD").upper()
+    if uid not in users or new_code not in AVAILABLE_CURRENCIES: return False,0.0,0.0
+    old_code=ensure_balance_asset(uid)
+    if old_code==new_code: return True,balance_asset_amount(uid),balance_usd_value(uid)
+    old_amount=balance_asset_amount(uid)
+    old_usd=balance_usd_value(uid)
+    new_px=asset_usd_price(new_code)
+    if old_amount and (old_usd<=0 or new_px<=0): return False,old_amount,old_usd
+    new_amount=old_usd/new_px if new_px>0 else 0.0
+    users[uid]["balance"]=round(new_amount,12)
+    users[uid]["balance_currency"]=new_code
+    users[uid]["currency"]=new_code
+    users[uid]["balance_last_conversion"]={"from":old_code,"to":new_code,"old_amount":old_amount,"new_amount":new_amount,"usd_value":old_usd,"rate_from":fx_rate_for_code(old_code),"rate_to":fx_rate_for_code(new_code),"time":datetime.now(timezone.utc).isoformat()}
+    if save: save_user(uid)
+    return True,new_amount,old_usd
+
+def fx_rate_for_code(code):
+    code=str(code or "USD").upper()
+    if code=="USD": return 1.0
+    manual=get_setting("fx_"+code,None)
+    try:
+        if manual is not None and float(manual)>0: return float(manual)
+    except Exception: pass
+    return market_rate(code)
+
+def add_usd_to_balance(uid,usd_amount,save=True):
+    uid=str(uid); usd=float(usd_amount or 0)
+    if uid not in users or usd<=0: return 0.0
+    code=ensure_balance_asset(uid); px=asset_usd_price(code)
+    if px<=0: raise RuntimeError(f"No market rate available for {code}")
+    units=usd/px
+    users[uid]["balance"]=round(balance_asset_amount(uid)+units,12)
+    if save: save_user(uid)
+    return units
+
+def remove_usd_from_balance(uid,usd_amount,save=True):
+    uid=str(uid); usd=float(usd_amount or 0)
+    if uid not in users or usd<=0: return False
+    code=ensure_balance_asset(uid); px=asset_usd_price(code)
+    if px<=0: return False
+    units=usd/px
+    if balance_asset_amount(uid)+1e-12 < units: return False
+    users[uid]["balance"]=round(balance_asset_amount(uid)-units,12)
+    if save: save_user(uid)
+    return True
 
 def cur_code(uid):
     selected=users.get(str(uid),{}).get("currency")
-    # Currency is an independent user setting; language never changes it.
     return selected if selected in AVAILABLE_CURRENCIES else "USD"
 
+def is_crypto(code):
+    return code in CRYPTO_CURRENCIES
+
+def _fetch_fiat_rates():
+    # Frankfurter provides daily central-bank/reference FX data with no API key.
+    # ETB/SOS can be absent from a particular provider, so the existing ER API
+    # is retained as a fallback for currencies not present in Frankfurter.
+    now=time.time()
+    try:
+        quotes=','.join(c for c in FIAT_CURRENCIES if c != "USD")
+        r=requests.get("https://api.frankfurter.dev/v2/rates",params={"base":"USD","quotes":quotes},timeout=10)
+        r.raise_for_status(); data=r.json()
+        rates={row.get("quote"):float(row.get("rate")) for row in data if row.get("quote") and row.get("rate")}
+        rates["USD"]=1.0
+        # Fill currencies absent from the ECB/Frankfurter feed (notably ETB/SOS)
+        # from a second reference feed instead of silently using a stale constant.
+        missing=[c for c in FIAT_CURRENCIES if c not in rates]
+        if missing:
+            try:
+                rr=requests.get("https://open.er-api.com/v6/latest/USD",timeout=10); rr.raise_for_status()
+                extra=rr.json().get("rates") or {}
+                for c in missing:
+                    if extra.get(c): rates[c]=float(extra[c])
+                source="Frankfurter + ExchangeRate-API fallback"
+            except Exception:
+                source="Frankfurter (some currencies unavailable)"
+        else:
+            source="Frankfurter/ECB providers"
+        FX_CACHE["fiat"]={"rates":rates,"time":now,"source":source}
+        FX_CACHE["sources"]["fiat"]=source
+        return rates
+    except Exception as e:
+        print("Frankfurter FX update failed:",e)
+    try:
+        r=requests.get("https://open.er-api.com/v6/latest/USD",timeout=10); r.raise_for_status()
+        rates=r.json().get("rates") or {}; rates["USD"]=1.0
+        FX_CACHE["fiat"]={"rates":rates,"time":now,"source":"ExchangeRate-API fallback"}
+        FX_CACHE["sources"]["fiat"]="ExchangeRate-API fallback"
+        return rates
+    except Exception as e:
+        print("Fallback FX update failed:",e)
+        return FX_CACHE.get("fiat",{}).get("rates",{})
+
+def _fetch_crypto_prices(force=False):
+    now=time.time(); cached=FX_CACHE.get("crypto",{})
+    if not force and cached and now-cached.get("time",0)<CRYPTO_CACHE_TTL:
+        return cached.get("prices",{})
+    ids=','.join(v[2] for v in CRYPTO_CURRENCIES.values())
+    try:
+        # CoinGecko public simple-price feed; no user-specific trading action is performed.
+        r=requests.get("https://api.coingecko.com/api/v3/simple/price",params={"ids":ids,"vs_currencies":"usd"},timeout=12)
+        r.raise_for_status(); data=r.json() or {}
+        prices={code:float(data.get(cid,{}).get("usd")) for code,(_,_,cid) in CRYPTO_CURRENCIES.items() if data.get(cid,{}).get("usd") is not None}
+        if prices:
+            FX_CACHE["crypto"]={"prices":prices,"time":now,"source":"CoinGecko"}
+            FX_CACHE["sources"]["crypto"]="CoinGecko"
+            return prices
+    except Exception as e:
+        print("Crypto market update failed:",e)
+    return cached.get("prices",{})
+
+def refresh_market_rates(force=False):
+    with FX_LOCK:
+        now=time.time()
+        fiat=FX_CACHE.get("fiat",{})
+        if force or not fiat or now-fiat.get("time",0)>=FX_CACHE_TTL:
+            _fetch_fiat_rates()
+        crypto=FX_CACHE.get("crypto",{})
+        if force or not crypto or now-crypto.get("time",0)>=CRYPTO_CACHE_TTL:
+            _fetch_crypto_prices(force=force)
+
+def market_rate(code):
+    if code=="USD": return 1.0
+    if is_crypto(code):
+        prices=_fetch_crypto_prices()
+        return float(prices.get(code,0) or 0)
+    rates=FX_CACHE.get("fiat",{}).get("rates",{})
+    return float(rates.get(code,0) or 0)
+
 def fx_rate(uid):
-    code=cur_code(uid); base=AVAILABLE_CURRENCIES.get(code,1.0)
-    return float(get_setting("fx_"+code,base))
+    code=cur_code(uid)
+    # Explicit admin override always wins.
+    manual=get_setting("fx_"+code,None)
+    try:
+        if manual is not None and float(manual)>0: return float(manual)
+    except Exception: pass
+    if code=="USD": return 1.0
+    rate=market_rate(code)
+    if rate>0: return rate
+    if code in FIAT_CURRENCIES: return float(FIAT_CURRENCIES[code][2])
+    return 0.0
 
 def local_money(uid,usd):
     return float(usd)*fx_rate(uid)
 
 def money_text(uid,usd):
-    return f"{local_money(uid,usd):,.2f} {cur_code(uid)}"
+    code=cur_code(uid); value=local_money(uid,usd)
+    if is_crypto(code):
+        # Crypto amounts can require more precision than fiat.
+        return f"{value:,.8f} {code}"
+    return f"{value:,.2f} {code}"
+
+def market_rate_text(code):
+    r=market_rate(code)
+    if not r: return "N/A"
+    return f"{r:,.8f}" if is_crypto(code) else f"{r:,.4f}"
+
+def market_refresh_worker():
+    while True:
+        try: refresh_market_rates(force=True)
+        except Exception as e: print("Market worker error:",e)
+        time.sleep(120)
 
 def language_kb(prefix="lang"):
     kb=InlineKeyboardMarkup(row_width=2)
@@ -213,14 +431,13 @@ def language_kb(prefix="lang"):
 
 
 def currency_kb():
+    # Exactly three columns, so users see the requested 1-2-3 / 4-5-6 style grid.
     kb=InlineKeyboardMarkup(row_width=3)
-    labels={
-        "USD":"🇺🇸 USD", "SOS":"🇸🇴 SOS", "ETB":"🇪🇹 ETB", "EUR":"🇪🇺 EUR",
-        "SAR":"🇸🇦 SAR", "BRL":"🇧🇷 BRL", "TRY":"🇹🇷 TRY", "INR":"🇮🇳 INR",
-        "IDR":"🇮🇩 IDR", "JPY":"🇯🇵 JPY", "KRW":"🇰🇷 KRW", "CNY":"🇨🇳 CNY"
-    }
-    for code in AVAILABLE_CURRENCIES:
-        kb.add(InlineKeyboardButton(labels.get(code,code),callback_data=f"currency:{code}"))
+    for code,(flag,name,_) in FIAT_CURRENCIES.items():
+        kb.add(InlineKeyboardButton(f"{flag} {code}",callback_data=f"currency:{code}"))
+    for code,(icon,name,_) in CRYPTO_CURRENCIES.items():
+        kb.add(InlineKeyboardButton(f"{icon} {code}",callback_data=f"currency:{code}"))
+    kb.add(InlineKeyboardButton("🔄 UPDATE MARKET",callback_data="currency_refresh"))
     return kb
 
 START_MESSAGE_DEFAULT = """🎉 <b>Welcome to Downloader Bot!</b>
@@ -354,7 +571,7 @@ def process_referral_signup(uid,pending_ref):
         return None
     reward=referral_reward_amount()
     users[uid]["referred_by"]=ref_user; users[uid].pop("pending_ref",None)
-    users[ref_user]["balance"]=round(users[ref_user].get("balance",0.0)+reward,8)
+    add_usd_to_balance(ref_user,reward)
     users[ref_user]["invited"]=users[ref_user].get("invited",0)+1
     save_user(uid); save_user(ref_user); log_activity(ref_user,"referral",{"referred_user":uid,"reward":reward})
     try: bot.send_message(int(ref_user),f"🎉 <b>New Referral!</b>\n\n👤 A new user joined through your link.\n💰 Earned: <b>${reward:.2f}</b>")
@@ -380,7 +597,7 @@ def distribute_referral_network_commission(source_uid,amount,reason="balance_cre
         commission=round(amount*pct/100.0,8)
         if commission<=0:
             break
-        users[parent]["balance"]=round(users[parent].get("balance",0.0)+commission,8); save_user(parent)
+        add_usd_to_balance(parent,commission)
         referral_commissions_col.insert_one({"source_user":source_uid,"recipient_user":parent,"level":level,"source_amount":amount,"percent":pct,"commission":commission,"reason":reason,"time":datetime.now(timezone.utc)})
         log_activity(parent,"referral_network_commission",{"source_user":source_uid,"level":level,"percent":pct,"commission":commission,"reason":reason})
         results.append((parent,level,commission)); current=users[parent].get("referred_by")
@@ -390,7 +607,7 @@ def credit_user_balance(uid,amount,reason="credit",network_commission=False):
     uid=str(uid); amount=float(amount or 0)
     if uid not in users or amount<=0:
         return 0.0,[]
-    users[uid]["balance"]=round(float(users[uid].get("balance",0.0))+amount,8); save_user(uid)
+    add_usd_to_balance(uid,amount); save_user(uid)
     log_activity(uid,reason,{"amount_usd":amount})
     commissions=distribute_referral_network_commission(uid,amount,reason) if network_commission else []
     return amount,commissions
@@ -410,6 +627,11 @@ def load_users():
         uid = str(user["_id"])
         user_data = user.copy()
         user_data.pop("_id", None)
+        # Legacy accounts used USD as the permanent balance. Migrate them once
+        # into the new held-asset model without changing their numeric balance.
+        user_data.setdefault("balance_currency", "USD")
+        if user_data.get("balance_currency") not in AVAILABLE_CURRENCIES:
+            user_data["balance_currency"] = "USD"
         users_dict[uid] = user_data
     return users_dict
 
@@ -740,6 +962,7 @@ def admin_menu():
     kb.add("🏙 SEND CITY", "📊 CITY STATS")
     kb.add("💱 CHANGE MONEY", "⭐ STARS SETTINGS")
     kb.add("👥 CURRENCY USERS", "📊 CURRENCY STATS")
+    kb.add("📊 MARKET STATUS")
     kb.add("✏️ EDIT START MESSAGE")
     kb.add("🔙 BACK MAIN MENU")
     return kb
@@ -856,7 +1079,8 @@ def profile_handler(m):
     status_str = f"Verified ({sticker})" if verified else "Not Verified"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
-    balance = u_data.get("balance", 0.0)
+    balance = balance_asset_amount(uid)
+    balance_code = ensure_balance_asset(uid)
     email = u_data.get("email", "")
     phone = u_data.get("phone", "")
     contact_info = email if email else (phone if phone else "Not Set")
@@ -869,7 +1093,7 @@ def profile_handler(m):
         f"• Contact: {contact_info}\n"
         f"• Date Joined: {joined}\n"
         f"• Total Downloads: {downloads}\n"
-        f"• Balance: {money_text(uid, balance)} (USD ${balance:.2f})"
+        f"• Balance: {balance_text(uid)} (USD value ${balance_usd_value(uid):,.2f})"
     )
     kb = InlineKeyboardMarkup(row_width=1)
     if not verified:
@@ -1817,7 +2041,7 @@ def _rapid_choose(data, quality):
     pool.sort(key=lambda x:(0 if "mp4" in x["text"] else 1, abs((x["height"] or target)-target), 0 if x["audio"] else 1, -x["fps"]))
     return pool[0]
 
-def _rapid_download(link,tmp_dir,quality,max_seconds):
+def _rapid_download(link,tmp_dir,quality,max_seconds,uid=None):
     vid=_extract_youtube_video_id(link)
     if not vid: raise RuntimeError("Could not extract the YouTube video ID.")
     data=_rapidapi_youtube_details(vid)
@@ -1825,7 +2049,7 @@ def _rapid_download(link,tmp_dir,quality,max_seconds):
     if duration and duration>max_seconds: raise RuntimeError(f"YouTube video is too long. Maximum is {max_seconds//60} minutes.")
     chosen=_rapid_choose(data,quality)
     path=os.path.join(tmp_dir,f"youtube_{vid}.mp4")
-    max_bytes=max(1,_download_max_mb(str(chat_id)))*1024*1024
+    max_bytes=max(1,_download_max_mb(str(uid or "")))*1024*1024
     with requests.get(chosen["url"],headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as r:
         r.raise_for_status(); total=0
         with open(path,"wb") as f:
@@ -1837,12 +2061,11 @@ def _rapid_download(link,tmp_dir,quality,max_seconds):
     return [path]
 
 def _instagram_api_config():
-    """Load Instagram downloader API config from MongoDB first, env vars second."""
-    return (
-        str(get_setting("instagram_api_url", RAPIDAPI_IG_URL) or "").strip(),
-        str(get_setting("instagram_api_host", RAPIDAPI_IG_HOST) or "").strip(),
-        str(get_setting("instagram_api_key", RAPIDAPI_IG_KEY) or "").strip(),
-    )
+    """Use the requested Instagram RapidAPI endpoint. Admin MongoDB key overrides
+    the Railway env key, while URL/host are fixed to the requested API so an old
+    Instagram provider cannot silently be used."""
+    key=str(get_setting("instagram_api_key", RAPIDAPI_IG_KEY) or RAPIDAPI_IG_KEY or "").strip()
+    return (RAPIDAPI_IG_URL, RAPIDAPI_IG_HOST, key)
 
 def _instagram_api_enabled():
     url,host,key=_instagram_api_config()
@@ -2242,7 +2465,7 @@ def download_media(chat_id, link, message_id, quality=None):
         provider="yt-dlp"
         if platform=="youtube" and RAPIDAPI_YT_KEY:
             try:
-                media=_rapid_download(link,tmp,quality,max_seconds); provider="rapidapi-youtube"
+                media=_rapid_download(link,tmp,quality,max_seconds,uid); provider="rapidapi-youtube"
             except Exception as e:
                 print("RapidAPI YouTube fallback:",repr(e))
         if not media and platform=="instagram" and _instagram_api_enabled():
@@ -2386,9 +2609,10 @@ def start_handler(message):
     if bot_locked_guard(message): return
     uid=str(message.from_user.id); args=message.text.split()
     if uid not in users:
-        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
+        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","balance_currency":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
         save_user(uid)
     users[uid].setdefault("currency","USD")
+    users[uid].setdefault("balance_currency", users[uid].get("currency") or "USD")
     users[uid].setdefault("first_name", message.from_user.first_name or "there")
     users[uid]["first_name"] = message.from_user.first_name or users[uid].get("first_name") or "there"
     users[uid]["username"] = message.from_user.username or users[uid].get("username") or ""
@@ -2600,21 +2824,18 @@ def balance_handler(m):
     if bot_locked_guard(m) or banned_guard(m):
         return
     uid = str(m.from_user.id)
-    bal = users.get(uid, {}).get("balance", 0.0)
-    blocked = users.get(uid, {}).get("blocked", 0.0)
+    bal = balance_asset_amount(uid)
+    blocked = float(users.get(uid, {}).get("blocked", 0.0) or 0.0)
     try:
-        code=cur_code(uid); rate=fx_rate(uid)
-        if code == "USD":
-            text=(f"💰 Available Balance: <b>${bal:.2f} USD</b>\n"
-                  f"⏳ Blocked Amount: <b>${blocked:.2f} USD</b>")
-        else:
-            text=(f"💰 Available Balance: <b>${bal:.2f} USD</b>\n"
-                  f"💱 {code}: <b>{local_money(uid, bal):,.2f} {code}</b>\n"
-                  f"⏳ Blocked Amount: <b>${blocked:.2f} USD</b>\n\n"
-                  f"📊 Rate: 1 USD = {rate:,.4f} {code}\n"
-                  f"⚠️ Exchange rates can change. Your balance remains USD and is converted using the current rate.")
+        code=ensure_balance_asset(uid); usd_value=balance_usd_value(uid); rate=fx_rate_for_code(code)
+        text=(f"💰 Available Balance: <b>{balance_text(uid)}</b>\n"
+              f"💵 Current USD value: <b>${usd_value:,.2f} USD</b>\n"
+              f"⏳ Blocked Amount: <b>{blocked:,.8f} {code}</b>\n\n"
+              f"📊 Market: <b>1 USD = {rate:,.8f} {code}</b>" if code != "USD" else
+              f"💰 Available Balance: <b>${bal:,.2f} USD</b>\n⏳ Blocked Amount: <b>${blocked:,.2f} USD</b>")
         bot.send_message(m.chat.id,text)
-    except: pass
+    except Exception as e:
+        print("balance display error:",e)
 
 @bot.message_handler(func=lambda m: m.text == "🆔 GET ID")
 def get_id_handler(m):
@@ -2709,7 +2930,7 @@ def withdraw_address_step(m):
     kb.add("🔙 CANCEL")
     try:
         min_w = get_setting("min_withdrawal", 1.0)
-        msg = bot.send_message(m.chat.id, f"Enter withdrawal amount in {cur_code(uid)}\nMinimum: {money_text(uid,min_w)}\nBalance: {money_text(uid,users[uid]['balance'])}\n\nOr press 🔙 CANCEL", reply_markup=kb)
+        msg = bot.send_message(m.chat.id, f"Enter withdrawal amount in {cur_code(uid)}\nMinimum: {money_text(uid,min_w)}\nBalance: {balance_text(uid)}\nUSD value: ${balance_usd_value(uid):,.2f}\n\nOr press 🔙 CANCEL", reply_markup=kb)
         bot.register_next_step_handler(msg, withdraw_amount_step)
     except: pass
 
@@ -2721,7 +2942,10 @@ def withdraw_amount_step(m):
         return
     try:
         local_amt = float(text)
-        amt = local_amt / fx_rate(uid)
+        code=ensure_balance_asset(uid); px=asset_usd_price(code)
+        if px <= 0: raise ValueError("market rate unavailable")
+        amt_usd = local_amt * px
+        balance_units=balance_asset_amount(uid)
     except:
         kb = ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("🔙 CANCEL")
@@ -2732,12 +2956,12 @@ def withdraw_amount_step(m):
         return
 
     min_w = get_setting("min_withdrawal", 1.0)
-    if amt < min_w:
+    if amt_usd < min_w:
         try:
             bot.send_message(m.chat.id, f"❌ Minimum withdrawal is {money_text(uid,min_w)}", reply_markup=localized_user_menu(uid))
         except: pass
         return
-    if amt > users[uid]["balance"]:
+    if local_amt > balance_units:
         try:
             bot.send_message(m.chat.id, "❌ Insufficient balance", reply_markup=localized_user_menu(uid))
         except: pass
@@ -2745,23 +2969,23 @@ def withdraw_amount_step(m):
 
     fee_pct = get_setting("fee_percent", 0.0)
     low_fee = get_setting("low_fee", 0.0)
-    calculated_fee = (amt * fee_pct) / 100.0
-    amount_sent = amt - calculated_fee - low_fee
-    if amount_sent < 0:
-        amount_sent = 0.0
-
+    calculated_fee = (amt_usd * fee_pct) / 100.0
+    amount_sent_usd = max(0.0, amt_usd - calculated_fee - low_fee)
     wid = random.randint(10000, 99999)
-    users[uid]["balance"] -= amt
-    users[uid]["blocked"] += amt
+    users[uid]["balance"] = round(balance_units - local_amt, 12)
+    users[uid]["blocked"] = round(float(users[uid].get("blocked",0.0) or 0.0) + local_amt, 12)
 
     withdrawal = {
         "id": wid,
         "user": uid,
-        "amount": amt,
+        "amount": local_amt,
+        "amount_asset": local_amt,
+        "currency": ensure_balance_asset(uid),
+        "amount_usd_at_request": amt_usd,
         "fee": calculated_fee,
         "low_fee": low_fee,
-        "amount_sent": amount_sent,
-        "blocked": amt,
+        "amount_sent": amount_sent_usd,
+        "blocked": local_amt,
         "address": users[uid].get("temp_addr", "N/A"),
         "status": "pending",
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2769,7 +2993,7 @@ def withdraw_amount_step(m):
     withdraws.append(withdrawal)
     save_user(uid)
     save_withdraws()
-    log_activity(uid, "withdrawal_requested", {"amount_usd": amt, "request_id": wid})
+    log_activity(uid, "withdrawal_requested", {"amount_usd": amt_usd, "amount_asset": local_amt, "currency": ensure_balance_asset(uid), "request_id": wid})
 
     if users[uid].get("verified") and users[uid].get("email"):
         w_email = users[uid]["email"]
@@ -3009,7 +3233,7 @@ def stats_handler(m):
     if not is_admin(m.from_user.id):
         return
     total_users = len(users)
-    total_balance = sum(u.get("balance", 0.0) for u in users.values())
+    total_balance = sum(balance_usd_value(uid) for uid in users)
     total_blocked = sum(u.get("blocked", 0.0) for u in users.values())
     total_withdraws = len(withdraws)
     pending_withdraws = len([w for w in withdraws if w["status"] == "pending"])
@@ -3204,10 +3428,11 @@ def gift_all_process(m):
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
         
-        users_col.update_many({}, {"$inc": {"balance": amount}})
         for uid in users:
-            users[uid]["balance"] = users[uid].get("balance", 0.0) + amount
-        bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} to all users' balances!")
+            try: add_usd_to_balance(uid,amount)
+            except Exception: pass
+        save_users()
+        bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} USD value to all users' current holdings!")
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
@@ -3232,9 +3457,10 @@ def remove_all_process(m):
         if remove_amt <= 0:
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
-        users_col.update_many({}, {"$inc": {"balance": -remove_amt}})
         for uid in users:
-            users[uid]["balance"] = max(0.0, users[uid].get("balance", 0.0) - remove_amt)
+            try: remove_usd_from_balance(uid,remove_amt)
+            except Exception: pass
+        save_users()
             
         count = 0
         for uid in users:
@@ -3937,16 +4163,16 @@ def premium_buy_callback(call):
     if months not in PREMIUM_DEFAULT_PRICES:
         bot.answer_callback_query(call.id, "Invalid plan.", show_alert=True); return
     price = get_premium_prices()[months]
-    bal = float(users[uid].get("balance", 0))
-    if bal < price:
+    bal_usd = balance_usd_value(uid)
+    if bal_usd < price:
         bot.answer_callback_query(call.id, "❌ Insufficient balance.", show_alert=True)
-        bot.send_message(call.message.chat.id, f"❌ You need <b>${price:.2f}</b>. Your balance is <b>${bal:.2f}</b>.\n\n💰 Earn more through referrals or ask admin to add balance.")
+        bot.send_message(call.message.chat.id, f"❌ You need <b>${price:.2f}</b>. Your current balance value is <b>${bal_usd:.2f}</b>.\n\n💰 Earn more through referrals or ask admin to add balance.")
         return
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(f"✅ Pay ${price:.2f} from balance", callback_data=f"premium_confirm:{months}"))
     kb.add(InlineKeyboardButton("❌ Cancel", callback_data="premium_cancel"))
     bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"💎 <b>{months} month Premium</b>\n\nPrice: <b>{money_text(uid, price)}</b> (USD ${price:.2f})\nYour balance: <b>{money_text(uid, bal)}</b>\n\nConfirm payment?", reply_markup=kb)
+    bot.send_message(call.message.chat.id, f"💎 <b>{months} month Premium</b>\n\nPrice: <b>{money_text(uid, price)}</b> (USD ${price:.2f})\nYour balance: <b>{balance_text(uid)}</b>\n\nConfirm payment?", reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("premium_confirm:"))
 def premium_confirm_callback(call):
@@ -3955,8 +4181,8 @@ def premium_confirm_callback(call):
     price = get_premium_prices().get(months)
     if price is None or not users.get(uid, {}).get("verified", False):
         bot.answer_callback_query(call.id, "❌ Premium purchase unavailable.", show_alert=True); return
-    bal = float(users[uid].get("balance", 0))
-    if bal < price:
+    bal_usd = balance_usd_value(uid)
+    if bal_usd < price:
         bot.answer_callback_query(call.id, "❌ Insufficient balance.", show_alert=True); return
     now = datetime.now(timezone.utc)
     old = users[uid].get("premium_until")
@@ -3966,7 +4192,9 @@ def premium_confirm_callback(call):
     except Exception: old_dt = now
     base = max(now, old_dt)
     until = base + timedelta(days=30*int(months))
-    users[uid]["balance"] = round(bal - price, 8)
+    if not remove_usd_from_balance(uid,price,save=False):
+        bot.answer_callback_query(call.id, "❌ Insufficient balance at current market rate.", show_alert=True); return
+    users[uid]["balance"] = round(users[uid]["balance"], 12)
     users[uid]["premium_until"] = until.isoformat()
     users[uid]["premium_warning_sent"] = False
     users[uid]["premium_source"] = "paid"
@@ -4284,11 +4512,11 @@ def add_balance_process(m):
                 bot.send_message(m.chat.id, "❌ Invalid input")
             except: pass
             return
-        users[uid]["balance"] += amt
+        add_usd_to_balance(uid,amt)
         save_user(uid)
         try:
-            bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
-            bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f}")
+            bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} USD value to user {uid}. New holding: {balance_text(uid)}")
+            bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f} USD value.\nCurrent holding: {balance_text(uid)}")
         except: pass
     except:
         try:
@@ -4316,16 +4544,15 @@ def remove_balance_process(m):
                 bot.send_message(m.chat.id, "❌ Invalid input")
             except: pass
             return
-        if users[uid]["balance"] < amt:
+        if not remove_usd_from_balance(uid,amt):
             try:
-                bot.send_message(m.chat.id, "❌ Insufficient balance")
+                bot.send_message(m.chat.id, "❌ Insufficient balance at the current market rate")
             except: pass
             return
-        users[uid]["balance"] -= amt
         save_user(uid)
         try:
-            bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
-            bot.send_message(int(uid), f"💸 ${amt:.2f} removed from your balance")
+            bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} USD value from user {uid}")
+            bot.send_message(int(uid), f"💸 ${amt:.2f} USD value removed from your balance.\nCurrent holding: {balance_text(uid)}")
         except: pass
     except:
         try:
@@ -4714,7 +4941,7 @@ def city_stats(m):
 @bot.message_handler(func=lambda m: m.text == "💱 CHANGE MONEY")
 def change_money(m):
     if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"💱 <b>Exchange rates</b> — 1 USD equals local currency.\nExample: ETB=188 EUR=0.85 JPY=147 KRW=1380"); bot.register_next_step_handler(msg,change_money_step)
+    msg=bot.send_message(m.chat.id,"💱 <b>Exchange-rate override</b> — use this only when you want to pin a manual rate.\nExample: ETB=188 EUR=0.85 JPY=147 KRW=1380\n\nIf no manual override exists, the bot uses the live USD market rate."); bot.register_next_step_handler(msg,change_money_step)
 
 def change_money_step(m):
     if not is_admin(m.from_user.id): return
@@ -4734,6 +4961,22 @@ def admin_currency_users(m):
         rows.append(f"• {uid}: {cur_code(uid)} — 1 USD = {fx_rate(uid):,.4f} {cur_code(uid)}")
     text="💱 <b>USER CURRENCIES</b>\n\n"+"\n".join(rows[:200])
     bot.send_message(m.chat.id,text if rows else "No users yet.")
+
+@bot.message_handler(func=lambda m: m.text == "📊 MARKET STATUS")
+def admin_market_status(m):
+    if not is_admin(m.from_user.id): return
+    refresh_market_rates(force=False)
+    lines=["🌍 <b>GLOBAL MARKET RATE STATUS</b>",""]
+    fiat=FX_CACHE.get("fiat",{}); crypto=FX_CACHE.get("crypto",{})
+    lines.append(f"💵 Fiat source: <b>{FX_CACHE.get('sources',{}).get('fiat','N/A')}</b>")
+    lines.append(f"🪙 Crypto source: <b>{FX_CACHE.get('sources',{}).get('crypto','N/A')}</b>")
+    lines.append(f"🕒 Fiat updated: <b>{datetime.fromtimestamp(fiat.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if fiat.get('time') else 'N/A'}</b>")
+    lines.append(f"🕒 Crypto updated: <b>{datetime.fromtimestamp(crypto.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if crypto.get('time') else 'N/A'}</b>")
+    lines.append("")
+    for code in ("ETB","SOS","EUR","BTC","ETH","USDT","BNB","SOL","XRP","USDC","ADA","DOGE","TRX"):
+        lines.append(f"• <b>{code}</b>: 1 USD = {market_rate_text(code)} {code}")
+    lines.append("\n⚙️ Admin manual override still has priority over live market data.")
+    bot.send_message(m.chat.id,"\n".join(lines))
 
 @bot.message_handler(func=lambda m: m.text == "📊 CURRENCY STATS")
 def currency_stats(m):
@@ -4763,22 +5006,68 @@ def change_currency_button(m):
         f"💱 <b>CHANGE CURRENCY</b>\n\n"
         f"Current: <b>{current}</b>\n"
         f"Rate: 1 USD = <b>{rate:,.4f} {current}</b>\n\n"
-        "⚠️ <b>Important:</b> your account balance is stored in USD. Changing currency only changes how your balance is displayed and converted. If the exchange rate changes later, the displayed local amount will use the latest rate.",
+        "⚠️ <b>Important:</b> your account balance is stored in USD. Changing currency does not lock a local-currency value. The local amount is recalculated from the current/live exchange rate, so it can rise or fall later.",
         reply_markup=currency_kb())
+
+@bot.callback_query_handler(func=lambda c: c.data == "currency_refresh")
+def currency_refresh_callback(call):
+    try:
+        refresh_market_rates(force=True)
+        bot.answer_callback_query(call.id,"✅ Market rates updated")
+        code=cur_code(call.from_user.id)
+        bot.send_message(call.message.chat.id, f"📊 <b>Market updated</b>\n\n💱 {code}: <b>{market_rate_text(code)}</b> USD\n🕒 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(code) else 'fiat','market feed')}</b>", reply_markup=currency_kb())
+    except Exception:
+        bot.answer_callback_query(call.id,"❌ Market update failed. Try again later.",show_alert=True)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("currency:"))
 def currency_select_callback(call):
     uid=str(call.from_user.id); code=call.data.split(":",1)[1]
     if code not in AVAILABLE_CURRENCIES:
         bot.answer_callback_query(call.id,"❌ Invalid currency.",show_alert=True); return
-    users[uid]["currency"]=code; save_user(uid); rate=fx_rate(uid)
-    bot.answer_callback_query(call.id,f"✅ Currency changed to {code}")
+    current=ensure_balance_asset(uid); current_amount=balance_asset_amount(uid); current_usd=balance_usd_value(uid)
+    new_px=asset_usd_price(code)
+    if new_px<=0 and current_amount>0:
+        bot.answer_callback_query(call.id,"❌ Live market rate unavailable.",show_alert=True); return
+    new_amount=current_usd/new_px if new_px>0 else 0.0
+    if is_crypto(code): preview=f"{new_amount:,.8f} {code}"
+    else: preview=f"{new_amount:,.2f} {code}"
+    if current==code:
+        bot.answer_callback_query(call.id,"Already selected."); return
+    kb=InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"currency_confirm:{code}"),
+           InlineKeyboardButton("❌ CANCEL",callback_data="currency_cancel"))
+    bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id,
-        f"✅ <b>Currency changed</b>\n\n"
-        f"💱 Currency: <b>{code}</b>\n"
-        f"📊 Current rate: <b>1 USD = {rate:,.4f} {code}</b>\n\n"
-        "⚠️ If the exchange rate changes in the future, your balance will be shown using the new/current rate.",
-        reply_markup=localized_user_menu(uid))
+        f"⚠️ <b>CURRENCY CONVERSION WARNING</b>\n\n"
+        f"You currently hold: <b>{current_amount:,.8f} {current}</b>\n"
+        f"Current USD value: <b>${current_usd:,.2f}</b>\n\n"
+        f"You are switching to: <b>{code}</b>\n"
+        f"Estimated new balance: <b>{preview}</b>\n\n"
+        "📉 Market prices can move after conversion. Your holding will be the selected currency, so its USD value can rise or fall with the market.\n\n"
+        "Only confirm if you understand this market-risk behavior.",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("currency_confirm:"))
+def currency_confirm_callback(call):
+    uid=str(call.from_user.id); code=call.data.split(":",1)[1]
+    refresh_market_rates(force=False)
+    ok,new_amount,old_usd=convert_balance_asset(uid,code,save=True)
+    if not ok:
+        bot.answer_callback_query(call.id,"❌ Conversion failed: live market rate unavailable.",show_alert=True); return
+    bot.answer_callback_query(call.id,"✅ Currency converted")
+    rate=fx_rate_for_code(code)
+    precision=f"{rate:,.8f}"
+    source=FX_CACHE.get("sources",{}).get("crypto" if is_crypto(code) else "fiat","live market")
+    bot.send_message(call.message.chat.id,
+        f"✅ <b>Currency conversion complete</b>\n\n"
+        f"💱 Holding: <b>{balance_text(uid)}</b>\n"
+        f"💵 USD value now: <b>${balance_usd_value(uid):,.2f}</b>\n"
+        f"📊 Rate: <b>1 USD = {precision} {code}</b>\n"
+        f"🌍 Source: <b>{source}</b>\n\n"
+        "⚠️ This balance now moves with the selected market asset. It is not permanently fixed in USD.",reply_markup=localized_user_menu(uid))
+
+@bot.callback_query_handler(func=lambda c: c.data == "currency_cancel")
+def currency_cancel_callback(call):
+    bot.answer_callback_query(call.id,"Conversion cancelled")
 
 @bot.message_handler(func=lambda m: m.text in ["📜 HISTORY"] + [v.get("history","") for v in MAIN_LABELS.values()])
 def history_button(m):
@@ -4832,6 +5121,9 @@ def localized_action_dispatch(m):
 
 if __name__ == "__main__":
     threading.Thread(target=premium_expiry_worker, daemon=True).start()
+    threading.Thread(target=market_refresh_worker, daemon=True).start()
+    try: refresh_market_rates(force=True)
+    except Exception as e: print("Initial market refresh failed:", e)
     print("🤖 Bot 1 and Bot 2 are starting...")
     print(f"🟢 WaForge WhatsApp configured: {bool(WAFORGE_API_KEY)} | D7 SMS configured: {bool(D7_TOKEN)}")
     print("📦 Telegram upload limits: Admin-controlled FREE/TRIAL/PREMIUM values stored in MongoDB")
