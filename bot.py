@@ -2556,16 +2556,28 @@ def confirm_join(call):
             try:
                 bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
             except: pass
+            # After the user's first successful channel confirmation, show the
+            # same welcome message + main menu used by the normal /start flow.
+            # Do NOT replace this with a bare "Join confirmed" message.
+            # The welcome is part of the onboarding system.
+            try:
+                bot.send_message(
+                    user_id,
+                    render_start_message(str(user_id)),
+                    reply_markup=localized_user_menu(str(user_id)),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                print("WELCOME AFTER CONFIRM ERROR:", repr(e))
+
             if user_id in pending_links:
-                link = pending_links[user_id]
-                del pending_links[user_id]
-                msg = bot.send_message(user_id, "⏳ Processing...")
-                if is_quick_access(user_id):
-                    vip_executor.submit(download_media, user_id, link, msg.message_id)
-                else:
-                    normal_executor.submit(download_media, user_id, link, msg.message_id)
-            else:
-                bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
+                link = pending_links.pop(user_id, None)
+                if link:
+                    msg = bot.send_message(user_id, "⏳ Processing...")
+                    if is_quick_access(user_id):
+                        vip_executor.submit(download_media, user_id, link, msg.message_id)
+                    else:
+                        normal_executor.submit(download_media, user_id, link, msg.message_id)
         else:
             bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
     except:
@@ -4144,9 +4156,17 @@ def multi_checkjoin(call):
                     normal_executor.submit(download_media, user_id, link, msg.message_id)
             except: pass
         else:
+            # Multi-channel confirmation must also complete onboarding: show
+            # the configurable welcome message and the user's real main menu.
             try:
-                bot.send_message(user_id, "Send your video link.")
-            except: pass
+                bot.send_message(
+                    user_id,
+                    render_start_message(str(user_id)),
+                    reply_markup=localized_user_menu(str(user_id)),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                print("MULTI WELCOME AFTER CONFIRM ERROR:", repr(e))
     else:
         try:
             bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
