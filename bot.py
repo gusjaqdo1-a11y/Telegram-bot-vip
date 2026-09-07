@@ -81,7 +81,9 @@ tg_client = TelegramClient(
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 bot2 = telebot.TeleBot(BOT2_TOKEN, parse_mode="HTML")
 
-ADMIN_IDS = [7983838654]
+ROOT_ADMIN_ID = int(os.getenv("ROOT_ADMIN_ID", "7983838654"))
+# The root admin is permanent and cannot be removed through the bot.
+ADMIN_IDS = [ROOT_ADMIN_ID]
 
 CHANNEL_ID = "@tiktokvediodownload"
 
@@ -280,6 +282,41 @@ def get_setting(key, default):
 
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
+# ================= PERSISTENT ADMIN / CUSTOMER SETTINGS =================
+# ADMIN_IDS is kept in memory for fast permission checks, while MongoDB keeps
+# added admins across Railway/Render restarts. ROOT_ADMIN_ID is permanent.
+def load_admin_ids():
+    stored = get_setting("admin_ids", None)
+    ids = {int(ROOT_ADMIN_ID)}
+    if isinstance(stored, list):
+        for value in stored:
+            try:
+                ids.add(int(value))
+            except Exception:
+                pass
+    admin_list = sorted(ids)
+    set_setting("admin_ids", admin_list)
+    return admin_list
+
+ADMIN_IDS = load_admin_ids()
+
+def save_admin_ids():
+    global ADMIN_IDS
+    ids = {int(ROOT_ADMIN_ID)}
+    for value in ADMIN_IDS:
+        try:
+            ids.add(int(value))
+        except Exception:
+            pass
+    ADMIN_IDS = sorted(ids)
+    set_setting("admin_ids", ADMIN_IDS)
+
+def admin_label(uid):
+    data = users.get(str(uid), {})
+    username = data.get("username") or ""
+    name = data.get("first_name") or ""
+    return f"@{username}" if username else (name or str(uid))
 
 def touch_user(uid, save=True):
     uid=str(uid)
@@ -690,6 +727,9 @@ def admin_menu():
     kb.add("🗑️ REMOVE ALL")
     kb.add("📢 Send Email All")
     kb.add("✅ Verified Users", "🏷️ Sticker")
+    kb.add("➕ ADD NEW ADMIN", "➖ REMOVE ADMIN")
+    kb.add("💰 SEE BALANCE", "📊 SEE ALL BALANCE")
+    kb.add("✏️ EDIT COSTUMER")
     kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
     kb.add("Send verify")
     kb.add("🟢 Open SMS", "🔴 CLOSE SMS")
@@ -820,8 +860,9 @@ def profile_handler(m):
     u_data = users.get(uid, {})
     
     verified = u_data.get("verified", False)
-    sticker = u_data.get("sticker", "Verified" if verified else "Not Verified")
-    status_str = f"Verified ({sticker})" if verified else "Not Verified"
+    global_sticker = str(get_setting("global_sticker", "") or "").strip()
+    sticker = global_sticker or u_data.get("sticker", "Verified" if verified else "Not Verified")
+    status_str = f"Verified {sticker}" if verified else (f"{sticker}" if global_sticker else "Not Verified")
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -862,27 +903,26 @@ def profile_language_callback(call):
 @bot.callback_query_handler(func=lambda call: call.data == "start_verify_flow")
 def start_verify_flow(call):
     try:
-        sms_enabled = get_setting("sms_enabled", False)
-        whatsapp_enabled = get_setting("whatsapp_verify_enabled", False) and bool(WAFORGE_API_KEY)
+        sms_enabled = bool(get_setting("sms_enabled", False))
+        whatsapp_enabled = bool(get_setting("whatsapp_verify_enabled", False)) and bool(WAFORGE_API_KEY)
+
+        # Gmail is always available through the configured Resend email system.
+        # SMS and WhatsApp are independently controlled by their admin toggles.
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(InlineKeyboardButton("📧 Gmail", callback_data="verify_choice_gmail"))
         if sms_enabled:
-            kb = InlineKeyboardMarkup()
-            kb.row(
-                InlineKeyboardButton("📧 Gmail", callback_data="verify_choice_gmail"),
-                InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone")
-            )
-            if whatsapp_enabled:
-                kb.add(InlineKeyboardButton("🟢 WhatsApp OTP", callback_data="verify_choice_whatsapp"))
-            bot.edit_message_text(
-                "Please choose your verification method:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=kb
-            )
-        else:
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("Cancel Verification", callback_data="cancel_verify_process"))
-            msg = bot.send_message(call.message.chat.id, "Please enter your Gmail address:", reply_markup=kb)
-            bot.register_next_step_handler(msg, process_verification_email)
+            kb.add(InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone"))
+        if whatsapp_enabled:
+            kb.add(InlineKeyboardButton("🟢 WhatsApp OTP", callback_data="verify_choice_whatsapp"))
+        kb.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_verify_process"))
+        bot.edit_message_text(
+            "🔐 <b>Choose verification method</b>\n\n"
+            "📧 Gmail" + ("\n📱 SMS" if sms_enabled else "") +
+            ("\n🟢 WhatsApp OTP" if whatsapp_enabled else ""),
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
         bot.answer_callback_query(call.id)
     except Exception as e:
         print(f"Verify flow error: {e}")
@@ -915,6 +955,10 @@ def cancel_verify_process(call):
     email_verify_pending.pop(uid, None)
     phone_verify_pending.pop(uid, None)
     whatsapp_verify_pending.pop(uid, None)
+    try:
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    except Exception:
+        pass
     try:
         bot.edit_message_text("❌ Verification process cancelled.", call.message.chat.id, call.message.message_id, reply_markup=None)
         bot.answer_callback_query(call.id, "Cancelled successfully!")
@@ -1387,33 +1431,49 @@ def sticker_admin_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        msg = bot.send_message(m.chat.id, "Send User ID or BOT ID and the sticker/badge separated by pipe (|)\nExample:\n123456789 | 🌟 Verified")
+        current = str(get_setting("global_sticker", "") or "").strip()
+        msg = bot.send_message(
+            m.chat.id,
+            "🏷️ <b>GLOBAL PROFILE STICKER</b>\n\n"
+            "Send an emoji, custom emoji text, or badge text. It will appear on EVERY user's profile.\n\n"
+            "Example: <code>💙</code> or <code>🔵 Verified</code>\n"
+            "To remove it, send: <code>CLEAR</code>\n\n"
+            f"Current: <b>{current or 'None'}</b>"
+        )
         bot.register_next_step_handler(msg, sticker_admin_process)
-    except: pass
+    except Exception as e:
+        print("Sticker start error:", e)
 
 def sticker_admin_process(m):
     if not is_admin(m.from_user.id):
         return
-    try:
-        parts = m.text.split("|")
-        if len(parts) < 2:
-            bot.send_message(m.chat.id, "❌ Format error. Use: UserID | StickerText")
-            return
-        uid_str = parts[0].strip()
-        sticker_text = parts[1].strip()
-        
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-        if not uid or uid not in users:
-            bot.send_message(m.chat.id, "❌ User not found.")
-            return
-        users[uid]["sticker"] = sticker_text
+    sticker_text = (m.text or "").strip()
+    if not sticker_text:
+        bot.send_message(m.chat.id, "❌ Sticker cannot be empty.")
+        return
+    if sticker_text.upper() == "CLEAR":
+        set_setting("global_sticker", "")
+        for uid in users:
+            users[uid].pop("global_sticker", None)
+            save_user(uid)
+        bot.send_message(m.chat.id, "🗑️ Global sticker removed from all profiles.")
+        return
+
+    set_setting("global_sticker", sticker_text)
+    # Keep a copy on user documents too, so existing database records are
+    # immediately consistent with the global setting.
+    updated = 0
+    for uid in users:
+        users[uid]["global_sticker"] = sticker_text
         save_user(uid)
-        bot.send_message(m.chat.id, f"✅ Sticker successfully updated for user {uid}!")
+        updated += 1
+    bot.send_message(m.chat.id, f"✅ Global sticker set to: {sticker_text}\n👥 Applied to {updated} users.")
+    # Notify users best-effort; the profile itself reads the persistent global value.
+    for uid in users:
         try:
-            bot.send_message(int(uid), f"🌟 Your profile status sticker has been updated to: {sticker_text}")
-        except: pass
-    except Exception as e:
-        bot.send_message(m.chat.id, f"❌ Error: {e}")
+            bot.send_message(int(uid), f"🏷️ Profile sticker updated: {sticker_text}")
+        except Exception:
+            pass
 
 # ================= ADMIN SEND EMAIL ALL =================
 
@@ -1441,6 +1501,175 @@ def send_email_all_process(m):
     try:
         bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
     except: pass
+
+# ================= ADMIN / BALANCE / CUSTOMER MANAGEMENT =================
+
+@bot.message_handler(func=lambda m: m.text == "➕ ADD NEW ADMIN")
+def add_new_admin_start(m):
+    if not is_admin(m.from_user.id): return
+    msg = bot.send_message(
+        m.chat.id,
+        "➕ <b>ADD NEW ADMIN</b>\n\n"
+        "Send the user's Telegram ID or BOT ID.\n"
+        "The new admin will get access to the full Admin Panel."
+    )
+    bot.register_next_step_handler(msg, add_new_admin_process)
+
+
+def add_new_admin_process(m):
+    if not is_admin(m.from_user.id): return
+    raw = (m.text or "").strip()
+    uid = raw if raw in users else find_user_by_botid(raw)
+    if not uid or not str(uid).isdigit():
+        bot.send_message(m.chat.id, "❌ User not found. Send a valid Telegram ID or BOT ID.")
+        return
+    uid_int = int(uid)
+    if uid_int in ADMIN_IDS:
+        bot.send_message(m.chat.id, f"ℹ️ {admin_label(uid)} is already an admin.")
+        return
+    ADMIN_IDS.append(uid_int)
+    save_admin_ids()
+    users.setdefault(str(uid), {})
+    users[str(uid)]["is_admin"] = True
+    save_user(str(uid))
+    bot.send_message(m.chat.id, f"✅ {admin_label(uid)} ({uid}) is now an admin.")
+    try:
+        bot.send_message(uid_int, "👑 <b>You are now an admin.</b>\n\nYou can use the full Admin Panel.", reply_markup=admin_menu())
+    except Exception:
+        pass
+
+
+@bot.message_handler(func=lambda m: m.text == "➖ REMOVE ADMIN")
+def remove_admin_start(m):
+    if not is_admin(m.from_user.id): return
+    msg = bot.send_message(
+        m.chat.id,
+        "➖ <b>REMOVE ADMIN</b>\n\n"
+        "Send the admin's Telegram ID or BOT ID.\n"
+        "⚠️ The General/Root Admin cannot be removed."
+    )
+    bot.register_next_step_handler(msg, remove_admin_process)
+
+
+def remove_admin_process(m):
+    if not is_admin(m.from_user.id): return
+    raw = (m.text or "").strip()
+    uid = raw if raw in users else find_user_by_botid(raw)
+    try:
+        uid_int = int(uid) if uid else 0
+    except Exception:
+        uid_int = 0
+    if not uid_int or uid_int not in ADMIN_IDS:
+        bot.send_message(m.chat.id, "❌ That user is not an admin.")
+        return
+    if uid_int == ROOT_ADMIN_ID:
+        bot.send_message(m.chat.id, "🛡️ The General/Root Admin cannot be removed.")
+        return
+    ADMIN_IDS.remove(uid_int)
+    save_admin_ids()
+    if str(uid_int) in users:
+        users[str(uid_int)]["is_admin"] = False
+        save_user(str(uid_int))
+    bot.send_message(m.chat.id, f"✅ Admin {uid_int} has been removed.")
+    try:
+        bot.send_message(uid_int, "ℹ️ Your admin access has been removed.")
+    except Exception:
+        pass
+
+
+@bot.message_handler(func=lambda m: m.text == "💰 SEE BALANCE")
+def see_balance_start(m):
+    if not is_admin(m.from_user.id): return
+    msg = bot.send_message(
+        m.chat.id,
+        "💰 <b>SEE BALANCE — SEND TO ALL USERS</b>\n\n"
+        "Send the message template to deliver to every user.\n\n"
+        "Available placeholders:\n"
+        "<code>{balance}</code> = USD balance\n"
+        "<code>{username}</code> = username\n"
+        "<code>{name}</code> = first name\n"
+        "<code>{id}</code> = Telegram ID\n\n"
+        "Example:\n<code>You have ${balance} balance. Come use your balance.</code>"
+    )
+    bot.register_next_step_handler(msg, see_balance_process)
+
+
+def see_balance_process(m):
+    if not is_admin(m.from_user.id): return
+    template = (m.text or "").strip()
+    if not template:
+        bot.send_message(m.chat.id, "❌ Message cannot be empty.")
+        return
+    sent = 0
+    for uid, data in users.items():
+        bal = float(data.get("balance", 0.0) or 0.0)
+        username = data.get("username") or ""
+        name = data.get("first_name") or "there"
+        text = template.replace("{balance}", f"{bal:.2f}") \
+                       .replace("{username}", username) \
+                       .replace("{name}", name) \
+                       .replace("{id}", str(uid))
+        try:
+            bot.send_message(int(uid), text)
+            sent += 1
+        except Exception:
+            pass
+    bot.send_message(m.chat.id, f"✅ Balance message sent to {sent}/{len(users)} users.")
+
+
+@bot.message_handler(func=lambda m: m.text == "📊 SEE ALL BALANCE")
+def see_all_balance(m):
+    if not is_admin(m.from_user.id): return
+    rows = []
+    for uid, data in users.items():
+        username = data.get("username") or "N/A"
+        if not str(username).startswith("@") and username != "N/A":
+            username = "@" + str(username)
+        bal = float(data.get("balance", 0.0) or 0.0)
+        rows.append((username.lower(), username, uid, bal))
+    rows.sort(key=lambda x: x[3], reverse=True)
+    total = sum(r[3] for r in rows)
+    lines = [f"📊 <b>ALL USER BALANCES</b> ({len(rows)})", "", f"💰 Total: <b>${total:.2f}</b>", ""]
+    for i, (_, username, uid, bal) in enumerate(rows, 1):
+        lines.append(f"{i}. {username} — <b>${bal:.2f}</b> — <code>{uid}</code>")
+        if len(lines) >= 90:
+            try: bot.send_message(m.chat.id, "\n".join(lines), parse_mode="HTML")
+            except Exception: pass
+            lines = []
+    if lines:
+        try: bot.send_message(m.chat.id, "\n".join(lines), parse_mode="HTML")
+        except Exception: pass
+    if not rows:
+        bot.send_message(m.chat.id, "No users found.")
+
+
+@bot.message_handler(func=lambda m: m.text == "✏️ EDIT COSTUMER")
+def edit_customer_start(m):
+    if not is_admin(m.from_user.id): return
+    current = str(get_setting("customer_username", "@scholes1") or "@scholes1")
+    msg = bot.send_message(
+        m.chat.id,
+        f"✏️ <b>EDIT COSTUMER</b>\n\nCurrent customer: <b>{current}</b>\n\n"
+        "Send the new Telegram username, for example <code>@userkale</code>."
+    )
+    bot.register_next_step_handler(msg, edit_customer_process)
+
+
+def edit_customer_process(m):
+    if not is_admin(m.from_user.id): return
+    username = (m.text or "").strip()
+    if username.upper() == "CLEAR":
+        set_setting("customer_username", "")
+        bot.send_message(m.chat.id, "✅ Customer username cleared.")
+        return
+    username = username.lstrip("@").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+        bot.send_message(m.chat.id, "❌ Invalid username. Use a Telegram username such as @userkale.")
+        return
+    username = "@" + username
+    set_setting("customer_username", username)
+    bot.send_message(m.chat.id, f"✅ Customer support updated to <b>{username}</b>.")
+
 
 # ================= YOUTUBE 30 MIN ADMIN CONTROL =================
 
@@ -2224,7 +2453,9 @@ def customer_handler(m):
     if bot_locked_guard(m) or banned_guard(m):
         return
     try:
-        bot.send_message(m.chat.id, "☎️ Customer Support:\n@scholes1")
+        customer = str(get_setting("customer_username", "@scholes1") or "@scholes1").strip()
+        if customer and not customer.startswith("@"): customer = "@" + customer
+        bot.send_message(m.chat.id, f"☎️ Customer Support:\n{customer}")
     except: pass
 
 @bot.message_handler(func=lambda m: m.text == "🤖CUSTOMER AI")
