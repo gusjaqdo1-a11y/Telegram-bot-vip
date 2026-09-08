@@ -246,6 +246,17 @@ def refresh_market_rates(force=False):
         if force or not f or now-f.get("time",0)>=FX_CACHE_TTL: _fetch_fiat_rates()
         if force or not c or now-c.get("time",0)>=CRYPTO_CACHE_TTL: _fetch_crypto_prices(force)
 
+def market_refresh_worker():
+    """Background market updater. Keeps fiat and crypto prices fresh without blocking Telegram polling."""
+    while True:
+        try:
+            refresh_market_rates(force=False)
+        except Exception as e:
+            print(f"Market refresh worker error: {e}")
+        # Crypto is refreshed every 2 minutes by refresh_market_rates();
+        # the worker wakes more often so expired cache is noticed promptly.
+        time.sleep(30)
+
 def asset_usd_price(code):
     refresh_market_rates(False)
     if code=="USD": return 1.0
