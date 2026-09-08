@@ -109,25 +109,6 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 bot2 = telebot.TeleBot(BOT2_TOKEN, parse_mode="HTML")
 
 ADMIN_IDS = [7983838654]
-OWNER_ADMIN_ID = ADMIN_IDS[0]
-ADMIN_IDS_LOCK = threading.RLock()
-BALANCE_LOCK = threading.RLock()
-
-def get_admin_ids():
-    try:
-        stored = get_setting("admin_ids", ADMIN_IDS)
-        ids = {int(x) for x in (stored or [])}
-        ids.add(int(OWNER_ADMIN_ID))
-        return sorted(ids)
-    except Exception:
-        return list(ADMIN_IDS)
-
-def persist_admin_ids(ids):
-    clean = sorted({int(x) for x in ids} | {int(OWNER_ADMIN_ID)})
-    set_setting("admin_ids", clean)
-    with ADMIN_IDS_LOCK:
-        ADMIN_IDS[:] = clean
-    return clean
 
 CHANNEL_ID = "@tiktokvediodownload"
 
@@ -300,65 +281,6 @@ def money_text(uid,usd): return format_asset(cur_code(uid),usd_to_asset(cur_code
 def market_rate_text(code):
     p=asset_usd_price(code)
     return "N/A" if not p else (f"1 {code} = ${p:,.8f}" if is_crypto(code) else f"1 USD = {p:,.4f} {code}")
-def portfolio_get(uid):
-    uid=str(uid)
-    p=users.get(uid,{}).get("portfolio") or {}
-    if not isinstance(p,dict): p={}
-    return p
-
-def portfolio_total_usd(uid):
-    total=0.0
-    for code, amount in portfolio_get(uid).items():
-        if code in CRYPTO_CURRENCIES:
-            total += asset_to_usd(code, float(amount or 0))
-    return total
-
-def portfolio_lines(uid):
-    p=portfolio_get(uid); rows=[]
-    for code, amount in p.items():
-        amount=float(amount or 0)
-        if code not in CRYPTO_CURRENCIES or amount <= 0: continue
-        price=asset_usd_price(code)
-        value=amount*price if price>0 else 0
-        rows.append((code,amount,value,price))
-    rows.sort(key=lambda x:x[2], reverse=True)
-    return rows
-
-def add_portfolio(uid, code, amount, source="crypto_conversion", meta=None):
-    uid=str(uid); amount=float(amount or 0)
-    if uid not in users or code not in CRYPTO_CURRENCIES or amount<=0: return False
-    with BALANCE_LOCK:
-        p=portfolio_get(uid)
-        p[code]=round(float(p.get(code,0) or 0)+amount,18)
-        users[uid]["portfolio"]=p
-        save_user(uid)
-        portfolio_col.update_one({"user_id":uid,"asset":code},{"$set":{"amount":p[code],"updated_at":datetime.now(timezone.utc)}},upsert=True)
-        crypto_trade_col.insert_one({"user_id":uid,"type":"buy","asset":code,"amount":amount,"usd_value":asset_to_usd(code,amount),"source":source,"meta":meta or {},"time":datetime.now(timezone.utc)})
-    return True
-
-def remove_portfolio(uid, code, amount, source="crypto_conversion", meta=None):
-    uid=str(uid); amount=float(amount or 0)
-    if uid not in users or code not in CRYPTO_CURRENCIES or amount<=0: return False
-    with BALANCE_LOCK:
-        p=portfolio_get(uid); current=float(p.get(code,0) or 0)
-        if current+1e-18 < amount: return False
-        left=round(current-amount,18)
-        if left<=1e-18: p.pop(code,None)
-        else: p[code]=left
-        users[uid]["portfolio"]=p; save_user(uid)
-        portfolio_col.update_one({"user_id":uid,"asset":code},{"$set":{"amount":max(left,0),"updated_at":datetime.now(timezone.utc)}},upsert=True)
-        crypto_trade_col.insert_one({"user_id":uid,"type":"sell","asset":code,"amount":amount,"usd_value":asset_to_usd(code,amount),"source":source,"meta":meta or {},"time":datetime.now(timezone.utc)})
-    return True
-
-def portfolio_text(uid):
-    rows=portfolio_lines(uid)
-    if not rows: return "🪙 <b>CRYPTO INVESTMENTS</b>\n\nNo crypto investments yet."
-    lines=["🪙 <b>CRYPTO INVESTMENTS</b>",""]
-    for code,amount,value,price in rows:
-        lines.append(f"{CRYPTO_CURRENCIES[code][0]} <b>{code}</b>: {amount:,.12f}  ≈ ${value:,.2f}")
-    lines += ["",f"📊 <b>Total market value:</b> ${portfolio_total_usd(uid):,.2f} USD", "📡 Prices: live market feed"]
-    return "\n".join(lines)
-
 def balance_amount(uid): return float(users.get(str(uid),{}).get("balance",0) or 0)
 def blocked_amount(uid): return float(users.get(str(uid),{}).get("blocked",0) or 0)
 def hold_amount_usd(uid):
@@ -479,14 +401,6 @@ rating_campaigns_col = db1["rating_campaigns"]
 referral_commissions_col = db1["referral_commissions"]
 balance_ledger_col = db1["balance_ledger"]
 conversion_holds_col = db1["conversion_holds"]
-portfolio_col = db1["crypto_portfolios"]
-crypto_trade_col = db1["crypto_trades"]
-
-# Load persisted admins while always preserving the immutable owner.
-try:
-    persist_admin_ids(get_admin_ids())
-except Exception:
-    pass
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -608,7 +522,6 @@ def save_user(uid):
 users = load_users()
 for _uid,_u in users.items():
     _u.setdefault("currency","USD"); _u.setdefault("balance_asset", "USD"); _u.setdefault("blocked",0.0); _u.setdefault("conversion_holds",[])
-    _u.setdefault("portfolio", {})
 
 def log_activity(uid, action, details=None):
     try:
@@ -673,10 +586,7 @@ def now_month():
     return datetime.now().month
 
 def is_admin(uid):
-    try:
-        return int(uid) in set(get_admin_ids())
-    except Exception:
-        return False
+    return int(uid) in ADMIN_IDS
 
 def is_quick_access(uid):
     return users.get(str(uid), {}).get("quick_access", False)
@@ -888,34 +798,102 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
-    kb.add("➕ ADD NEW ADMIN", "➖ REMOVE ADMIN")
-    kb.add("💬 SEE BALANCE", "📊 SEE ALL BALANCE")
-    kb.add("✏️ EDIT COSTUMER", "🏷️ Sticker")
-    kb.add("👑 ADMIN LIST", "🪙 CRYPTO PORTFOLIOS")
-    kb.add("⏳ HOLD CHECK", "✅ RELEASE HOLD")
-    kb.add("📜 HOLD HISTORY", "📒 BALANCE LEDGER")
-    kb.add("💰 UNBLOCK MONEY", "💳 WITHDRAWAL CHECK")
+    kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
-    kb.add("🚫 BAN USER MANUAL", "🔥 UN BAN-USER")
-    kb.add("🔍 RAADI", "🔎 SEARCH USER")
-    kb.add("👥 SEE LIST", "📌 POST CHANNEL")
-    kb.add("📢 ADD ADS", "🗑 DELETE ADS")
+    kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
+    kb.add("💰 UNBLOCK MONEY", "🔍 RAADI")
+    kb.add("⏳ HOLD CHECK", "✅ RELEASE HOLD")
+    kb.add("📜 HOLD HISTORY")
+    kb.add("🔥 UN BAN-USER", "📌 POST CHANNEL")
+    kb.add("🔎 SEARCH USER", "📢 ADD ADS")
+    kb.add("🗑 DELETE ADS", "✅ VERIFY ON")
+    kb.add("❌ VERIFY OFF", "CHANNEL POST")
     kb.add("📡 ADD CHANNEL", "🔒 LOCK BOT")
     kb.add("🔓 UNLOCK BOT", "❌ CLOSE WINDOWS")
-    kb.add("📢 BROADCAST MEDIA", "📥 IMPORT USERS")
+    kb.add("CLOSE CHANNEL POST", "📢 BROADCAST MEDIA")
+    kb.add("SEND PAY", "📥 IMPORT USERS")
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
     kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
     kb.add("📉 CHANGE MINIMUM", "➕ ADD FEE")
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
-    kb.add("🗑️ REMOVE ALL", "📢 Send Email All")
+    kb.add("🗑️ REMOVE ALL")
+    kb.add("📢 Send Email All")
     kb.add("⏱️ FREE MAX MIN", "⏱️ PREMIUM MAX MIN")
     kb.add("📦 FREE MAX MB", "📦 TRIAL MAX MB")
     kb.add("📦 PREMIUM MAX MB", "⚙️ DOWNLOAD LIMITS")
     kb.add("📸 INSTAGRAM API", "📸 INSTAGRAM STATUS")
-    kb.add("📊 MARKET STATUS", "🔄 UPDATE MARKET")
+    kb.add("🛰️ COBALT STATUS")
+    kb.add("✅ Verified Users", "🏷️ Sticker")
+    kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
+    kb.add("Send verify")
+    kb.add("🟢 Open SMS", "🔴 CLOSE SMS")
+    kb.add("🟢 OPEN VIA WHATSAPP", "🔴 CLOSE VIA WHATSAPP")
+    kb.add("♻️ Reset all Verify")
+    # Premium administration
+    kb.add("💎 PREMIUM PANEL", "💰 PREMIUM PRICES")
+    kb.add("🔓 OPEN PREMIUM", "🔒 CLOSE PREMIUM")
+    kb.add("🎁 TRIAL PREMIUM", "🎁 OPEN TRIAL DAYS")
+    kb.add("👑 PREMIUM USERS", "💵 REFERRAL REWARD")
+    kb.add("🔗 NETWORK REFERRAL %", "👥 AVAILABLE USERS")
+    kb.add("⭐ RATE BOT", "📊 RATE STATS")
+    kb.add("🗑 DELETE DATABASE USER", "📨 SEND LANGUAGE")
+    kb.add("📨 SEND LANGUAGE", "🌍 LANGUAGE STATS")
+    kb.add("⚥ SEND GENDER", "📊 GENDER STATS")
+    kb.add("🏙 SEND CITY", "📊 CITY STATS")
+    kb.add("💱 CHANGE MONEY", "⭐ STARS SETTINGS")
+    kb.add("👥 CURRENCY USERS", "📊 CURRENCY STATS")
+    kb.add("📊 MARKET STATUS")
+    kb.add("✏️ EDIT START MESSAGE")
+    kb.add("🔙 BACK MAIN MENU")
     return kb
 
+def localized_user_menu(uid):
+    uid=str(uid); lang=lang_of(uid); d=MAIN_LABELS.get(lang,MAIN_LABELS["en"])
+    kb=ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(d["balance"],d["withdraw"])
+    kb.add(d["ref"],d["id"])
+    kb.add(d["premium"],d["profile"])
+    kb.add(d["topup"],"💱 CHANGE CURRENCY")
+    if trial_available(uid):
+        kb.add(d["trial"])
+    kb.add(d["customer"],d["ai"])
+    if is_admin(uid): kb.add("👑 ADMIN PANEL")
+    return kb
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("setlang:"))
+def setlang_callback(call):
+    uid=str(call.from_user.id); code=call.data.split(":",1)[1]
+    if code not in LANGUAGES: return
+    users[uid]["language"]=code; pending=users[uid].pop("pending_ref",None); save_user(uid)
+    bot.answer_callback_query(call.id,"✅ Language saved")
+    try: bot.edit_message_text(f"✅ {LANGUAGES[code]['name']} selected.",call.message.chat.id,call.message.message_id)
+    except Exception: pass
+    if pending:
+        process_referral_signup(uid,pending)
+    check_membership(call.from_user.id)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("change_lang:"))
+def change_lang_callback(call):
+    uid=str(call.from_user.id); code=call.data.split(":",1)[1]
+    if code in LANGUAGES:
+        users[uid]["language"]=code; save_user(uid); bot.answer_callback_query(call.id,"✅ Language updated")
+        bot.send_message(call.message.chat.id,"🌍 Language updated.",reply_markup=localized_user_menu(uid))
+
+def back_to_main_menu(m):
+    uid = str(m.from_user.id)
+    try:
+        bot.send_message(
+            m.chat.id,
+            "🔙 Returning to main menu",
+            reply_markup=localized_user_menu(uid)
+        )
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text == "🔙 BACK MAIN MENU")
+def back_button_handler(m):
+    back_to_main_menu(m)
 
 # ================= ADMIN SMS CONTROL =================
 
@@ -1572,157 +1550,6 @@ def sticker_admin_process(m):
         except: pass
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
-
-# ================= ADMIN / BALANCE / CUSTOMER CONTROLS =================
-@bot.message_handler(func=lambda m: m.text == "➕ ADD NEW ADMIN")
-def add_new_admin_start(m):
-    if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"➕ <b>ADD NEW ADMIN</b>\n\nSend Telegram ID or BOT ID of the user to make admin.")
-    bot.register_next_step_handler(msg,add_new_admin_process)
-
-def add_new_admin_process(m):
-    if not is_admin(m.from_user.id): return
-    uid=resolve_user_input((m.text or '').strip())
-    if not uid or uid not in users:
-        bot.send_message(m.chat.id,"❌ User not found. Send a valid Telegram ID or BOT ID."); return
-    ids=get_admin_ids()
-    if int(uid) in ids:
-        bot.send_message(m.chat.id,"ℹ️ This user is already an admin."); return
-    persist_admin_ids(ids+[int(uid)])
-    bot.send_message(m.chat.id,f"✅ <b>{uid}</b> is now an admin and has full Admin Panel access.")
-    try: bot.send_message(int(uid),"👑 <b>You are now an admin.</b>\n\nYou have access to the full Admin Panel.",reply_markup=admin_menu())
-    except Exception: pass
-
-@bot.message_handler(func=lambda m: m.text == "➖ REMOVE ADMIN")
-def remove_admin_start(m):
-    if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"➖ <b>REMOVE ADMIN</b>\n\nSend Telegram ID or BOT ID of the admin to remove.")
-    bot.register_next_step_handler(msg,remove_admin_process)
-
-def remove_admin_process(m):
-    if not is_admin(m.from_user.id): return
-    target=(m.text or '').strip(); uid=resolve_user_input(target) or (target if target.isdigit() else None)
-    if not uid:
-        bot.send_message(m.chat.id,"❌ Admin not found."); return
-    if int(uid)==int(OWNER_ADMIN_ID):
-        bot.send_message(m.chat.id,"🛡️ The main/owner admin cannot be removed."); return
-    ids=get_admin_ids()
-    if int(uid) not in ids:
-        bot.send_message(m.chat.id,"❌ This user is not an admin."); return
-    persist_admin_ids([x for x in ids if x!=int(uid)])
-    bot.send_message(m.chat.id,f"✅ Admin access removed from <code>{uid}</code>.")
-    try: bot.send_message(int(uid),"🔒 Your Admin Panel access has been removed by the owner/admin.")
-    except Exception: pass
-
-@bot.message_handler(func=lambda m: m.text == "👑 ADMIN LIST")
-def admin_list_view(m):
-    if not is_admin(m.from_user.id): return
-    ids=get_admin_ids(); lines=["👑 <b>ADMIN LIST</b>",""]
-    for i,uid in enumerate(ids,1):
-        u=users.get(str(uid),{}); name=("@"+u.get("username")) if u.get("username") else "No username"
-        role="OWNER" if uid==int(OWNER_ADMIN_ID) else "ADMIN"
-        lines.append(f"{i}. {name} — <code>{uid}</code> — <b>{role}</b>")
-    bot.send_message(m.chat.id,"\n".join(lines))
-
-@bot.message_handler(func=lambda m: m.text == "💬 SEE BALANCE")
-def see_balance_start(m):
-    if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"💬 <b>SEE BALANCE</b>\n\nSend User ID/BOT ID, then the message you want to send.\nFormat:\n<code>123456789 | You have $100 balance. Come use your balance.</code>")
-    bot.register_next_step_handler(msg,see_balance_process)
-
-def see_balance_process(m):
-    if not is_admin(m.from_user.id): return
-    try: target,text=(m.text or '').split('|',1)
-    except ValueError:
-        bot.send_message(m.chat.id,"❌ Format: UserID | Message"); return
-    uid=resolve_user_input(target.strip())
-    if not uid: bot.send_message(m.chat.id,"❌ User not found."); return
-    code=cur_code(uid); available=available_asset_amount(uid); usd=asset_to_usd(code,available); msg_text=text.strip()
-    payload=f"💰 <b>YOUR BALANCE</b>\n\n{format_asset(code,available)}\n💵 USD value: ${usd:,.2f} USD\n\n{html.escape(msg_text)}"
-    try: bot.send_message(int(uid),payload); bot.send_message(m.chat.id,f"✅ Balance message sent to {uid}.")
-    except Exception as e: bot.send_message(m.chat.id,f"❌ Send failed: {e}")
-
-@bot.message_handler(func=lambda m: m.text == "📊 SEE ALL BALANCE")
-def see_all_balance_start(m):
-    if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"📊 <b>SEE ALL BALANCE</b>\n\nSend the message to broadcast with each user's current balance.\nExample: <code>You have $100 balance. Come use your balance.</code>\n\nSend CANCEL to stop.")
-    bot.register_next_step_handler(msg,see_all_balance_process)
-
-def see_all_balance_process(m):
-    if not is_admin(m.from_user.id): return
-    custom=(m.text or '').strip()
-    if custom.upper()=="CANCEL": return bot.send_message(m.chat.id,"❌ Cancelled.")
-    sent=failed=0
-    for uid,u in list(users.items()):
-        try:
-            code=cur_code(uid); avail=available_asset_amount(uid); usd=asset_to_usd(code,avail)
-            text=f"💰 <b>Your Balance</b>\n\n{format_asset(code,avail)}\n💵 USD value: ${usd:,.2f} USD\n\n{html.escape(custom)}"
-            bot.send_message(int(uid),text); sent+=1
-        except Exception: failed+=1
-        time.sleep(0.03)
-    bot.send_message(m.chat.id,f"✅ <b>SEE BALANCE COMPLETE</b>\n\n📨 Sent: {sent}\n❌ Failed: {failed}")
-
-@bot.message_handler(func=lambda m: m.text == "✏️ EDIT COSTUMER")
-def edit_costumer_start(m):
-    if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"✏️ <b>EDIT COSTUMER</b>\n\nSend current User ID/BOT ID and the new username.\nFormat: <code>123456789 | newusername</code>")
-    bot.register_next_step_handler(msg,edit_costumer_process)
-
-def edit_costumer_process(m):
-    if not is_admin(m.from_user.id): return
-    try: target,new_name=(m.text or '').split('|',1)
-    except ValueError:
-        bot.send_message(m.chat.id,"❌ Format: UserID | newusername"); return
-    uid=resolve_user_input(target.strip())
-    new_name=new_name.strip().lstrip('@')
-    if not uid or not new_name or len(new_name)>64:
-        bot.send_message(m.chat.id,"❌ Invalid user or username."); return
-    users[uid]["customer_username"]=new_name
-    save_user(uid)
-    bot.send_message(m.chat.id,f"✅ Customer username changed to <b>@{html.escape(new_name)}</b> for <code>{uid}</code>.")
-
-@bot.message_handler(func=lambda m: m.text == "🪙 CRYPTO PORTFOLIOS")
-def admin_crypto_portfolios(m):
-    if not is_admin(m.from_user.id): return
-    rows=[]
-    for uid,u in users.items():
-        total=portfolio_total_usd(uid)
-        if total<=0: continue
-        name=("@"+u.get("username")) if u.get("username") else uid
-        rows.append((total,name,uid,portfolio_lines(uid)))
-    rows.sort(reverse=True,key=lambda x:x[0])
-    lines=["🪙 <b>CRYPTO PORTFOLIOS</b>","",f"Users with investments: <b>{len(rows)}</b>",""]
-    for total,name,uid,items in rows[:100]:
-        assets=', '.join(f"{c} {a:.8f}" for c,a,_,_ in items[:6])
-        lines.append(f"👤 {name} (<code>{uid}</code>) — <b>${total:,.2f}</b>\n   {assets}")
-    if not rows: lines.append("No crypto investments yet.")
-    bot.send_message(m.chat.id,"\n".join(lines))
-
-@bot.message_handler(func=lambda m: m.text == "📒 BALANCE LEDGER")
-def admin_balance_ledger(m):
-    if not is_admin(m.from_user.id): return
-    rows=list(balance_ledger_col.find({}).sort("time",-1).limit(60)); lines=["📒 <b>BALANCE LEDGER — LAST 60</b>",""]
-    for r in rows:
-        uid=str(r.get("user_id","?")); src=r.get("source") or r.get("type") or "event"; asset=r.get("asset") or r.get("to_asset") or "USD"; amt=r.get("asset_amount",r.get("to_amount",0))
-        lines.append(f"• <code>{uid}</code> | {src} | {asset} {float(amt or 0):,.10f}")
-    bot.send_message(m.chat.id,"\n".join(lines))
-
-@bot.message_handler(func=lambda m: m.text == "📊 MARKET STATUS")
-def admin_market_status(m):
-    if not is_admin(m.from_user.id): return
-    refresh_market_rates(False)
-    f=FX_CACHE.get("fiat",{}); c=FX_CACHE.get("crypto",{})
-    lines=["📊 <b>MARKET STATUS</b>","",f"💵 Fiat source: <b>{FX_CACHE.get('sources',{}).get('fiat','N/A')}</b>",f"🕒 Fiat updated: <b>{datetime.fromtimestamp(f.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC') if f.get('time') else 'N/A'}</b>",f"🪙 Crypto source: <b>{FX_CACHE.get('sources',{}).get('crypto','N/A')}</b>",f"🕒 Crypto updated: <b>{datetime.fromtimestamp(c.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC') if c.get('time') else 'N/A'}</b>"]
-    for code in list(CRYPTO_CURRENCIES)[:10]:
-        p=asset_usd_price(code); lines.append(f"{CRYPTO_CURRENCIES[code][0]} {code}: ${p:,.8f}")
-    bot.send_message(m.chat.id,"\n".join(lines))
-
-@bot.message_handler(func=lambda m: m.text == "🔄 UPDATE MARKET")
-def admin_update_market(m):
-    if not is_admin(m.from_user.id): return
-    try:
-        refresh_market_rates(True); bot.send_message(m.chat.id,"✅ Market prices refreshed successfully.")
-    except Exception as e: bot.send_message(m.chat.id,f"❌ Market refresh failed: {e}")
 
 # ================= ADMIN SEND EMAIL ALL =================
 
@@ -2886,9 +2713,6 @@ def balance_handler(m):
     text += f"⏳ <b>Blocked Amount:</b> {format_asset(code,blocked)}"
     if code!="USD" and available > 0:
         text+=f"\n💵 <b>Current USD value:</b> ${asset_to_usd(code,available):,.2f} USD"
-    ptxt=portfolio_text(uid)
-    if portfolio_lines(uid):
-        text += "\n\n" + ptxt
     if hold > 0.0000000001:
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("❓ What Means Hold",callback_data="what_hold"))
         bot.send_message(m.chat.id,text,reply_markup=kb)
@@ -5032,96 +4856,18 @@ def currency_refresh_callback(call):
 @bot.callback_query_handler(func=lambda c:c.data.startswith("currency:"))
 def currency_select_callback(call):
     uid=str(call.from_user.id); new=call.data.split(":",1)[1]
-    if new not in AVAILABLE_CURRENCIES or uid not in users:
-        bot.answer_callback_query(call.id,"❌ Invalid currency",show_alert=True); return
-    refresh_market_rates(False); old=cur_code(uid)
-    if old==new:
-        bot.answer_callback_query(call.id,"Already using this currency",show_alert=True); return
+    if new not in AVAILABLE_CURRENCIES or uid not in users: bot.answer_callback_query(call.id,"❌ Invalid currency",show_alert=True); return
+    refresh_market_rates(False); old,amt,usd,new_amt=conversion_preview(uid,new)
+    if old==new: bot.answer_callback_query(call.id,"Already using this currency"); return
     if blocked_amount(uid)>0 or hold_amount_usd(uid)>0:
-        bot.answer_callback_query(call.id,"❌ Clear your active hold/blocked withdrawal first.",show_alert=True); return
-    cash=available_asset_amount(uid); usd=asset_to_usd(old,cash)
-    if cash<=0 or usd<=0:
-        bot.answer_callback_query(call.id,"❌ No available balance to convert/invest.",show_alert=True); return
-    # Crypto selections are now portfolio investments. The user chooses the amount; the rest stays in cash.
-    if is_crypto(new):
-        try: bot.delete_message(call.message.chat.id,call.message.message_id)
-        except: pass
-        bot.answer_callback_query(call.id)
-        msg=bot.send_message(call.message.chat.id,
-            f"🪙 <b>INVEST IN {new}</b>\n\nAvailable: <b>{format_asset(old,cash)}</b>\n"
-            f"Market: <b>1 {new} = ${asset_usd_price(new):,.8f}</b>\n"
-            f"USD value available: <b>${usd:,.2f}</b>\n\n"
-            f"Send the amount of <b>{old}</b> you want to invest in {new}.\nExample: <code>10</code>\n\n"
-            "⚠️ Crypto prices can rise or fall. Your chosen amount will be converted at the market price shown when you confirm.")
-        bot.register_next_step_handler(msg,crypto_invest_amount_step,new)
-        return
-    # Fiat conversion: choose the exact amount too, so multiple currencies can coexist in the account.
+        bot.answer_callback_query(call.id,"❌ Clear your active hold/blocked withdrawal before changing currency.",show_alert=True); return
+    if usd<=0 or new_amt<=0: bot.answer_callback_query(call.id,"❌ Market price unavailable",show_alert=True); return
+    nonce=uuid.uuid4().hex[:12]; users[uid]["pending_conversion"]={"nonce":nonce,"from":old,"to":new}; save_user(uid)
     try: bot.delete_message(call.message.chat.id,call.message.message_id)
     except: pass
+    kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"convert_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"convert_cancel:{nonce}"))
     bot.answer_callback_query(call.id)
-    msg=bot.send_message(call.message.chat.id,
-        f"💱 <b>CONVERT TO {new}</b>\n\nAvailable: <b>{format_asset(old,cash)}</b>\n"
-        f"Market: <b>{market_rate_text(new)}</b>\n\nSend the amount of <b>{old}</b> you want to convert.\nExample: <code>10</code>")
-    bot.register_next_step_handler(msg,fiat_convert_amount_step,new)
-
-def crypto_invest_amount_step(m,new):
-    uid=str(m.from_user.id); old=cur_code(uid)
-    try:
-        raw=(m.text or '').replace(',','').strip().upper()
-        available=available_asset_amount(uid)
-        amount=available if raw in ("ALL","MAX") else float(raw)
-        if amount<=0: raise ValueError
-        refresh_market_rates(True); available=available_asset_amount(uid)
-        if amount>available+1e-12: raise ValueError
-        usd=asset_to_usd(old,amount); price=asset_usd_price(new); coin=usd_to_asset(new,usd)
-        if price<=0 or coin<=0: raise ValueError
-        nonce=uuid.uuid4().hex[:12]; users[uid]["pending_crypto_investment"]={"nonce":nonce,"from":old,"to":new,"amount":amount,"usd":usd,"coin":coin,"price":price}; save_user(uid)
-        kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM",callback_data=f"invest_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"invest_cancel:{nonce}"))
-        bot.send_message(m.chat.id,f"⚠️ <b>INVESTMENT CONFIRMATION</b>\n\nFrom: <b>{format_asset(old,amount)}</b>\nUSD value: <b>${usd:,.2f}</b>\n\nCoin: <b>{new}</b>\nPrice: <b>1 {new} = ${price:,.8f}</b>\nYou receive: <b>{coin:,.12f} {new}</b>\n\n⚠️ Market price can change before the confirmation is processed.",reply_markup=kb)
-    except Exception: bot.send_message(m.chat.id,"❌ Invalid amount or insufficient available balance.")
-
-def fiat_convert_amount_step(m,new):
-    uid=str(m.from_user.id); old=cur_code(uid)
-    try:
-        amount=float((m.text or '').replace(',','').strip())
-        refresh_market_rates(True); available=available_asset_amount(uid)
-        if amount<=0 or amount>available+1e-12: raise ValueError
-        usd=asset_to_usd(old,amount); new_amt=usd_to_asset(new,usd)
-        if new_amt<=0: raise ValueError
-        nonce=uuid.uuid4().hex[:12]; users[uid]["pending_conversion"]={"nonce":nonce,"from":old,"to":new,"amount":amount,"usd":usd,"new_amount":new_amt}; save_user(uid)
-        kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"convert_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"convert_cancel:{nonce}"))
-        bot.send_message(m.chat.id,f"⚠️ <b>CURRENCY CONVERSION</b>\n\nFrom: <b>{format_asset(old,amount)}</b>\nUSD value: <b>${usd:,.2f}</b>\n\nNew currency: <b>{new}</b>\nMarket: <b>{market_rate_text(new)}</b>\nEstimated received: <b>{format_asset(new,new_amt)}</b>\n\n⚠️ The selected amount will become {new}. Market rates can change.",reply_markup=kb)
-    except Exception: bot.send_message(m.chat.id,"❌ Invalid amount or insufficient available balance.")
-
-@bot.callback_query_handler(func=lambda c:c.data.startswith("invest_cancel:"))
-def invest_cancel_callback(call):
-    uid=str(call.from_user.id); nonce=call.data.split(":",1)[1]
-    if users.get(uid,{}).get("pending_crypto_investment",{}).get("nonce")!=nonce:
-        bot.answer_callback_query(call.id,"Expired",show_alert=True); return
-    users[uid].pop("pending_crypto_investment",None); save_user(uid)
-    try: bot.delete_message(call.message.chat.id,call.message.message_id)
-    except: pass
-    bot.answer_callback_query(call.id,"Cancelled")
-    bot.send_message(call.message.chat.id,"❌ Investment cancelled.",reply_markup=localized_user_menu(uid))
-
-@bot.callback_query_handler(func=lambda c:c.data.startswith("invest_confirm:"))
-def invest_confirm_callback(call):
-    uid=str(call.from_user.id); p=users.get(uid,{}).get("pending_crypto_investment") or {}; nonce=call.data.split(":",1)[1]
-    if p.get("nonce")!=nonce: bot.answer_callback_query(call.id,"Expired investment",show_alert=True); return
-    refresh_market_rates(True); old=p.get("from"); new=p.get("to"); amount=float(p.get("amount",0)); available=available_asset_amount(uid)
-    if cur_code(uid)!=old or amount<=0 or amount>available+1e-12:
-        bot.answer_callback_query(call.id,"Balance/market changed. Start again.",show_alert=True); return
-    usd=asset_to_usd(old,amount); coin=usd_to_asset(new,usd)
-    if usd<=0 or coin<=0: bot.answer_callback_query(call.id,"Market unavailable",show_alert=True); return
-    with BALANCE_LOCK:
-        users[uid]["balance"]=round(balance_amount(uid)-amount,18); save_user(uid)
-        add_portfolio(uid,new,coin,"crypto_investment",{"from_asset":old,"from_amount":amount})
-        balance_ledger_col.insert_one({"user_id":uid,"type":"crypto_investment","source":"user_conversion","from_asset":old,"from_amount":amount,"to_asset":new,"to_amount":coin,"usd_value":usd,"time":datetime.now(timezone.utc)})
-        users[uid].pop("pending_crypto_investment",None); save_user(uid)
-    try: bot.delete_message(call.message.chat.id,call.message.message_id)
-    except: pass
-    bot.answer_callback_query(call.id,"✅ Investment completed")
-    bot.send_message(call.message.chat.id,f"✅ <b>CRYPTO INVESTMENT COMPLETE</b>\n\n💸 Invested: <b>{format_asset(old,amount)}</b>\n🪙 Received: <b>{coin:,.12f} {new}</b>\n📊 Price: <b>1 {new} = ${asset_usd_price(new):,.8f}</b>\n💵 Current USD value: <b>${asset_to_usd(new,coin):,.2f}</b>\n\nYour remaining cash balance is still available, and you can invest in other coins too.",reply_markup=localized_user_menu(uid))
+    bot.send_message(call.message.chat.id,f"⚠️ <b>CURRENCY CONVERSION</b>\n\nCurrent holding: <b>{format_asset(old,amt)}</b>\nCurrent USD value: <b>${usd:,.2f} USD</b>\n\nNew currency: <b>{new}</b>\nMarket: <b>{market_rate_text(new)}</b>\nEstimated new holding: <b>{format_asset(new,new_amt)}</b>\n\n⚠️ This converts your actual balance into {new}. The market value can rise or fall.\n\nConfirm?",reply_markup=kb)
 
 @bot.callback_query_handler(func=lambda c:c.data.startswith("convert_cancel:"))
 def convert_cancel_callback(call):
@@ -5136,27 +4882,19 @@ def convert_cancel_callback(call):
 def convert_confirm_callback(call):
     uid=str(call.from_user.id); nonce=call.data.split(":",1)[1]; p=users.get(uid,{}).get("pending_conversion") or {}
     if p.get("nonce")!=nonce: bot.answer_callback_query(call.id,"Expired conversion",show_alert=True); return
-    refresh_market_rates(True); old=p.get("from"); new=p.get("to"); amount=float(p.get("amount",0)); current=available_asset_amount(uid)
-    if cur_code(uid)!=old or amount<=0 or amount>current+1e-12:
-        bot.answer_callback_query(call.id,"Balance changed; start again",show_alert=True); return
-    usd=asset_to_usd(old,amount); new_amt=usd_to_asset(new,usd)
-    if usd<=0 or new_amt<=0: bot.answer_callback_query(call.id,"Market unavailable",show_alert=True); return
-    now=datetime.now(timezone.utc)
-    with BALANCE_LOCK:
-        users[uid]["balance"]=round(balance_amount(uid)-amount,18); users[uid].pop("pending_conversion",None); save_user(uid)
-        # Keep selected fiat asset as the user's cash currency. If USD is the destination, create the requested 1-hour hold.
-        if new=="USD":
-            users[uid]["balance_asset"]="USD"; users[uid]["currency"]="USD"; users[uid]["balance"]=round(balance_amount(uid)+new_amt,18); save_user(uid)
-            exp=now+timedelta(hours=1); snapshot=list(balance_ledger_col.find({"user_id":uid},{"_id":0}).sort("time",-1).limit(25))
-            conversion_holds_col.insert_one({"user_id":uid,"status":"hold","usd_amount":new_amt,"from_asset":old,"from_amount":amount,"to_asset":"USD","to_amount":new_amt,"created_at":now,"expires_at":exp,"source_snapshot":snapshot})
-        else:
-            users[uid]["balance_asset"]=new; users[uid]["currency"]=new; users[uid]["balance"]=round(balance_amount(uid)+new_amt,18); save_user(uid)
-        balance_ledger_col.insert_one({"user_id":uid,"type":"conversion","from_asset":old,"from_amount":amount,"to_asset":new,"to_amount":new_amt,"usd_value":usd,"source":"currency_conversion","time":now})
+    old=p.get("from"); new=p.get("to"); refresh_market_rates(True); current=balance_amount(uid); usd=asset_to_usd(old,current); new_amt=usd_to_asset(new,usd)
+    if cur_code(uid)!=old or usd<=0 or new_amt<=0: bot.answer_callback_query(call.id,"Market changed; start again",show_alert=True); return
+    now=datetime.now(timezone.utc); users[uid]["balance"]=round(new_amt,12); users[uid]["balance_asset"]=new; users[uid]["currency"]=new; users[uid].pop("pending_conversion",None); save_user(uid)
+    hold_txt=""
+    if is_crypto(old) and new=="USD":
+        exp=now+timedelta(hours=1); snapshot=list(balance_ledger_col.find({"user_id":uid},{"_id":0}).sort("time",-1).limit(25))
+        conversion_holds_col.insert_one({"user_id":uid,"status":"hold","usd_amount":usd,"from_asset":old,"from_amount":current,"to_asset":"USD","to_amount":usd,"created_at":now,"expires_at":exp,"source_snapshot":snapshot})
+        hold_txt=f"\n⏱️ <b>Amount on Hold:</b> ${usd:,.2f} USD for 1 hour"
+    balance_ledger_col.insert_one({"user_id":uid,"type":"conversion","from_asset":old,"from_amount":current,"to_asset":new,"to_amount":new_amt,"usd_value":usd,"source":"currency_conversion","time":now})
     try: bot.delete_message(call.message.chat.id,call.message.message_id)
     except: pass
     bot.answer_callback_query(call.id,"✅ Converted")
-    hold_txt=f"\n⏱️ <b>Amount on Hold:</b> ${new_amt:,.2f} USD for 1 hour" if new=="USD" else ""
-    bot.send_message(call.message.chat.id,f"✅ <b>Currency conversion complete</b>\n\n💰 Holding: <b>{format_asset(new,new_amt)}</b>\n💵 USD value: <b>${asset_to_usd(new,new_amt):,.2f} USD</b>\n📊 Market: <b>{market_rate_text(new)}</b>\n📡 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(new) else 'fiat','market feed')}</b>{hold_txt}\n\nYour balance is now held in {new}.",reply_markup=localized_user_menu(uid))
+    bot.send_message(call.message.chat.id,f"✅ <b>Currency conversion complete</b>\n\n💰 Holding: <b>{format_asset(new,new_amt)}</b>\n💵 USD value: <b>${asset_to_usd(new,new_amt):,.2f} USD</b>\n📊 Market: <b>{market_rate_text(new)}</b>\n📡 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(new) else 'fiat','market feed')}</b>{hold_txt}\n\nYour actual balance is now held in {new}.",reply_markup=localized_user_menu(uid))
 
 @bot.message_handler(func=lambda m: m.text in ["📜 HISTORY"] + [v.get("history","") for v in MAIN_LABELS.values()])
 def history_button(m):
