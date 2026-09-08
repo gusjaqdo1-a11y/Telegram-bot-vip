@@ -13,6 +13,7 @@ import asyncio
 import uuid
 import time
 import html
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from telethon import TelegramClient
@@ -61,6 +62,18 @@ MAX_YOUTUBE_DURATION = FREE_MAX_MINUTES_DEFAULT * 60
 COBALT_API_URL = os.getenv("COBALT_API_URL", "").strip().rstrip("/")
 COBALT_API_KEY = os.getenv("COBALT_API_KEY", "").strip()
 COBALT_TIMEOUT = int(os.getenv("COBALT_TIMEOUT", "180"))
+
+# ================= RAPIDAPI YOUTUBE DOWNLOADER =================
+RAPIDAPI_YT_HOST = os.getenv("RAPIDAPI_YT_HOST", "youtube-media-downloader.p.rapidapi.com").strip()
+RAPIDAPI_YT_DETAILS_URL = os.getenv("RAPIDAPI_YT_DETAILS_URL", "https://youtube-media-downloader.p.rapidapi.com/v2/video/details").strip()
+# Keep the key in your hosting provider's secret/environment settings.
+RAPIDAPI_YT_KEY = os.getenv("RAPIDAPI_YT_KEY", "").strip()
+RAPIDAPI_TIMEOUT = int(os.getenv("RAPIDAPI_TIMEOUT", "60"))
+# Instagram RapidAPI configuration. Values can also be managed from Admin Panel
+# and are persisted in MongoDB settings (no environment variable required for limits).
+RAPIDAPI_IG_HOST = os.getenv("RAPIDAPI_IG_HOST", "").strip()
+RAPIDAPI_IG_URL = os.getenv("RAPIDAPI_IG_URL", "").strip()
+RAPIDAPI_IG_KEY = os.getenv("RAPIDAPI_IG_KEY", "").strip()
 
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "20"))
 
@@ -131,7 +144,6 @@ ADS_URL = ""
 # Premium/download state
 premium_pending = {}
 premium_quality_pending = {}
-currency_conversion_pending = {}
 PREMIUM_WARNING_SENT_DAYS = 7
 PREMIUM_CHECK_INTERVAL = 3600
 LANGUAGES = {
@@ -173,256 +185,131 @@ MAIN_LABELS = {
 def lang_of(uid):
     return users.get(str(uid),{}).get("language") or "en"
 
-# ================= LIVE CURRENCY / CRYPTO MARKET ENGINE =================
-# Balance is a real holding: users hold the selected asset, not a hidden USD balance.
-# Fiat rates: Frankfurter/ECB reference data. Crypto: CoinGecko spot prices.
-# Admin can override any rate with fx_override_<CODE>; live market is used otherwise.
-AVAILABLE_ASSETS = {
-    # Fiat
-    "USD": {"name":"US Dollar", "type":"fiat", "symbol":"$"},
-    "ETB": {"name":"Ethiopian Birr", "type":"fiat", "symbol":"Br"},
-    "SOS": {"name":"Somali Shilling", "type":"fiat", "symbol":"S"},
-    "EUR": {"name":"Euro", "type":"fiat", "symbol":"€"},
-    "GBP": {"name":"British Pound", "type":"fiat", "symbol":"£"},
-    "SAR": {"name":"Saudi Riyal", "type":"fiat", "symbol":"﷼"},
-    "AED": {"name":"UAE Dirham", "type":"fiat", "symbol":"د.إ"},
-    "TRY": {"name":"Turkish Lira", "type":"fiat", "symbol":"₺"},
-    "INR": {"name":"Indian Rupee", "type":"fiat", "symbol":"₹"},
-    "JPY": {"name":"Japanese Yen", "type":"fiat", "symbol":"¥"},
-    "CNY": {"name":"Chinese Yuan", "type":"fiat", "symbol":"¥"},
-    "KRW": {"name":"South Korean Won", "type":"fiat", "symbol":"₩"},
-    "CAD": {"name":"Canadian Dollar", "type":"fiat", "symbol":"C$"},
-    "AUD": {"name":"Australian Dollar", "type":"fiat", "symbol":"A$"},
-    "BRL": {"name":"Brazilian Real", "type":"fiat", "symbol":"R$"},
-    "ZAR": {"name":"South African Rand", "type":"fiat", "symbol":"R"},
-    # Crypto (20)
-    "BTC": {"name":"Bitcoin", "type":"crypto", "cg":"bitcoin"},
-    "ETH": {"name":"Ethereum", "type":"crypto", "cg":"ethereum"},
-    "USDT": {"name":"Tether", "type":"crypto", "cg":"tether"},
-    "BNB": {"name":"BNB", "type":"crypto", "cg":"binancecoin"},
-    "SOL": {"name":"Solana", "type":"crypto", "cg":"solana"},
-    "XRP": {"name":"XRP", "type":"crypto", "cg":"ripple"},
-    "USDC": {"name":"USD Coin", "type":"crypto", "cg":"usd-coin"},
-    "ADA": {"name":"Cardano", "type":"crypto", "cg":"cardano"},
-    "DOGE": {"name":"Dogecoin", "type":"crypto", "cg":"dogecoin"},
-    "TRX": {"name":"TRON", "type":"crypto", "cg":"tron"},
-    "AVAX": {"name":"Avalanche", "type":"crypto", "cg":"avalanche-2"},
-    "LINK": {"name":"Chainlink", "type":"crypto", "cg":"chainlink"},
-    "DOT": {"name":"Polkadot", "type":"crypto", "cg":"polkadot"},
-    "LTC": {"name":"Litecoin", "type":"crypto", "cg":"litecoin"},
-    "BCH": {"name":"Bitcoin Cash", "type":"crypto", "cg":"bitcoin-cash"},
-    "XLM": {"name":"Stellar", "type":"crypto", "cg":"stellar"},
-    "TON": {"name":"Toncoin", "type":"crypto", "cg":"the-open-network"},
-    "SHIB": {"name":"Shiba Inu", "type":"crypto", "cg":"shiba-inu"},
-    "NEAR": {"name":"NEAR Protocol", "type":"crypto", "cg":"near"},
-    "UNI": {"name":"Uniswap", "type":"crypto", "cg":"uniswap"},
+# ================= LIVE CURRENCY / CRYPTO ASSET SYSTEM =================
+# Each user owns an actual asset: amount + balance_asset. USD is not the hidden base.
+FIAT_CURRENCIES = {
+    "USD": ("🇺🇸", "US Dollar", 1.0), "SOS": ("🇸🇴", "Somali Shilling", 570.0),
+    "ETB": ("🇪🇹", "Ethiopian Birr", 188.0), "EUR": ("🇪🇺", "Euro", 0.85),
+    "SAR": ("🇸🇦", "Saudi Riyal", 3.75), "BRL": ("🇧🇷", "Brazilian Real", 5.40),
+    "TRY": ("🇹🇷", "Turkish Lira", 41.0), "INR": ("🇮🇳", "Indian Rupee", 83.5),
+    "IDR": ("🇮🇩", "Indonesian Rupiah", 16500.0), "JPY": ("🇯🇵", "Japanese Yen", 147.0),
+    "KRW": ("🇰🇷", "South Korean Won", 1380.0), "CNY": ("🇨🇳", "Chinese Yuan", 7.10),
 }
-AVAILABLE_CURRENCIES = {k: 1.0 for k in AVAILABLE_ASSETS}
-MARKET_CACHE = {"rates": {}, "sources": {}, "updated": 0.0, "errors": []}
-MARKET_TTL = 120
-MARKET_LOCK = threading.Lock()
-
-
-def is_crypto(code):
-    return AVAILABLE_ASSETS.get(str(code).upper(), {}).get("type") == "crypto"
-
+CRYPTO_CURRENCIES = {
+    "BTC": ("₿", "Bitcoin", "bitcoin"), "ETH": ("Ξ", "Ethereum", "ethereum"),
+    "USDT": ("₮", "Tether", "tether"), "BNB": ("🟡", "BNB", "binancecoin"),
+    "SOL": ("◎", "Solana", "solana"), "XRP": ("✕", "XRP", "ripple"),
+    "USDC": ("◉", "USD Coin", "usd-coin"), "ADA": ("₳", "Cardano", "cardano"),
+    "DOGE": ("Ð", "Dogecoin", "dogecoin"), "TRX": ("🔺", "TRON", "tron"),
+    "AVAX": ("🔺", "Avalanche", "avalanche-2"), "LINK": ("🔗", "Chainlink", "chainlink"),
+    "DOT": ("●", "Polkadot", "polkadot"), "LTC": ("Ł", "Litecoin", "litecoin"),
+    "BCH": ("₿", "Bitcoin Cash", "bitcoin-cash"), "XLM": ("✦", "Stellar", "stellar"),
+    "TON": ("💎", "Toncoin", "the-open-network"), "SHIB": ("🐕", "Shiba Inu", "shiba-inu"),
+    "NEAR": ("🟢", "NEAR Protocol", "near"), "UNI": ("🦄", "Uniswap", "uniswap"),
+}
+AVAILABLE_CURRENCIES={**{k:k for k in FIAT_CURRENCIES},**{k:k for k in CRYPTO_CURRENCIES}}
+FX_CACHE={"fiat":{},"crypto":{},"sources":{}}
+FX_CACHE_TTL=300; CRYPTO_CACHE_TTL=120; FX_LOCK=threading.Lock()
 
 def cur_code(uid):
-    selected = users.get(str(uid), {}).get("balance_currency") or users.get(str(uid), {}).get("currency")
-    return selected if selected in AVAILABLE_ASSETS else "USD"
+    u=users.get(str(uid),{}); return u.get("balance_asset") or u.get("currency") or "USD"
+def is_crypto(code): return code in CRYPTO_CURRENCIES
 
+def _fetch_fiat_rates():
+    now=time.time()
+    try:
+        quotes=','.join(c for c in FIAT_CURRENCIES if c!="USD")
+        r=requests.get("https://api.frankfurter.dev/v2/rates",params={"base":"USD","quotes":quotes},timeout=10); r.raise_for_status()
+        data=r.json(); rates={x.get("quote"):float(x.get("rate")) for x in data if x.get("quote") and x.get("rate")}; rates["USD"]=1.0
+        FX_CACHE["fiat"]={"rates":rates,"time":now}; FX_CACHE["sources"]["fiat"]="Frankfurter"; return rates
+    except Exception as e: print("Frankfurter FX update failed:",e)
+    try:
+        r=requests.get("https://open.er-api.com/v6/latest/USD",timeout=10); r.raise_for_status(); rates=r.json().get("rates") or {}; rates["USD"]=1.0
+        FX_CACHE["fiat"]={"rates":rates,"time":now}; FX_CACHE["sources"]["fiat"]="ExchangeRate-API fallback"; return rates
+    except Exception as e: print("FX fallback failed:",e)
+    return FX_CACHE.get("fiat",{}).get("rates",{})
 
-def _market_rate_from_cache(code):
-    code = str(code).upper()
-    return float(MARKET_CACHE.get("rates", {}).get(code, 0) or 0)
-
+def _fetch_crypto_prices(force=False):
+    now=time.time(); c=FX_CACHE.get("crypto",{})
+    if not force and c and now-c.get("time",0)<CRYPTO_CACHE_TTL: return c.get("prices",{})
+    ids=','.join(v[2] for v in CRYPTO_CURRENCIES.values())
+    try:
+        r=requests.get("https://api.coingecko.com/api/v3/simple/price",params={"ids":ids,"vs_currencies":"usd"},timeout=12); r.raise_for_status(); data=r.json() or {}
+        prices={code:float(data[cid]["usd"]) for code,(_,_,cid) in CRYPTO_CURRENCIES.items() if cid in data and data[cid].get("usd") is not None}
+        if prices: FX_CACHE["crypto"]={"prices":prices,"time":now}; FX_CACHE["sources"]["crypto"]="CoinGecko"; return prices
+    except Exception as e: print("Crypto market update failed:",e)
+    return c.get("prices",{})
 
 def refresh_market_rates(force=False):
-    now = time.time()
-    if not force and MARKET_CACHE.get("rates") and now - float(MARKET_CACHE.get("updated", 0)) < MARKET_TTL:
-        return MARKET_CACHE
-    with MARKET_LOCK:
-        now = time.time()
-        if not force and MARKET_CACHE.get("rates") and now - float(MARKET_CACHE.get("updated", 0)) < MARKET_TTL:
-            return MARKET_CACHE
-        rates = {"USD": 1.0}
-        sources = {"USD": "fixed"}
-        errors = []
-        # Fiat reference rates
-        fiat_codes = [c for c,v in AVAILABLE_ASSETS.items() if v["type"] == "fiat" and c != "USD"]
-        try:
-            url = "https://api.frankfurter.app/latest?from=USD&to=" + ",".join(fiat_codes)
-            r = requests.get(url, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            for code in fiat_codes:
-                val = float(data.get("rates", {}).get(code, 0) or 0)
-                if val > 0:
-                    rates[code] = val; sources[code] = "Frankfurter/ECB"
-        except Exception as e:
-            errors.append("fiat:" + str(e)[:120])
-        # Crypto: CoinGecko gives USD price per coin; invert it to get 1 USD = X coin.
-        crypto_items = {c:v["cg"] for c,v in AVAILABLE_ASSETS.items() if v["type"] == "crypto"}
-        try:
-            cg_ids = ",".join(crypto_items.values())
-            url = "https://api.coingecko.com/api/v3/simple/price?ids=" + cg_ids + "&vs_currencies=usd"
-            r = requests.get(url, timeout=20, headers={"Accept":"application/json","User-Agent":"DownloaderBot/1.0"})
-            r.raise_for_status()
-            data = r.json()
-            for code,cgid in crypto_items.items():
-                price = float(data.get(cgid, {}).get("usd", 0) or 0)
-                if price > 0:
-                    rates[code] = 1.0 / price
-                    sources[code] = "CoinGecko"
-        except Exception as e:
-            errors.append("crypto:" + str(e)[:120])
-        # Carry forward the last live rate when a provider is temporarily unavailable.
-        for code in AVAILABLE_ASSETS:
-            if code not in rates:
-                old = _market_rate_from_cache(code)
-                if old > 0:
-                    rates[code] = old; sources[code] = MARKET_CACHE.get("sources", {}).get(code, "cached")
-        # Manual admin override always has priority.
-        for code in AVAILABLE_ASSETS:
-            override = get_setting("fx_override_" + code, None)
-            try:
-                if override is not None and float(override) > 0:
-                    rates[code] = float(override); sources[code] = "Admin override"
-            except Exception:
-                pass
-        MARKET_CACHE.update({"rates": rates, "sources": sources, "updated": time.time(), "errors": errors})
-        return MARKET_CACHE
+    with FX_LOCK:
+        now=time.time(); f=FX_CACHE.get("fiat",{}); c=FX_CACHE.get("crypto",{})
+        if force or not f or now-f.get("time",0)>=FX_CACHE_TTL: _fetch_fiat_rates()
+        if force or not c or now-c.get("time",0)>=CRYPTO_CACHE_TTL: _fetch_crypto_prices(force)
 
+def asset_usd_price(code):
+    refresh_market_rates(False)
+    if code=="USD": return 1.0
+    if is_crypto(code): return float(FX_CACHE.get("crypto",{}).get("prices",{}).get(code,0) or 0)
+    return float(FX_CACHE.get("fiat",{}).get("rates",{}).get(code,0) or 0)
 
-def fx_rate_for_code(code, force=False):
-    code = str(code).upper()
-    if code not in AVAILABLE_ASSETS:
-        return 1.0
-    refresh_market_rates(force=force)
-    rate = _market_rate_from_cache(code)
-    return rate if rate > 0 else 1.0
+def asset_to_usd(code,amount):
+    p=asset_usd_price(code); return float(amount or 0)*p if p>0 else 0.0
 
+def usd_to_asset(code,usd):
+    p=asset_usd_price(code); return float(usd or 0)/p if p>0 else 0.0
 
 def fx_rate(uid):
-    return fx_rate_for_code(cur_code(uid))
+    code=cur_code(uid); p=asset_usd_price(code)
+    return 1.0 if code=="USD" else (1.0/p if is_crypto(code) and p>0 else p)
 
+def format_asset(code,amount):
+    if code=="USD": return f"${float(amount or 0):,.2f} USD"
+    return f"{float(amount or 0):,.8f} {code}" if is_crypto(code) else f"{float(amount or 0):,.2f} {code}"
 
-def ensure_asset_wallet(uid):
-    """Migrate legacy USD-denominated balances exactly once into the selected asset.
-    Legacy versions stored `balance` as USD even when a currency was selected for display.
-    """
-    uid=str(uid)
-    if uid not in users:
-        return
-    u=users[uid]
-    if u.get("wallet_version") == 2:
-        return
-    legacy_usd=float(u.get("balance",0) or 0)
-    legacy_blocked_usd=float(u.get("blocked",0) or 0)
-    code=(u.get("currency") or "USD").upper()
-    if code not in AVAILABLE_ASSETS:
-        code="USD"
-    rate=fx_rate_for_code(code)
-    if rate <= 0:
-        return
-    u["currency"]=code
-    u["balance_currency"]=code
-    u["balance"]=round(legacy_usd*rate,12)
-    u["blocked"]=round(legacy_blocked_usd*rate,12)
-    u["wallet_version"]=2
-    save_user(uid)
-
-def balance_usd_value(uid):
-    ensure_asset_wallet(uid)
-    u = users.get(str(uid), {})
-    amount = float(u.get("balance", 0) or 0)
-    rate = fx_rate(uid)
-    return amount / rate if rate > 0 else 0.0
-
-
-def asset_amount_for_usd(code, usd_amount):
-    rate = fx_rate_for_code(code)
-    return float(usd_amount or 0) * rate
-
-
-def local_money(uid,usd):
-    # Backward-compatible helper: convert a USD value into the user's selected asset.
-    return asset_amount_for_usd(cur_code(uid), usd)
-
-
-def format_asset_amount(code, amount):
-    amount = float(amount or 0)
-    return f"{amount:,.8f} {code}" if is_crypto(code) else f"{amount:,.2f} {code}"
-
-
-def money_text(uid,usd):
-    return format_asset_amount(cur_code(uid), local_money(uid, usd))
-
-
-def credit_usd_value(uid, usd_amount, reason="credit", network_commission=False):
-    """Credit a USD-denominated value into the user's CURRENT asset at live rate."""
-    uid=str(uid); usd_amount=float(usd_amount or 0)
-    ensure_asset_wallet(uid)
-    if uid not in users or usd_amount <= 0:
-        return 0.0, []
-    code=cur_code(uid); asset_amt=asset_amount_for_usd(code, usd_amount)
-    users[uid]["balance"] = round(float(users[uid].get("balance",0) or 0) + asset_amt, 12)
-    save_user(uid)
-    log_activity(uid, reason, {"amount_usd":usd_amount,"asset":code,"asset_amount":asset_amt,"rate":fx_rate_for_code(code)})
-    commissions = distribute_referral_network_commission(uid, usd_amount, reason) if network_commission else []
-    return asset_amt, commissions
-
-
-def debit_usd_value(uid, usd_amount, reason="debit"):
-    uid=str(uid); usd_amount=float(usd_amount or 0)
-    ensure_asset_wallet(uid)
-    if uid not in users or usd_amount <= 0:
-        return False
-    code=cur_code(uid); asset_amt=asset_amount_for_usd(code, usd_amount)
-    if float(users[uid].get("balance",0) or 0) + 1e-12 < asset_amt:
-        return False
-    users[uid]["balance"] = round(float(users[uid].get("balance",0) or 0) - asset_amt, 12)
-    save_user(uid); log_activity(uid, reason, {"amount_usd":usd_amount,"asset":code,"asset_amount":asset_amt,"rate":fx_rate_for_code(code)})
-    return True
-
-
-def convert_user_asset(uid, new_code):
-    """Atomic-style conversion: current asset -> USD valuation -> new asset at current rates."""
-    uid=str(uid); new_code=str(new_code).upper()
-    ensure_asset_wallet(uid)
-    if uid not in users or new_code not in AVAILABLE_ASSETS:
-        return False, 0.0, 0.0, 0.0
-    refresh_market_rates(force=True)
-    old_code=cur_code(uid); old_amount=float(users[uid].get("balance",0) or 0)
-    old_rate=fx_rate_for_code(old_code); new_rate=fx_rate_for_code(new_code)
-    if old_rate <= 0 or new_rate <= 0:
-        return False,0.0,0.0,0.0
-    usd_value=old_amount/old_rate
-    new_amount=usd_value*new_rate
-    users[uid]["balance"] = round(new_amount, 12)
-    users[uid]["currency"] = new_code
-    users[uid]["balance_currency"] = new_code
-    save_user(uid)
-    log_activity(uid,"currency_conversion", {"from":old_code,"from_amount":old_amount,"to":new_code,"to_amount":new_amount,"usd_value":usd_value,"old_rate":old_rate,"new_rate":new_rate})
-    return True,new_amount,usd_value,new_rate
-
-
+def money_text(uid,usd): return format_asset(cur_code(uid),usd_to_asset(cur_code(uid),usd))
 def market_rate_text(code):
-    code=str(code).upper(); rate=fx_rate_for_code(code)
-    return f"{rate:,.8f}" if is_crypto(code) else f"{rate:,.6f}"
+    p=asset_usd_price(code)
+    return "N/A" if not p else (f"1 {code} = ${p:,.8f}" if is_crypto(code) else f"1 USD = {p:,.4f} {code}")
+def balance_amount(uid): return float(users.get(str(uid),{}).get("balance",0) or 0)
+def blocked_amount(uid): return float(users.get(str(uid),{}).get("blocked",0) or 0)
+def hold_amount_usd(uid):
+    now=datetime.now(timezone.utc); total=0.0
+    for h in conversion_holds_col.find({"user_id":str(uid),"status":"hold"}):
+        exp=parse_seen_time(h.get("expires_at"))
+        if exp and exp>now: total+=float(h.get("usd_amount",0) or 0)
+    return total
+def available_asset_amount(uid):
+    code=cur_code(uid); return max(0.0,balance_amount(uid)-blocked_amount(uid)-usd_to_asset(code,hold_amount_usd(uid)))
+def balance_usd_value(uid): return asset_to_usd(cur_code(uid),balance_amount(uid))
 
+def migrate_legacy_ledger_once():
+    if get_setting("asset_ledger_migrated_v1",False): return
+    for _uid,_u in users.items():
+        if float(_u.get("balance",0) or 0)>0 and not balance_ledger_col.find_one({"user_id":_uid}):
+            code=_u.get("balance_asset","USD"); amt=float(_u.get("balance",0)); balance_ledger_col.insert_one({"user_id":_uid,"type":"migration","source":"legacy_balance","asset":code,"asset_amount":amt,"usd_amount":asset_to_usd(code,amt),"time":datetime.now(timezone.utc)})
+    set_setting("asset_ledger_migrated_v1",True)
 
+def ledger_credit(uid,usd_amount,source,meta=None):
+    uid=str(uid); code=cur_code(uid); a=usd_to_asset(code,usd_amount); users[uid]["balance"]=round(balance_amount(uid)+a,12); save_user(uid)
+    balance_ledger_col.insert_one({"user_id":uid,"type":"credit","source":source,"usd_amount":float(usd_amount),"asset":code,"asset_amount":a,"meta":meta or {},"time":datetime.now(timezone.utc)})
+    return a
+def ledger_debit(uid,asset_amount,source,meta=None):
+    uid=str(uid); a=float(asset_amount); users[uid]["balance"]=round(max(0,balance_amount(uid)-a),12); save_user(uid)
+    balance_ledger_col.insert_one({"user_id":uid,"type":"debit","source":source,"asset":cur_code(uid),"asset_amount":a,"usd_amount":asset_to_usd(cur_code(uid),a),"meta":meta or {},"time":datetime.now(timezone.utc)})
+def conversion_preview(uid,new_code):
+    old=cur_code(uid); amount=balance_amount(uid); usd=asset_to_usd(old,amount); return old,amount,usd,usd_to_asset(new_code,usd)
 def currency_kb():
-    kb=InlineKeyboardMarkup(row_width=3)
-    labels={
-        "USD":"🇺🇸 USD","ETB":"🇪🇹 ETB","SOS":"🇸🇴 SOS","EUR":"🇪🇺 EUR","GBP":"🇬🇧 GBP","SAR":"🇸🇦 SAR","AED":"🇦🇪 AED",
-        "TRY":"🇹🇷 TRY","INR":"🇮🇳 INR","JPY":"🇯🇵 JPY","CNY":"🇨🇳 CNY","KRW":"🇰🇷 KRW","CAD":"🇨🇦 CAD","AUD":"🇦🇺 AUD","BRL":"🇧🇷 BRL","ZAR":"🇿🇦 ZAR",
-        "BTC":"₿ BTC","ETH":"♦️ ETH","USDT":"💵 USDT","BNB":"🟡 BNB","SOL":"🟣 SOL","XRP":"✖️ XRP","USDC":"💵 USDC","ADA":"🔵 ADA","DOGE":"🐕 DOGE","TRX":"🔺 TRX",
-        "AVAX":"🔺 AVAX","LINK":"🔗 LINK","DOT":"⚫ DOT","LTC":"🥈 LTC","BCH":"💚 BCH","XLM":"⭐ XLM","TON":"💎 TON","SHIB":"🐕 SHIB","NEAR":"🟢 NEAR","UNI":"🦄 UNI"
-    }
-    for code in AVAILABLE_ASSETS:
-        kb.add(InlineKeyboardButton(labels.get(code,code),callback_data=f"currency:{code}"))
+    kb=InlineKeyboardMarkup(); btn=[]
+    for code,(flag,_,_) in FIAT_CURRENCIES.items(): btn.append(InlineKeyboardButton(f"{flag} {code}",callback_data=f"currency:{code}"))
+    for code,(icon,_,_) in CRYPTO_CURRENCIES.items(): btn.append(InlineKeyboardButton(f"{icon} {code}",callback_data=f"currency:{code}"))
+    for i in range(0,len(btn),3): kb.row(*btn[i:i+3])
+    kb.row(InlineKeyboardButton("🔄 UPDATE MARKET",callback_data="currency_refresh")); return kb
+
+def language_kb(prefix="lang"):
+    kb=InlineKeyboardMarkup(row_width=2)
+    for code,v in LANGUAGES.items(): kb.add(InlineKeyboardButton(v["name"],callback_data=f"{prefix}:{code}"))
     return kb
+
 
 START_MESSAGE_DEFAULT = """🎉 <b>Welcome to Downloader Bot!</b>
 
@@ -501,6 +388,8 @@ activity_col = db1["activity_logs"]
 ratings_col = db1["bot_ratings"]
 rating_campaigns_col = db1["rating_campaigns"]
 referral_commissions_col = db1["referral_commissions"]
+balance_ledger_col = db1["balance_ledger"]
+conversion_holds_col = db1["conversion_holds"]
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -555,7 +444,7 @@ def process_referral_signup(uid,pending_ref):
         return None
     reward=referral_reward_amount()
     users[uid]["referred_by"]=ref_user; users[uid].pop("pending_ref",None)
-    credit_usd_value(ref_user,reward,"referral",False)
+    ledger_credit(ref_user,reward,"referral_reward",{"referred_user":uid})
     users[ref_user]["invited"]=users[ref_user].get("invited",0)+1
     save_user(uid); save_user(ref_user); log_activity(ref_user,"referral",{"referred_user":uid,"reward":reward})
     try: bot.send_message(int(ref_user),f"🎉 <b>New Referral!</b>\n\n👤 A new user joined through your link.\n💰 Earned: <b>${reward:.2f}</b>")
@@ -581,15 +470,18 @@ def distribute_referral_network_commission(source_uid,amount,reason="balance_cre
         commission=round(amount*pct/100.0,8)
         if commission<=0:
             break
-        credit_usd_value(parent,commission,"referral_network_commission",False)
+        ledger_credit(parent,commission,"referral_network_commission",{"source_user":source_uid,"level":level})
         referral_commissions_col.insert_one({"source_user":source_uid,"recipient_user":parent,"level":level,"source_amount":amount,"percent":pct,"commission":commission,"reason":reason,"time":datetime.now(timezone.utc)})
         log_activity(parent,"referral_network_commission",{"source_user":source_uid,"level":level,"percent":pct,"commission":commission,"reason":reason})
         results.append((parent,level,commission)); current=users[parent].get("referred_by")
     return results
 
 def credit_user_balance(uid,amount,reason="credit",network_commission=False):
-    # Existing callers pass USD-denominated amounts. Convert into the user's current holding at the current market rate.
-    return credit_usd_value(uid, amount, reason, network_commission)
+    uid=str(uid); amount=float(amount or 0)
+    if uid not in users or amount<=0: return 0.0,[]
+    asset_amt=ledger_credit(uid,amount,reason)
+    commissions=distribute_referral_network_commission(uid,amount,reason) if network_commission else []
+    return asset_amt,commissions
 
 def parse_seen_time(value):
     if isinstance(value,datetime): dt=value
@@ -617,6 +509,8 @@ def save_user(uid):
         users_col.update_one({"_id": uid_str}, {"$set": data}, upsert=True)
 
 users = load_users()
+for _uid,_u in users.items():
+    _u.setdefault("currency","USD"); _u.setdefault("balance_asset", "USD"); _u.setdefault("blocked",0.0); _u.setdefault("conversion_holds",[])
 
 def log_activity(uid, action, details=None):
     try:
@@ -897,6 +791,8 @@ def admin_menu():
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
     kb.add("💰 UNBLOCK MONEY", "🔍 RAADI")
+    kb.add("⏳ HOLD CHECK", "✅ RELEASE HOLD")
+    kb.add("📜 HOLD HISTORY")
     kb.add("🔥 UN BAN-USER", "📌 POST CHANNEL")
     kb.add("🔎 SEARCH USER", "📢 ADD ADS")
     kb.add("🗑 DELETE ADS", "✅ VERIFY ON")
@@ -913,6 +809,9 @@ def admin_menu():
     kb.add("🗑️ REMOVE ALL")
     kb.add("📢 Send Email All")
     kb.add("⏱️ FREE MAX MIN", "⏱️ PREMIUM MAX MIN")
+    kb.add("📦 FREE MAX MB", "📦 TRIAL MAX MB")
+    kb.add("📦 PREMIUM MAX MB", "⚙️ DOWNLOAD LIMITS")
+    kb.add("📸 INSTAGRAM API", "📸 INSTAGRAM STATUS")
     kb.add("🛰️ COBALT STATUS")
     kb.add("✅ Verified Users", "🏷️ Sticker")
     kb.add("Reveral Prices", "Delete Pay", "Open Pay rev")
@@ -933,6 +832,7 @@ def admin_menu():
     kb.add("🏙 SEND CITY", "📊 CITY STATS")
     kb.add("💱 CHANGE MONEY", "⭐ STARS SETTINGS")
     kb.add("👥 CURRENCY USERS", "📊 CURRENCY STATS")
+    kb.add("📊 MARKET STATUS")
     kb.add("✏️ EDIT START MESSAGE")
     kb.add("🔙 BACK MAIN MENU")
     return kb
@@ -1049,10 +949,7 @@ def profile_handler(m):
     status_str = f"Verified ({sticker})" if verified else "Not Verified"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
-    ensure_asset_wallet(uid)
-    balance = float(u_data.get("balance", 0.0) or 0)
-    asset_code = cur_code(uid)
-    usd_value = balance_usd_value(uid)
+    balance = u_data.get("balance", 0.0)
     email = u_data.get("email", "")
     phone = u_data.get("phone", "")
     contact_info = email if email else (phone if phone else "Not Set")
@@ -1065,7 +962,7 @@ def profile_handler(m):
         f"• Contact: {contact_info}\n"
         f"• Date Joined: {joined}\n"
         f"• Total Downloads: {downloads}\n"
-        f"• Balance: {format_asset_amount(asset_code, balance)}\n• USD Value: ${usd_value:.2f}"
+        f"• Balance: {format_asset(cur_code(uid), balance)}\n• USD Value: ${asset_to_usd(cur_code(uid), balance):,.2f} USD"
     )
     kb = InlineKeyboardMarkup(row_width=1)
     if not verified:
@@ -1932,6 +1829,195 @@ def _download_limit_seconds(uid):
     return max(1, minutes) * 60
 
 
+def _extract_youtube_video_id(link):
+    try:
+        u = urllib.parse.urlparse(link.strip())
+        host = (u.netloc or "").lower().split(":")[0]
+        path = u.path or ""
+        if host in {"youtu.be", "www.youtu.be"}:
+            return path.strip("/").split("/")[0] or None
+        if "youtube.com" in host or "youtube-nocookie.com" in host:
+            qs = urllib.parse.parse_qs(u.query)
+            if qs.get("v"): return qs["v"][0]
+            parts = [x for x in path.split("/") if x]
+            if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}: return parts[1]
+    except Exception:
+        pass
+    return None
+
+def _rapidapi_youtube_details(video_id):
+    if not RAPIDAPI_YT_KEY: raise RuntimeError("RAPIDAPI_YT_KEY is not configured.")
+    headers = {"X-RapidAPI-Key": RAPIDAPI_YT_KEY, "X-RapidAPI-Host": RAPIDAPI_YT_HOST, "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+    r = requests.get(RAPIDAPI_YT_DETAILS_URL, params={"videoId": video_id}, headers=headers, timeout=RAPIDAPI_TIMEOUT)
+    if r.status_code == 429: raise RuntimeError("RapidAPI YouTube quota/rate limit reached.")
+    if r.status_code in (401,403): raise RuntimeError("RapidAPI YouTube authentication/subscription failed.")
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, dict): raise RuntimeError("RapidAPI returned an invalid response.")
+    return data
+
+def _rapid_walk(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values(): yield from _rapid_walk(v)
+    elif isinstance(obj, list):
+        for v in obj: yield from _rapid_walk(v)
+
+def _rapid_num(d, keys):
+    for k in keys:
+        v=d.get(k)
+        if isinstance(v,(int,float)): return float(v)
+        if isinstance(v,str):
+            m=re.search(r"\d+(?:\.\d+)?",v)
+            if m:
+                try:return float(m.group())
+                except:pass
+    return None
+
+def _rapid_url(d):
+    for k in ("url","downloadUrl","download_url","videoUrl","video_url","playbackUrl","playback_url","link"):
+        v=d.get(k)
+        if isinstance(v,str) and v.startswith(("http://","https://")): return v
+    return None
+
+def _rapid_formats(data):
+    out=[]; seen=set()
+    for d in _rapid_walk(data):
+        url=_rapid_url(d)
+        if not url or url in seen: continue
+        text=" ".join(str(d.get(k,"")) for k in ("type","mimeType","mime","quality","qualityLabel","format","container")).lower()
+        height=_rapid_num(d,("height","videoHeight")) or 0
+        width=_rapid_num(d,("width","videoWidth")) or 0
+        fps=_rapid_num(d,("fps","frameRate")) or 0
+        audio=any(x in text for x in ("audio","mp4a","m4a","opus"))
+        video=height>0 or any(x in text for x in ("video","mp4","webm","avc","h264"))
+        if video or audio:
+            seen.add(url); out.append({"url":url,"height":int(height),"width":int(width),"fps":fps,"audio":audio,"video":video,"text":text})
+    return out
+
+def _rapid_duration(data):
+    for d in _rapid_walk(data):
+        v=_rapid_num(d,("duration","durationSeconds","lengthSeconds","length"))
+        if v and 0<v<172800:return int(v)
+    return None
+
+def _rapid_choose(data, quality):
+    fs=[x for x in _rapid_formats(data) if x["video"]]
+    if not fs: raise RuntimeError("RapidAPI returned no downloadable video formats.")
+    target=2160 if str(quality)=="2160" else int(quality or 720)
+    under=[x for x in fs if x["height"] and x["height"]<=target]
+    pool=under or fs
+    pool.sort(key=lambda x:(0 if "mp4" in x["text"] else 1, abs((x["height"] or target)-target), 0 if x["audio"] else 1, -x["fps"]))
+    return pool[0]
+
+def _rapid_download(link,tmp_dir,quality,max_seconds):
+    vid=_extract_youtube_video_id(link)
+    if not vid: raise RuntimeError("Could not extract the YouTube video ID.")
+    data=_rapidapi_youtube_details(vid)
+    duration=_rapid_duration(data)
+    if duration and duration>max_seconds: raise RuntimeError(f"YouTube video is too long. Maximum is {max_seconds//60} minutes.")
+    chosen=_rapid_choose(data,quality)
+    path=os.path.join(tmp_dir,f"youtube_{vid}.mp4")
+    max_bytes=max(1,_download_max_mb(str(chat_id)))*1024*1024
+    with requests.get(chosen["url"],headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as r:
+        r.raise_for_status(); total=0
+        with open(path,"wb") as f:
+            for chunk in r.iter_content(chunk_size=1024*256):
+                if not chunk: continue
+                total+=len(chunk)
+                if total>max_bytes: raise RuntimeError("Downloaded file is larger than the temporary 2GB safety limit.")
+                f.write(chunk)
+    return [path]
+
+def _instagram_api_config():
+    """Load Instagram downloader API config from MongoDB first, env vars second."""
+    return (
+        str(get_setting("instagram_api_url", RAPIDAPI_IG_URL) or "").strip(),
+        str(get_setting("instagram_api_host", RAPIDAPI_IG_HOST) or "").strip(),
+        str(get_setting("instagram_api_key", RAPIDAPI_IG_KEY) or "").strip(),
+    )
+
+def _instagram_api_enabled():
+    url,host,key=_instagram_api_config()
+    return bool(url and host and key)
+
+def _instagram_api_walk(obj):
+    if isinstance(obj,dict):
+        yield obj
+        for v in obj.values(): yield from _instagram_api_walk(v)
+    elif isinstance(obj,list):
+        for v in obj: yield from _instagram_api_walk(v)
+
+def _instagram_api_urls(data):
+    """Extract direct media URLs from the RapidAPI Instagram Reels response.
+
+    The API commonly returns data.medias[].url. We also accept a few
+    equivalent shapes so the downloader remains compatible with response
+    revisions.
+    """
+    out=[]; seen=set()
+
+    def add(v, media_type=None):
+        if not isinstance(v,str) or not v.startswith(("http://","https://")) or v in seen:
+            return
+        seen.add(v)
+        low=v.lower()
+        is_video = (str(media_type or '').lower() in {'video','mp4','reel'} or
+                    any(x in low for x in ('.mp4','video','videoplayback')))
+        out.append((v, '.mp4' if is_video else '.jpg'))
+
+    # Exact/current shape: {"data":{"medias":[{"url":"...","type":"video"}]}}
+    medias = data.get('data',{}).get('medias',[]) if isinstance(data,dict) else []
+    if isinstance(medias,list):
+        for item in medias:
+            if isinstance(item,dict):
+                add(item.get('url'), item.get('type') or item.get('mediaType'))
+                add(item.get('downloadUrl') or item.get('download_url'), item.get('type'))
+
+    # Generic fallback for API response revisions.
+    for d in _instagram_api_walk(data):
+        if not isinstance(d,dict):
+            continue
+        media_type=d.get('type') or d.get('mediaType') or d.get('media_type')
+        for k in ('url','downloadUrl','download_url','mediaUrl','media_url','videoUrl','video_url','imageUrl','image_url'):
+            add(d.get(k), media_type)
+    return out
+
+def _instagram_api_download(link,tmp_dir):
+    url,host,key=_instagram_api_config()
+    if not (url and host and key): raise RuntimeError("Instagram RapidAPI is not configured in Admin Panel.")
+    headers={"x-rapidapi-host":host,"x-rapidapi-key":key,"Accept":"application/json","User-Agent":"Mozilla/5.0"}
+    try:
+        # This endpoint is GET-only: /download?url=<instagram_url>.
+        r=requests.get(url,params={"url":link},headers=headers,timeout=RAPIDAPI_TIMEOUT)
+        if r.status_code in (401,403):
+            raise RuntimeError("Instagram RapidAPI authentication/subscription failed.")
+        if r.status_code==429:
+            raise RuntimeError("Instagram RapidAPI quota/rate limit reached.")
+        r.raise_for_status()
+        data=r.json()
+        links=_instagram_api_urls(data)
+        if not links:
+            raise RuntimeError(f"Instagram API returned no media URL. Response: {str(data)[:500]}")
+        paths=[]
+        for i,(media_url,ext) in enumerate(links[:20]):
+            path=os.path.join(tmp_dir,f"instagram_{i}{ext}")
+            with requests.get(media_url,headers={"User-Agent":"Mozilla/5.0"},stream=True,timeout=RAPIDAPI_TIMEOUT) as rr:
+                rr.raise_for_status(); total=0
+                with open(path,"wb") as f:
+                    for c in rr.iter_content(1024*256):
+                        if not c: continue
+                        total+=len(c)
+                        if total > 1024*1024*1024:
+                            raise RuntimeError("Instagram media is too large.")
+                        f.write(c)
+            paths.append(path)
+        return paths
+    except requests.HTTPError as e:
+        raise RuntimeError(f"Instagram RapidAPI HTTP error: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Instagram RapidAPI failed: {e}") from e
+
 def _cobalt_headers():
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if COBALT_API_KEY:
@@ -2030,10 +2116,35 @@ def _cobalt_health():
         return False, str(e)[:180]
 
 
+def _is_trial_active(uid):
+    """True only while the current Premium access came from a trial campaign."""
+    uid=str(uid); u=users.get(uid,{})
+    if not u.get("trial_used"): return False
+    until=u.get("premium_until")
+    try:
+        dt=until if isinstance(until,datetime) else datetime.fromisoformat(str(until).replace("Z","+00:00"))
+        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+        return dt > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+def _download_max_mb(uid):
+    """Admin-controlled per-account upload/download ceiling, persisted in MongoDB."""
+    uid=str(uid)
+    if _is_trial_active(uid):
+        return max(1,int(get_setting("trial_max_mb",49) or 49))
+    if is_premium(uid):
+        return max(1,int(get_setting("premium_max_mb",49) or 49))
+    return max(1,int(get_setting("free_max_mb",49) or 49))
+
+def _download_max_mb_label(uid):
+    if _is_trial_active(uid): return "TRIAL"
+    return "PREMIUM" if is_premium(uid) else "FREE"
+
 def _safe_send_file(chat_id, path, caption="", reply_markup=None):
     size_mb = os.path.getsize(path) / (1024 * 1024)
-    if size_mb > MAX_UPLOAD_MB:
-        raise RuntimeError(f"Telegram upload limit exceeded: {size_mb:.1f} MB > {MAX_UPLOAD_MB} MB. Choose a lower quality/smaller media.")
+    if size_mb > _download_max_mb(chat_id):
+        raise RuntimeError(f"Telegram upload limit exceeded: {size_mb:.1f} MB > {_download_max_mb(chat_id)} MB. Choose a lower quality/smaller media.")
     with open(path, "rb") as f:
         if _is_image_file(path):
             bot.send_photo(chat_id, f, caption=caption, reply_markup=reply_markup)
@@ -2058,6 +2169,17 @@ def send_action(chat_id, action):
         bot.send_chat_action(chat_id, action)
     except Exception:
         pass
+
+def _send_action_for_file(chat_id, path):
+    """Show Telegram's native upload action immediately before each upload."""
+    if _is_video_file(path):
+        send_action(chat_id, "upload_video")
+    elif _is_audio_file(path):
+        send_action(chat_id, "upload_audio")
+    elif _is_image_file(path):
+        send_action(chat_id, "upload_photo")
+    else:
+        send_action(chat_id, "upload_document")
 
 def is_premium(uid):
     data = users.get(str(uid), {})
@@ -2162,7 +2284,7 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration):
     common["outtmpl"] = os.path.join(tmp_dir, "%(playlist_index&{}-)s%(id)s.%(ext)s")
     common["format"] = fmt
     common["merge_output_format"] = "mp4"
-    common["max_filesize"] = max(MAX_UPLOAD_MB, 49) * 1024 * 1024
+    common.pop("max_filesize", None)
     common["overwrites"] = False
     common["continuedl"] = True
     common["ignoreerrors"] = False
@@ -2199,112 +2321,79 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration):
 
 
 def download_media(chat_id, link, message_id, quality=None):
-    platform = detect_platform(link)
-    if platform == "unknown":
-        bot.edit_message_text("❌ Unsupported or invalid link. Supported: TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and YouTube.", chat_id, message_id)
-        return
-
-    uid_str = str(chat_id)
-    premium = is_premium(uid_str)
-    max_duration = _download_limit_seconds(uid_str)
-    tmp_dir = os.path.join("downloads", uuid.uuid4().hex)
-    os.makedirs(tmp_dir, exist_ok=True)
-
+    platform=detect_platform(link)
+    if platform=="unknown":
+        bot.edit_message_text("❌ Unsupported or invalid link. Supported: TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and YouTube.",chat_id,message_id); return
+    uid=str(chat_id); premium=is_premium(uid); max_seconds=_download_limit_seconds(uid)
+    quality=quality or (users.get(uid,{}).get("premium_quality") if premium else "720") or "720"
+    tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     try:
-        send_action(chat_id, "typing")
-        bot.edit_message_text("✍️ Preparing download...", chat_id, message_id)
-
-        # Cobalt is the primary resolver for YouTube and Instagram.
-        # If Cobalt is unavailable, yt-dlp remains as a controlled fallback.
-        cobalt_platform = platform in {"youtube", "instagram"}
-        used_cobalt = False
-        media_files = []
-
-        if cobalt_platform and _cobalt_enabled():
-            q = quality or users.get(uid_str, {}).get("premium_quality") or ("720" if not premium else "1080")
-            # Cobalt itself also has a server-side duration limit; the bot's limit is
-            # enforced before/after processing where metadata is available.
-            media_files = _cobalt_process(link, tmp_dir, q, "auto")
-            used_cobalt = True
-
-        if not media_files:
-            # yt-dlp fallback path for platforms/instances where Cobalt cannot resolve.
-            cookie_args = {}
+        bot.edit_message_text("✍️ Preparing download...",chat_id,message_id)
+    except: pass
+    try:
+        media=[]
+        provider="yt-dlp"
+        if platform=="youtube" and RAPIDAPI_YT_KEY:
+            try:
+                media=_rapid_download(link,tmp,quality,max_seconds); provider="rapidapi-youtube"
+            except Exception as e:
+                print("RapidAPI YouTube fallback:",repr(e))
+        if not media and platform=="instagram" and _instagram_api_enabled():
+            try:
+                media=_instagram_api_download(link,tmp); provider="rapidapi-instagram"
+            except Exception as e:
+                print("RapidAPI Instagram fallback:",repr(e))
+        if not media and platform=="instagram" and _cobalt_enabled():
+            try:
+                media=_cobalt_process(link,tmp,quality=quality); provider="cobalt"
+            except Exception as e: print("Cobalt Instagram fallback:",repr(e))
+        if not media:
+            cookie_args={}
             if YTDLP_COOKIES_FILE and os.path.isfile(YTDLP_COOKIES_FILE):
-                cookie_args["cookiefile"] = YTDLP_COOKIES_FILE
-            base_opts = {
-                "quiet": True, "no_warnings": False, "noplaylist": True,
-                "retries": 5, "fragment_retries": 5, "file_access_retries": 5,
-                "extractor_retries": 3, "socket_timeout": 45,
-                "http_headers": {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"},
-                "concurrent_fragment_downloads": 4 if premium else 1,
-                **cookie_args,
+                cookie_args["cookiefile"]=YTDLP_COOKIES_FILE
+            opts={
+                "quiet":True,"no_warnings":True,"noplaylist":True,
+                "retries":8,"fragment_retries":8,"extractor_retries":5,
+                "socket_timeout":60,
+                "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+                "concurrent_fragment_downloads":4 if premium else 1,
+                **cookie_args
             }
-            short = platform == "youtube" and youtube_is_short(link)
-            if platform == "youtube":
-                if short:
-                    fmt = "bestvideo*[height<=720]+bestaudio/best[height<=720]/bestvideo*+bestaudio/best"
-                elif premium and quality in PREMIUM_QUALITY_FORMATS:
-                    fmt = f"{PREMIUM_QUALITY_FORMATS[quality]}/best[height<={quality}]/best"
-                else:
-                    fmt = "bestvideo*[height<=720]+bestaudio/best[height<=720]/best"
-            elif platform == "instagram":
-                fmt = "bestvideo*+bestaudio/best"
-            else:
-                fmt = "bestvideo*+bestaudio/best"
-            _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration)
-            media_files = [p for p in _collect_downloaded_files(tmp_dir) if _is_image_file(p) or _is_video_file(p) or _is_audio_file(p)]
-
-        if not media_files:
-            raise RuntimeError("No downloadable media was produced.")
-
-        # A Cobalt instance may return a media URL without duration metadata.
-        # The instance itself must be configured with a sufficiently high
-        # DURATION_LIMIT; this bot separately controls the product limits.
-        sent = 0
-        for path in media_files[:20]:
-            if _is_image_file(path): send_action(chat_id, "upload_photo")
-            elif _is_audio_file(path): send_action(chat_id, "upload_audio")
-            else: send_action(chat_id, "upload_video")
-            reply_markup = None
+            fmt=_quality_format(uid,quality)
+            if platform in {"tiktok","instagram","facebook","pinterest","snapchat","twitter"}:
+                fmt="bestvideo*+bestaudio/best"
+            info=_run_ytdlp_download(link,tmp,platform,fmt,opts,max_seconds)
+            media=[p for p in _collect_downloaded_files(tmp) if _is_image_file(p) or _is_video_file(p) or _is_audio_file(p)]
+        if not media: raise RuntimeError("No downloadable media was produced.")
+        sent=0
+        for path in media[:50 if platform=="tiktok" else 20]:
+            markup=None
             if _is_video_file(path):
-                music_token = uuid.uuid4().hex[:24]
-                music_pending[music_token] = {"uid": uid_str, "link": link, "created": time.time()}
-                reply_markup = InlineKeyboardMarkup()
-                reply_markup.add(InlineKeyboardButton("🎵 MUSIC", callback_data=f"music:{music_token}"))
-            _safe_send_file(chat_id, path, DOWNLOAD_CAPTION, reply_markup=reply_markup)
-            sent += 1
-
-        try: bot.delete_message(chat_id, message_id)
-        except Exception: pass
-        videos_data["total"] = videos_data.get("total", 0) + sent
-        videos_data.setdefault("platforms", {}).setdefault(platform, 0)
-        videos_data["platforms"][platform] += sent
-        videos_data.setdefault("users", {}).setdefault(uid_str, 0)
-        videos_data["users"][uid_str] += sent
-        save_videos()
-        log_activity(uid_str, "download", {"platform": platform, "count": sent, "resolver": "cobalt" if used_cobalt else "yt-dlp"})
-        if videos_data.get("feedback_enabled", False):
-            send_feedback_request(chat_id, platform, uuid.uuid4().hex)
-
+                token=uuid.uuid4().hex[:24]; music_pending[token]={"uid":uid,"link":link,"created":time.time()}; markup=InlineKeyboardMarkup(); markup.add(InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}"))
+            _send_action_for_file(chat_id,path)
+            _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup); sent+=1
+        try: bot.delete_message(chat_id,message_id)
+        except: pass
+        videos_data["total"]=videos_data.get("total",0)+sent; videos_data.setdefault("platforms",{}).setdefault(platform,0); videos_data["platforms"][platform]+=sent; videos_data.setdefault("users",{}).setdefault(uid,0); videos_data["users"][uid]+=sent; save_videos(); log_activity(uid,"download",{"platform":platform,"count":sent,"provider":provider})
     except Exception as e:
-        print(f"Download error [{platform}] {link}: {repr(e)}")
-        low = str(e).lower()
-        if "duration" in low and ("limit" in low or "too long" in low):
-            mins = int(max_duration // 60)
-            friendly = f"❌ This video is longer than your current limit ({mins} minutes)."
-        elif platform == "instagram":
-            friendly = "❌ Instagram download failed. The Cobalt resolver could not fetch this public media right now. Try the direct Reel/Post link again."
-        elif platform == "youtube":
-            friendly = "❌ YouTube download failed. Cobalt could not resolve this video/Short right now. Please try the direct YouTube link again."
-        else:
-            friendly = "❌ Download failed. Please try again."
-        try: bot.edit_message_text(friendly, chat_id, message_id)
-        except Exception:
-            try: bot.send_message(chat_id, friendly)
-            except Exception: pass
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        print(f"Download error [{platform}] {link}: {e!r}")
+        msg="❌ Download failed. Please try again."
+        if "too long" in str(e).lower(): msg=f"❌ {e}"
+        try: bot.edit_message_text(msg,chat_id,message_id)
+        except:
+            try: bot.send_message(chat_id,msg)
+            except: pass
+    finally: shutil.rmtree(tmp,ignore_errors=True)
+
+@bot.message_handler(func=lambda m: m.text == "📡 RAPIDAPI STATUS")
+def rapidapi_status_handler(m):
+    if not is_admin(m.from_user.id): return
+    if not RAPIDAPI_YT_KEY:
+        bot.send_message(m.chat.id,"❌ RAPIDAPI_YT_KEY is not configured."); return
+    try:
+        _rapidapi_youtube_details("dQw4w9WgXcQ")
+        bot.send_message(m.chat.id,"✅ RapidAPI YouTube is responding.")
+    except Exception as e: bot.send_message(m.chat.id,f"❌ RapidAPI failed: {str(e)[:700]}")
 
 # ================= MUSIC / MP3 CONVERTER =================
 def _cleanup_music_pending():
@@ -2340,7 +2429,7 @@ def convert_link_to_mp3(chat_id, link, status_message_id):
         if not mp3_files:
             raise RuntimeError("MP3 file was not created. Make sure FFmpeg is installed.")
         path = mp3_files[0]
-        if os.path.getsize(path) > MAX_UPLOAD_MB * 1024 * 1024:
+        if os.path.getsize(path) > _download_max_mb(chat_id) * 1024 * 1024:
             raise RuntimeError("The MP3 is too large for Telegram upload.")
         send_action(chat_id, "upload_audio")
         info = info or {}
@@ -2390,10 +2479,11 @@ def start_handler(message):
     if bot_locked_guard(message): return
     uid=str(message.from_user.id); args=message.text.split()
     if uid not in users:
-        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","balance_currency":"USD","wallet_version":2,"gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
+        users[uid]={"username":message.from_user.username or "","first_name":message.from_user.first_name or "there","balance":0.0,"blocked":0.0,"ref":random_ref(),"bot_id":random_botid(),"invited":0,"banned":False,"verified":False,"quick_access":False,"youtube_30m":False,"premium_until":None,"premium_warning_sent":False,"trial_used":False,"trial_pending":False,"trial_version_used":None,"trial_pending_version":None,"referral_50_rewarded":False,"referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),"last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),"language":None,"currency":"USD","balance_asset":"USD","gender":None,"city":None,"pending_ref":args[1] if len(args)>1 else None}
         save_user(uid)
     users[uid].setdefault("currency","USD")
-    users[uid].setdefault("balance_currency", users[uid].get("currency","USD"))
+    users[uid].setdefault("balance_asset",users[uid].get("currency","USD"))
+    users[uid].setdefault("blocked",0.0)
     users[uid].setdefault("first_name", message.from_user.first_name or "there")
     users[uid]["first_name"] = message.from_user.first_name or users[uid].get("first_name") or "there"
     users[uid]["username"] = message.from_user.username or users[uid].get("username") or ""
@@ -2423,12 +2513,9 @@ def view_cmd(message):
 @bot.message_handler(commands=['balance'])
 def balance_cmd(m):
     uid = str(m.from_user.id)
-    touch_user(uid)
-    ensure_asset_wallet(uid)
-    usd = balance_usd_value(uid)
-    amount = float(users.get(uid,{}).get("balance",0) or 0)
+    bal = users.get(uid, {}).get("balance", 0)
     try:
-        bot.send_message(m.chat.id, f"💰 Your balance: {format_asset_amount(cur_code(uid),amount)}\n💵 USD value: ${usd:.2f}")
+        bot.send_message(m.chat.id, f"💰 Your balance: {format_asset(cur_code(uid),bal)}")
     except: pass
 
 @bot.message_handler(commands=['refer'])
@@ -2564,16 +2651,28 @@ def confirm_join(call):
             try:
                 bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
             except: pass
+            # After the user's first successful channel confirmation, show the
+            # same welcome message + main menu used by the normal /start flow.
+            # Do NOT replace this with a bare "Join confirmed" message.
+            # The welcome is part of the onboarding system.
+            try:
+                bot.send_message(
+                    user_id,
+                    render_start_message(str(user_id)),
+                    reply_markup=localized_user_menu(str(user_id)),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                print("WELCOME AFTER CONFIRM ERROR:", repr(e))
+
             if user_id in pending_links:
-                link = pending_links[user_id]
-                del pending_links[user_id]
-                msg = bot.send_message(user_id, "⏳ Processing...")
-                if is_quick_access(user_id):
-                    vip_executor.submit(download_media, user_id, link, msg.message_id)
-                else:
-                    normal_executor.submit(download_media, user_id, link, msg.message_id)
-            else:
-                bot.send_message(user_id, "✅ Join confirmed. Send your video link.")
+                link = pending_links.pop(user_id, None)
+                if link:
+                    msg = bot.send_message(user_id, "⏳ Processing...")
+                    if is_quick_access(user_id):
+                        vip_executor.submit(download_media, user_id, link, msg.message_id)
+                    else:
+                        normal_executor.submit(download_media, user_id, link, msg.message_id)
         else:
             bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
     except:
@@ -2594,23 +2693,30 @@ def open_admin_panel(m):
 def balance_handler(m):
     touch_user(m.from_user.id)
     if bot_locked_guard(m) or banned_guard(m): return
-    uid=str(m.from_user.id)
-    try:
-        refresh_market_rates()
-        code=cur_code(uid); amount=float(users.get(uid,{}).get("balance",0) or 0)
-        blocked=float(users.get(uid,{}).get("blocked",0) or 0)
-        rate=fx_rate_for_code(code)
-        usd=amount/rate if rate>0 else 0
-        blocked_usd=blocked/rate if rate>0 else 0
-        text=(f"💰 <b>Available Balance:</b> <b>{format_asset_amount(code,amount)}</b>\n"
-              f"💵 <b>Current USD value:</b> <b>${usd:,.2f} USD</b>\n"
-              f"⏳ <b>Blocked Amount:</b> <b>{format_asset_amount(code,blocked)}</b>\n"
-              f"📊 <b>Market:</b> 1 USD = <b>{market_rate_text(code)} {code}</b>\n"
-              f"🌍 <b>Source:</b> {MARKET_CACHE.get('sources',{}).get(code,'live market')}\n\n"
-              "⚠️ <i>Your balance is held in the selected currency. Its USD value can rise or fall as the market moves.</i>")
+    uid=str(m.from_user.id); code=cur_code(uid); available=available_asset_amount(uid); hold=hold_amount_usd(uid); blocked=blocked_amount(uid)
+    # Keep the balance screen clean for new/empty accounts.  Hold information is
+    # only shown when the user actually has an active conversion hold.
+    text=f"💰 <b>Available Balance:</b> {format_asset(code,available)}\n"
+    if hold > 0.0000000001:
+        text += f"💵 <b>Amount on Hold:</b> ${hold:,.2f} USD\n"
+    text += f"⏳ <b>Blocked Amount:</b> {format_asset(code,blocked)}"
+    if code!="USD" and available > 0:
+        text+=f"\n💵 <b>Current USD value:</b> ${asset_to_usd(code,available):,.2f} USD"
+    if hold > 0.0000000001:
+        kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("❓ What Means Hold",callback_data="what_hold"))
+        bot.send_message(m.chat.id,text,reply_markup=kb)
+    else:
         bot.send_message(m.chat.id,text)
-    except Exception as e:
-        print("balance_handler error:",e)
+
+@bot.callback_query_handler(func=lambda c:c.data=="what_hold")
+def what_hold_callback(call):
+    uid=str(call.from_user.id); now=datetime.now(timezone.utc); hs=list(conversion_holds_col.find({"user_id":uid,"status":"hold"}).sort("created_at",-1).limit(10))
+    lines=["❓ <b>WHAT MEANS HOLD?</b>","","A hold is a temporary security lock applied to funds after a crypto → USD conversion.","","⏱️ Hold duration: <b>1 hour</b>","💵 Held money cannot be withdrawn while the hold is active.","✅ After 1 hour it automatically becomes Available.","👑 Admin can check the source/history and release it early.",""]
+    if hs:
+        for h in hs:
+            exp=parse_seen_time(h.get("expires_at")); sec=max(0,int((exp-now).total_seconds())) if exp else 0; lines.append(f"• ${float(h.get('usd_amount',0)):,.2f} USD — {sec//60}m {sec%60}s remaining")
+    else: lines.append("No active holds.")
+    bot.answer_callback_query(call.id); bot.send_message(call.message.chat.id,"\n".join(lines))
 
 @bot.message_handler(func=lambda m: m.text == "🆔 GET ID")
 def get_id_handler(m):
@@ -2710,146 +2816,29 @@ def withdraw_address_step(m):
     except: pass
 
 def withdraw_amount_step(m):
-    uid = str(m.from_user.id)
-    text = (m.text or "").strip()
-    if text == "🔙 CANCEL":
-        back_to_main_menu(m)
-        return
-    try:
-        local_amt = float(text)
-        amt = local_amt
-        amt_usd = amt / fx_rate(uid)
+    uid=str(m.from_user.id); text=(m.text or "").strip()
+    if text=="🔙 CANCEL": back_to_main_menu(m); return
+    try: local_amt=float(text)
     except:
-        kb = ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add("🔙 CANCEL")
-        try:
-            msg = bot.send_message(m.chat.id, "❌ Invalid number.\nEnter again or press 🔙 CANCEL", reply_markup=kb)
-            bot.register_next_step_handler(msg, withdraw_amount_step)
-        except: pass
-        return
-
-    min_w = get_setting("min_withdrawal", 1.0)
-    if amt_usd < min_w:
-        try:
-            bot.send_message(m.chat.id, f"❌ Minimum withdrawal is {money_text(uid,min_w)}", reply_markup=localized_user_menu(uid))
-        except: pass
-        return
-    if amt > float(users[uid].get("balance",0) or 0):
-        try:
-            bot.send_message(m.chat.id, "❌ Insufficient balance", reply_markup=localized_user_menu(uid))
-        except: pass
-        return
-
-    fee_pct = get_setting("fee_percent", 0.0)
-    low_fee = get_setting("low_fee", 0.0)
-    amt_usd = amt / fx_rate(uid)
-    calculated_fee_usd = (amt_usd * fee_pct) / 100.0
-    low_fee_asset = asset_amount_for_usd(cur_code(uid), low_fee)
-    calculated_fee = asset_amount_for_usd(cur_code(uid), calculated_fee_usd)
-    amount_sent = amt - calculated_fee - low_fee_asset
-    if amount_sent < 0:
-        amount_sent = 0.0
-
-    wid = random.randint(10000, 99999)
-    users[uid]["balance"] -= amt
-    users[uid]["blocked"] += amt
-
-    withdrawal = {
-        "id": wid,
-        "user": uid,
-        "amount": amt,
-        "asset": cur_code(uid),
-        "amount_usd": amt_usd,
-        "fee": calculated_fee,
-        "low_fee": low_fee,
-        "amount_sent": amount_sent,
-        "blocked": amt,
-        "address": users[uid].get("temp_addr", "N/A"),
-        "status": "pending",
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    withdraws.append(withdrawal)
-    save_user(uid)
-    save_withdraws()
-    log_activity(uid, "withdrawal_requested", {"amount_usd": amt_usd, "amount_asset": amt, "asset": cur_code(uid), "request_id": wid})
-
-    if users[uid].get("verified") and users[uid].get("email"):
-        w_email = users[uid]["email"]
-        html_receipt = f"""
-        <!DOCTYPE html>
-        <html>
-        <head><meta charset="UTF-8"></head>
-        <body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
-            <div style="max-width: 600px; background: #ffffff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Withdrawal Request Receipt</h2>
-                <p>Hello,</p>
-                <p>Your withdrawal request has been successfully submitted and is currently pending review.</p>
-                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Request ID:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">{wid}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Amount Requested:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${amt:.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Fee:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${calculated_fee:.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Low W/D Fee:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">${low_fee:.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Amount to Send:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; color: #27ae60; font-weight: bold;">${amount_sent:.2f}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">USDT Address:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; word-break: break-all; font-family: monospace;">{withdrawal['address']}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Status:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; color: #e67e22; font-weight: bold;">Pending</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold;">Time:</td>
-                        <td style="padding: 10px; border-bottom: 1px solid #ddd;">{withdrawal['time']}</td>
-                    </tr>
-                </table>
-                <p style="margin-top: 30px; color: #7f8c8d; font-size: 12px; text-align: center;">Thank you for using our service!</p>
-            </div>
-        </body>
-        </html>
-        """
-        send_html_email(w_email, f"Withdrawal Receipt #{wid}", html_receipt)
-
-    receipt_text = (
-        f"✅ Withdrawal Request Sent\n"
-        f"🧾 Request ID: {wid}\n"
-        f"💲 Fee ({fee_pct:.2f}%): -{format_asset_amount(cur_code(uid),calculated_fee)}\n"
-        f"💲 Low W/D Fee: -{format_asset_amount(cur_code(uid),low_fee_asset)}\n"
-        f"💵 Amount: {format_asset_amount(cur_code(uid),amt)}\n"
-        f"🏦 Address: {withdrawal['address']}\n"
-        f"♾️ Amount Sent: ${amount_sent:.2f}\n"
-        f"⏳ Status: Pending"
-    )
-    try:
-        bot.send_message(int(uid), receipt_text)
+        msg=bot.send_message(m.chat.id,"❌ Invalid number. Try again or press 🔙 CANCEL"); bot.register_next_step_handler(msg,withdraw_amount_step); return
+    code=cur_code(uid); price=asset_usd_price(code)
+    if price<=0: bot.send_message(m.chat.id,"❌ Current market rate unavailable.",reply_markup=localized_user_menu(uid)); return
+    asset_amt=local_amt; usd_amt=asset_to_usd(code,asset_amt); available=available_asset_amount(uid)
+    min_w=float(get_setting("min_withdrawal",1.0) or 1.0)
+    if usd_amt<min_w: bot.send_message(m.chat.id,f"❌ Minimum withdrawal is {money_text(uid,min_w)}",reply_markup=localized_user_menu(uid)); return
+    if asset_amt>available: bot.send_message(m.chat.id,f"❌ Insufficient available balance. Available: {format_asset(code,available)}",reply_markup=localized_user_menu(uid)); return
+    fee_pct=float(get_setting("fee_percent",0.0) or 0.0); low_fee=float(get_setting("low_fee",0.0) or 0.0)
+    calculated_fee=usd_amt*fee_pct/100.0; amount_sent=max(0.0,usd_amt-calculated_fee-low_fee)
+    wid=random.randint(10000,99999); users[uid]["balance"]=round(balance_amount(uid)-asset_amt,12); users[uid]["blocked"]=round(blocked_amount(uid)+asset_amt,12); save_user(uid)
+    withdrawal={"id":wid,"user":uid,"asset":code,"amount":asset_amt,"amount_usd":usd_amt,"fee":calculated_fee,"low_fee":low_fee,"amount_sent":amount_sent,"blocked":asset_amt,"blocked_usd":usd_amt,"address":users[uid].get("temp_addr","N/A"),"status":"pending","time":datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    withdraws.append(withdrawal); save_withdraws(); log_activity(uid,"withdrawal_requested",{"asset":code,"amount":asset_amt,"amount_usd":usd_amt,"request_id":wid})
+    receipt_text=(f"✅ Withdrawal Request Sent\n🧾 Request ID: {wid}\n💰 Amount: {format_asset(code,asset_amt)}\n💵 USD value: ${usd_amt:.2f}\n💲 Fee: -${calculated_fee:.2f}\n💵 Amount Sent: ${amount_sent:.2f}\n🏦 Address: {withdrawal['address']}\n⏳ Status: Pending")
+    try: bot.send_message(int(uid),receipt_text)
     except: pass
-
-    admin_text = f"💳 NEW WITHDRAWAL\n\n👤 User: {uid}\n🤖 BOT ID: {users[uid]['bot_id']}\n👥 Referrals: {users[uid]['invited']}\n💵 Amount: ${amt:.2f}\n♾️ Amount Sent: ${amount_sent:.2f}\n🧾 Request ID: {wid}\n🏦 Address: {withdrawal['address']}\n⏳ Status: Pending"
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("✅ CONFIRM", callback_data=f"confirm_{wid}"),
-        InlineKeyboardButton("❌ REJECT", callback_data=f"reject_{wid}"),
-        InlineKeyboardButton("🚫 BAN USER", callback_data=f"ban_{uid}"),
-        InlineKeyboardButton("💰 BAN MONEY", callback_data=f"block_{wid}")
-    )
+    admin_text=f"💳 NEW WITHDRAWAL\n\n👤 User: {uid}\n🤖 BOT ID: {users[uid].get('bot_id','N/A')}\n💰 Amount: {format_asset(code,asset_amt)}\n💵 USD value: ${usd_amt:.2f}\n🧾 Request ID: {wid}\n🏦 Address: {withdrawal['address']}\n⏳ Status: Pending"
+    markup=InlineKeyboardMarkup(row_width=2); markup.add(InlineKeyboardButton("✅ CONFIRM",callback_data=f"confirm_{wid}"),InlineKeyboardButton("❌ REJECT",callback_data=f"reject_{wid}"),InlineKeyboardButton("🚫 BAN USER",callback_data=f"ban_{uid}"),InlineKeyboardButton("💰 BAN MONEY",callback_data=f"block_{wid}"))
     for admin in ADMIN_IDS:
-        try:
-            bot.send_message(admin, admin_text, reply_markup=markup)
+        try: bot.send_message(admin,admin_text,reply_markup=markup)
         except: pass
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith(("confirm_", "reject_", "ban_", "block_")))
@@ -2867,7 +2856,7 @@ def admin_callbacks(call):
         if not w or w["status"] != "pending":
             return
         w["status"] = "paid"
-        users[w["user"]]["blocked"] -= w["blocked"]
+        users[w["user"]]["blocked"] = max(0.0,blocked_amount(w["user"])-float(w["blocked"]))
         save_user(w["user"])
         save_withdraws()
         try:
@@ -2880,8 +2869,8 @@ def admin_callbacks(call):
         if not w or w["status"] != "pending":
             return
         w["status"] = "rejected"
-        ensure_asset_wallet(w["user"]); users[w["user"]]["balance"] += w["blocked"]
-        users[w["user"]]["blocked"] -= w["blocked"]
+        users[w["user"]]["balance"] = round(balance_amount(w["user"])+float(w["blocked"]),12)
+        users[w["user"]]["blocked"] = max(0.0,blocked_amount(w["user"])-float(w["blocked"]))
         save_user(w["user"])
         save_withdraws()
         try:
@@ -2907,7 +2896,7 @@ def admin_callbacks(call):
         w["status"] = "blocked"
         code = str(random.randint(1000, 9999))
         w["block_code"] = code
-        users[uid]["blocked"] -= amt
+        users[uid]["blocked"] = max(0.0,blocked_amount(uid)-amt)
         save_user(uid)
         save_withdraws()
         try:
@@ -2937,7 +2926,7 @@ def unblock_money_process(m):
 
     uid = w["user"]
     amt = w["blocked"]
-    users[uid]["balance"] = round(float(users[uid].get("balance",0) or 0) + float(amt), 12)
+    users[uid]["balance"] = round(balance_amount(uid)+amt,12)
     w["status"] = "unblocked"
     w.pop("block_code", None)
     save_user(uid)
@@ -2972,6 +2961,52 @@ def unban_user_process(m):
         bot.send_message(int(uid), "✅ You have been unbanned by admin.")
     except: pass
 
+@bot.message_handler(func=lambda m: m.text == "⏳ HOLD CHECK")
+def hold_check_admin(m):
+    if not is_admin(m.from_user.id): return
+    hs=list(conversion_holds_col.find({"status":"hold"}).sort("created_at",-1).limit(50))
+    if not hs: bot.send_message(m.chat.id,"⏳ No active holds."); return
+    lines=["⏳ <b>ACTIVE HOLDS</b>",""]
+    for h in hs:
+        uid=str(h.get("user_id")); u=users.get(uid,{}); name=("@"+u.get("username")) if u.get("username") else uid; exp=parse_seen_time(h.get("expires_at")); left=max(0,int((exp-datetime.now(timezone.utc)).total_seconds())) if exp else 0
+        source_docs=h.get("source_snapshot") or []
+        src=[]
+        for d in source_docs[:5]: src.append(str(d.get("source") or d.get("type") or "unknown"))
+        source_text=", ".join(dict.fromkeys(src)) if src else "legacy/unknown"
+        lines.append(f"👤 {name} ({uid})\n💵 ${float(h.get('usd_amount',0)):,.2f} USD\n🔄 {h.get('from_asset')} → USD\n⏱️ {left//60}m {left%60}s\n🆔 {h.get('_id')}\n📍 Source: {source_text}")
+    bot.send_message(m.chat.id,"\n\n".join(lines))
+
+@bot.message_handler(func=lambda m: m.text == "✅ RELEASE HOLD")
+def release_hold_start(m):
+    if not is_admin(m.from_user.id): return
+    msg=bot.send_message(m.chat.id,"Send Hold ID or Telegram User ID to release active hold(s):"); bot.register_next_step_handler(msg,release_hold_process)
+
+def release_hold_process(m):
+    if not is_admin(m.from_user.id): return
+    key=(m.text or "").strip(); q={"status":"hold"}
+    if key.isdigit(): q["user_id"]=key
+    else:
+        try: from bson.objectid import ObjectId; q["_id"]=ObjectId(key)
+        except: bot.send_message(m.chat.id,"❌ Invalid ID"); return
+    hs=list(conversion_holds_col.find(q))
+    if not hs: bot.send_message(m.chat.id,"❌ Hold not found"); return
+    now=datetime.now(timezone.utc)
+    for h in hs: conversion_holds_col.update_one({"_id":h["_id"],"status":"hold"},{"$set":{"status":"released_early","released_at":now,"released_by":str(m.from_user.id)}})
+    uid=str(hs[0].get("user_id")); bot.send_message(m.chat.id,f"✅ Released {len(hs)} hold(s) for {uid}.")
+    try: bot.send_message(int(uid),"✅ Your held amount has been released early by admin and is now available.")
+    except: pass
+
+@bot.message_handler(func=lambda m: m.text == "📜 HOLD HISTORY")
+def hold_history_admin(m):
+    if not is_admin(m.from_user.id): return
+    hs=list(conversion_holds_col.find({}).sort("created_at",-1).limit(50))
+    if not hs: bot.send_message(m.chat.id,"📜 No hold history yet."); return
+    lines=["📜 <b>HOLD HISTORY</b>",""]
+    for h in hs:
+        uid=str(h.get("user_id")); u=users.get(uid,{}); name=("@"+u.get("username")) if u.get("username") else uid
+        lines.append(f"👤 {name} | {h.get('from_asset')} → USD | ${float(h.get('usd_amount',0)):,.2f} | {h.get('status')} | {h.get('created_at')}")
+    bot.send_message(m.chat.id,"\n".join(lines))
+
 @bot.message_handler(func=lambda m: m.text == "💳 WITHDRAWAL CHECK")
 def withdrawal_check_start(m):
     if not is_admin(m.from_user.id):
@@ -3001,7 +3036,7 @@ def withdrawal_check_process(m):
     uid = w["user"]
     bot_id = users.get(uid, {}).get("bot_id", "Unknown")
     invited = users.get(uid, {}).get("invited", 0)
-    msg_text = f"💳 WITHDRAWAL DETAILS\n\n🧾 Request ID: {w['id']}\n👤 User ID: {uid}\n🤖 BOT ID: {bot_id}\n👥 Referrals: {invited}\n💵 Amount: ${w['amount']:.2f}\n🏦 Address: {w['address']}\n📊 Status: {w['status'].upper()}\n⏰ Time: {w['time']}"
+    msg_text = f"💳 WITHDRAWAL DETAILS\n\n🧾 Request ID: {w['id']}\n👤 User ID: {uid}\n🤖 BOT ID: {bot_id}\n👥 Referrals: {invited}\n💰 Amount: {format_asset(w.get('asset','USD'),w['amount'])}\n💵 USD Value: ${float(w.get('amount_usd',w.get('amount',0))):.2f}\n🏦 Address: {w['address']}\n📊 Status: {w['status'].upper()}\n⏰ Time: {w['time']}"
     try:
         bot.send_message(m.chat.id, msg_text)
     except: pass
@@ -3011,8 +3046,8 @@ def stats_handler(m):
     if not is_admin(m.from_user.id):
         return
     total_users = len(users)
-    total_balance = sum(balance_usd_value(uid) for uid in users)
-    total_blocked = sum((float(u.get("blocked",0) or 0) / max(fx_rate_for_code(cur_code(uid)),1e-30)) for uid,u in users.items())
+    total_balance = sum(asset_to_usd((u.get("balance_asset") or u.get("currency") or "USD"),u.get("balance",0)) for u in users.values())
+    total_blocked = sum(asset_to_usd((u.get("balance_asset") or u.get("currency") or "USD"),u.get("blocked",0)) for u in users.values())
     total_withdraws = len(withdraws)
     pending_withdraws = len([w for w in withdraws if w["status"] == "pending"])
     msg = f"📊 BOT STATS\n\n👥 Total Users: {total_users}\n💰 Total Balance: ${total_balance:.2f}\n⏳ Total Blocked: ${total_blocked:.2f}\n🧾 Total Withdrawals: {total_withdraws}\n⏳ Pending Withdrawals: {pending_withdraws}"
@@ -3057,6 +3092,77 @@ def premium_max_minutes_process(m):
     except Exception:
         bot.send_message(m.chat.id, "❌ Enter a whole number from 1 to 1440 minutes.")
 
+
+@bot.message_handler(func=lambda m: m.text == "📦 FREE MAX MB")
+def admin_free_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("free_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>FREE MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for FREE users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_free_max_mb_step)
+
+def admin_free_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("free_max_mb",v); bot.send_message(m.chat.id,f"✅ FREE max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "📦 TRIAL MAX MB")
+def admin_trial_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("trial_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>TRIAL MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for Trial users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_trial_max_mb_step)
+
+def admin_trial_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("trial_max_mb",v); bot.send_message(m.chat.id,f"✅ TRIAL max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "📦 PREMIUM MAX MB")
+def admin_premium_max_mb(m):
+    if not is_admin(m.from_user.id): return
+    cur=int(get_setting("premium_max_mb",49)); msg=bot.send_message(m.chat.id,f"📦 <b>PREMIUM MAX MB</b>\n\nCurrent: <b>{cur} MB</b>\nSend new maximum file size for Premium users (1-2048 MB):")
+    bot.register_next_step_handler(msg,admin_premium_max_mb_step)
+
+def admin_premium_max_mb_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        v=int((m.text or '').strip());
+        if v<1 or v>2048: raise ValueError
+        set_setting("premium_max_mb",v); bot.send_message(m.chat.id,f"✅ PREMIUM max file size: <b>{v} MB</b>")
+    except Exception: bot.send_message(m.chat.id,"❌ Enter 1-2048 MB.")
+
+@bot.message_handler(func=lambda m: m.text == "⚙️ DOWNLOAD LIMITS")
+def admin_download_limits(m):
+    if not is_admin(m.from_user.id): return
+    fm=int(get_setting("free_max_minutes",FREE_MAX_MINUTES_DEFAULT)); pm=int(get_setting("premium_max_minutes",PREMIUM_MAX_MINUTES_DEFAULT))
+    fmb=int(get_setting("free_max_mb",49)); tmb=int(get_setting("trial_max_mb",49)); pmb=int(get_setting("premium_max_mb",49))
+    bot.send_message(m.chat.id,f"⚙️ <b>DOWNLOAD LIMITS</b>\n\n🆓 FREE: {fm} min / {fmb} MB\n🎁 TRIAL: {tmb} MB\n💎 PREMIUM: {pm} min / {pmb} MB\n\nAll values are stored in MongoDB and controlled from Admin Panel.")
+
+@bot.message_handler(func=lambda m: m.text == "📸 INSTAGRAM API")
+def admin_instagram_api_setup(m):
+    if not is_admin(m.from_user.id): return
+    url,host,key=_instagram_api_config(); mask=("••••"+key[-4:] if len(key)>4 else ("set" if key else "not set"))
+    msg=bot.send_message(m.chat.id,f"📸 <b>Instagram RapidAPI Setup</b>\n\nCurrent URL: <code>{html.escape(url or 'not set')}</code>\nHost: <code>{html.escape(host or 'not set')}</code>\nKey: <code>{mask}</code>\n\nSend in ONE message:\n<code>URL | HOST | API_KEY</code>\n\nExample: <code>https://example.p.rapidapi.com/download | example.p.rapidapi.com | YOUR_KEY</code>")
+    bot.register_next_step_handler(msg,admin_instagram_api_setup_step)
+
+def admin_instagram_api_setup_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        parts=[x.strip() for x in (m.text or '').split('|')]
+        if len(parts)!=3 or not parts[0].startswith('http') or not parts[1] or not parts[2]: raise ValueError
+        set_setting('instagram_api_url',parts[0]); set_setting('instagram_api_host',parts[1]); set_setting('instagram_api_key',parts[2])
+        bot.send_message(m.chat.id,"✅ Instagram RapidAPI configuration saved in MongoDB. It is no longer required to put these settings in environment variables.")
+    except Exception: bot.send_message(m.chat.id,"❌ Format: URL | HOST | API_KEY")
+
+@bot.message_handler(func=lambda m: m.text == "📸 INSTAGRAM STATUS")
+def admin_instagram_status(m):
+    if not is_admin(m.from_user.id): return
+    url,host,key=_instagram_api_config(); status='🟢 CONFIGURED' if url and host and key else '🔴 NOT CONFIGURED'
+    bot.send_message(m.chat.id,f"📸 <b>INSTAGRAM API STATUS</b>\n\n{status}\nURL: <code>{html.escape(url or '—')}</code>\nHost: <code>{html.escape(host or '—')}</code>\nKey: {'set' if key else 'missing'}")
 
 @bot.message_handler(func=lambda m: m.text == "🛰️ COBALT STATUS")
 def cobalt_status_admin(m):
@@ -3135,9 +3241,8 @@ def gift_all_process(m):
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
         
-        for uid in list(users):
-            credit_usd_value(uid, amount, "admin_gift", False)
-        bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} to all users' balances!")
+        for uid in users: ledger_credit(uid,amount,"admin_gift_all",{"admin_id":str(m.from_user.id)})
+        bot.send_message(m.chat.id, f"🎁 Successfully added ${amount} USD worth of balance to all users!")
     except Exception as e:
         bot.send_message(m.chat.id, f"❌ Error: {e}")
 
@@ -3162,8 +3267,10 @@ def remove_all_process(m):
         if remove_amt <= 0:
             bot.send_message(m.chat.id, "❌ Amount must be greater than 0")
             return
-        for uid in list(users):
-            debit_usd_value(uid, remove_amt, "admin_remove_all")
+        for uid in users:
+            asset_amt=usd_to_asset(cur_code(uid),remove_amt)
+            asset_amt=min(asset_amt,available_asset_amount(uid))
+            if asset_amt>0: ledger_debit(uid,asset_amt,"admin_remove_all",{"admin_id":str(m.from_user.id),"reason":reason})
             
         count = 0
         for uid in users:
@@ -3517,9 +3624,6 @@ def import_users_process(m):
             users[uid] = {
                 "balance": 0.0,
                 "blocked": 0.0,
-                "currency": "USD",
-                "balance_currency": "USD",
-                "wallet_version": 2,
                 "ref": random_ref(),
                 "bot_id": random_botid(),
                 "invited": 0,
@@ -3795,7 +3899,7 @@ def grant_premium_days(uid,days,reason="admin"):
     try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now
     except Exception: old_dt=now
     if old_dt.tzinfo is None: old_dt=old_dt.replace(tzinfo=timezone.utc)
-    until=max(now,old_dt)+timedelta(days=int(days)); users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; save_user(uid)
+    until=max(now,old_dt)+timedelta(days=int(days)); users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; users[uid]["premium_source"]=("trial" if "trial" in str(reason).lower() else "paid"); save_user(uid)
     premium_logs_col.insert_one({"user_id":uid,"days":int(days),"until":until.isoformat(),"time":now.isoformat(),"type":reason}); log_activity(uid,"premium_grant",{"days":days,"reason":reason})
     return until
 
@@ -3869,10 +3973,12 @@ def premium_buy_callback(call):
     if months not in PREMIUM_DEFAULT_PRICES:
         bot.answer_callback_query(call.id, "Invalid plan.", show_alert=True); return
     price = get_premium_prices()[months]
-    bal = balance_usd_value(uid)
-    if bal < price:
+    bal = balance_amount(uid)
+    price_asset = usd_to_asset(cur_code(uid), price)
+    available = available_asset_amount(uid)
+    if available < price_asset:
         bot.answer_callback_query(call.id, "❌ Insufficient balance.", show_alert=True)
-        bot.send_message(call.message.chat.id, f"❌ You need <b>${price:.2f}</b>. Your balance is <b>${bal:.2f}</b>.\n\n💰 Earn more through referrals or ask admin to add balance.")
+        bot.send_message(call.message.chat.id, f"❌ You need <b>{format_asset(cur_code(uid),price_asset)}</b> (${price:.2f}). Your available balance is <b>{format_asset(cur_code(uid),available)}</b>.\n\n💰 Earn more through referrals or ask admin to add balance.")
         return
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton(f"✅ Pay ${price:.2f} from balance", callback_data=f"premium_confirm:{months}"))
@@ -3887,8 +3993,10 @@ def premium_confirm_callback(call):
     price = get_premium_prices().get(months)
     if price is None or not users.get(uid, {}).get("verified", False):
         bot.answer_callback_query(call.id, "❌ Premium purchase unavailable.", show_alert=True); return
-    bal = balance_usd_value(uid)
-    if bal < price:
+    bal = balance_amount(uid)
+    price_asset = usd_to_asset(cur_code(uid), price)
+    available = available_asset_amount(uid)
+    if available < price_asset:
         bot.answer_callback_query(call.id, "❌ Insufficient balance.", show_alert=True); return
     now = datetime.now(timezone.utc)
     old = users[uid].get("premium_until")
@@ -3898,9 +4006,10 @@ def premium_confirm_callback(call):
     except Exception: old_dt = now
     base = max(now, old_dt)
     until = base + timedelta(days=30*int(months))
-    debit_usd_value(uid, price, "premium_purchase")
+    ledger_debit(uid,price_asset,"premium_purchase",{"price_usd":price,"months":months})
     users[uid]["premium_until"] = until.isoformat()
     users[uid]["premium_warning_sent"] = False
+    users[uid]["premium_source"] = "paid"
     save_user(uid)
     premium_logs_col.insert_one({"user_id": uid, "months": int(months), "price": price, "until": until.isoformat(), "time": now.isoformat(), "type": "purchase"})
     bot.answer_callback_query(call.id, "✅ Premium activated!")
@@ -3947,7 +4056,8 @@ def quality_callback(call):
     if not data:
         bot.answer_callback_query(call.id, "❌ Quality session expired. Send the link again.", show_alert=True); return
     premium_quality_pending.pop(uid, None)
-    bot.answer_callback_query(call.id, f"✅ {q if q != '2160' else '4K'} selected")
+    users.setdefault(uid,{})["premium_quality"]=q; save_user(uid)
+    bot.answer_callback_query(call.id, f"✅ {q if q != '2160' else '4K'} saved")
     msg = bot.send_message(call.message.chat.id, f"✍️ Typing...\n⬇️ Downloading at {q if q != '2160' else '4K'} quality...")
     vip_executor.submit(download_media, call.message.chat.id, data["link"], msg.message_id, q)
 
@@ -3968,6 +4078,17 @@ def send_premium_expiry_email(uid,until,days_left=None,expired=False):
     body=("<html><body style='margin:0;background:#f4f7f6;font-family:Arial'><div style='max-width:620px;margin:30px auto;background:#fff;border-radius:20px;padding:30px'>"
           f"<h1>{title}</h1><p>Your Premium {('has ended.' if expired else f'will expire in {days_left} day(s).')}</p><p><b>Expiry:</b> {until.strftime('%Y-%m-%d %H:%M UTC')}</p><p>Open <b>💎 PREMIUM</b> in Telegram to renew.</p></div></body></html>")
     return send_html_email(email,subject,body)
+
+def conversion_hold_worker():
+    while True:
+        try:
+            now=datetime.now(timezone.utc)
+            for h in conversion_holds_col.find({"status":"hold","expires_at":{"$lte":now}}):
+                conversion_holds_col.update_one({"_id":h["_id"],"status":"hold"},{"$set":{"status":"released_auto","released_at":now}})
+                try: bot.send_message(int(h.get("user_id")),f"✅ Your ${float(h.get('usd_amount',0)):,.2f} USD hold has expired. The amount is now available.")
+                except: pass
+        except Exception as e: print("Hold worker error:",e)
+        time.sleep(60)
 
 def premium_expiry_worker():
     while True:
@@ -4086,9 +4207,17 @@ def multi_checkjoin(call):
                     normal_executor.submit(download_media, user_id, link, msg.message_id)
             except: pass
         else:
+            # Multi-channel confirmation must also complete onboarding: show
+            # the configurable welcome message and the user's real main menu.
             try:
-                bot.send_message(user_id, "Send your video link.")
-            except: pass
+                bot.send_message(
+                    user_id,
+                    render_start_message(str(user_id)),
+                    reply_markup=localized_user_menu(str(user_id)),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                print("MULTI WELCOME AFTER CONFIRM ERROR:", repr(e))
     else:
         try:
             bot.answer_callback_query(call.id, "❌ You must join all channels first!", show_alert=True)
@@ -4206,9 +4335,9 @@ def add_balance_process(m):
                 bot.send_message(m.chat.id, "❌ Invalid input")
             except: pass
             return
-        credit_usd_value(uid,amt,"admin_balance_add",False)
+        asset_amt=ledger_credit(uid,amt,"admin_add_balance",{"admin_id":str(m.from_user.id)})
         try:
-            bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} to user {uid}")
+            bot.send_message(m.chat.id, f"✅ Added ${amt:.2f} USD = {format_asset(cur_code(uid),asset_amt)} to user {uid}")
             bot.send_message(int(uid), f"💰 Your balance increased by ${amt:.2f}")
         except: pass
     except:
@@ -4237,14 +4366,15 @@ def remove_balance_process(m):
                 bot.send_message(m.chat.id, "❌ Invalid input")
             except: pass
             return
-        if balance_usd_value(uid) < amt:
+        if available_asset_amount(uid) < usd_to_asset(cur_code(uid),amt):
             try:
                 bot.send_message(m.chat.id, "❌ Insufficient balance")
             except: pass
             return
-        debit_usd_value(uid,amt,"admin_balance_remove")
+        asset_amt=usd_to_asset(cur_code(uid),amt)
+        ledger_debit(uid,asset_amt,"admin_remove_balance",{"admin_id":str(m.from_user.id)})
         try:
-            bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} from user {uid}")
+            bot.send_message(m.chat.id, f"✅ Removed ${amt:.2f} USD from user {uid}")
             bot.send_message(int(uid), f"💸 ${amt:.2f} removed from your balance")
         except: pass
     except:
@@ -4302,7 +4432,7 @@ def open_premium_process(m):
             if old_dt.tzinfo is None: old_dt=old_dt.replace(tzinfo=timezone.utc)
         except Exception: old_dt=now
         until=max(now,old_dt)+timedelta(days=30*months)
-        users[uid]['premium_until']=until.isoformat(); users[uid]['premium_warning_sent']=False; save_user(uid)
+        users[uid]['premium_until']=until.isoformat(); users[uid]['premium_warning_sent']=False; users[uid]['premium_source']='paid'; save_user(uid)
         premium_logs_col.insert_one({'user_id':uid,'months':months,'until':until.isoformat(),'time':now.isoformat(),'type':'admin_open'})
         bot.send_message(m.chat.id,f"✅ Premium opened for {uid} for {months} month(s). Expires {until.strftime('%Y-%m-%d %H:%M UTC')}")
         bot.send_message(int(uid),f"🎉 <b>Downloader Bot Premium opened by Admin</b>\n\n⏰ Expires: {until.strftime('%Y-%m-%d %H:%M UTC')}\n💎 You now have high quality, faster downloads, full YouTube and extra platforms.")
@@ -4634,7 +4764,7 @@ def city_stats(m):
 @bot.message_handler(func=lambda m: m.text == "💱 CHANGE MONEY")
 def change_money(m):
     if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,"💱 <b>Exchange rates</b> — 1 USD equals local currency.\nExample: ETB=188 EUR=0.85 JPY=147 KRW=1380"); bot.register_next_step_handler(msg,change_money_step)
+    msg=bot.send_message(m.chat.id,"💱 <b>Exchange-rate override</b> — use this only when you want to pin a manual rate.\nExample: ETB=188 EUR=0.85 JPY=147 KRW=1380\n\nIf no manual override exists, the bot uses the live USD market rate."); bot.register_next_step_handler(msg,change_money_step)
 
 def change_money_step(m):
     if not is_admin(m.from_user.id): return
@@ -4642,7 +4772,7 @@ def change_money_step(m):
     for part in (m.text or "").replace(","," ").split():
         if "=" not in part: continue
         code,val=part.split("=",1)
-        try: val=float(val); set_setting("fx_override_"+code.upper(),val); changed+=1
+        try: val=float(val); set_setting("fx_"+code.upper(),val); changed+=1
         except Exception: pass
     bot.send_message(m.chat.id,f"✅ Updated {changed} exchange rate(s).")
 
@@ -4654,6 +4784,22 @@ def admin_currency_users(m):
         rows.append(f"• {uid}: {cur_code(uid)} — 1 USD = {fx_rate(uid):,.4f} {cur_code(uid)}")
     text="💱 <b>USER CURRENCIES</b>\n\n"+"\n".join(rows[:200])
     bot.send_message(m.chat.id,text if rows else "No users yet.")
+
+@bot.message_handler(func=lambda m: m.text == "📊 MARKET STATUS")
+def admin_market_status(m):
+    if not is_admin(m.from_user.id): return
+    refresh_market_rates(force=False)
+    lines=["🌍 <b>GLOBAL MARKET RATE STATUS</b>",""]
+    fiat=FX_CACHE.get("fiat",{}); crypto=FX_CACHE.get("crypto",{})
+    lines.append(f"💵 Fiat source: <b>{FX_CACHE.get('sources',{}).get('fiat','N/A')}</b>")
+    lines.append(f"🪙 Crypto source: <b>{FX_CACHE.get('sources',{}).get('crypto','N/A')}</b>")
+    lines.append(f"🕒 Fiat updated: <b>{datetime.fromtimestamp(fiat.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if fiat.get('time') else 'N/A'}</b>")
+    lines.append(f"🕒 Crypto updated: <b>{datetime.fromtimestamp(crypto.get('time',0),timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if crypto.get('time') else 'N/A'}</b>")
+    lines.append("")
+    for code in ("ETB","SOS","EUR","BTC","ETH","USDT","BNB","SOL","XRP","USDC","ADA","DOGE","TRX"):
+        lines.append(f"• <b>{code}</b>: 1 USD = {market_rate_text(code)} {code}")
+    lines.append("\n⚙️ Admin manual override still has priority over live market data.")
+    bot.send_message(m.chat.id,"\n".join(lines))
 
 @bot.message_handler(func=lambda m: m.text == "📊 CURRENCY STATS")
 def currency_stats(m):
@@ -4677,68 +4823,67 @@ def stars_settings_step(m):
 
 @bot.message_handler(func=lambda m: m.text == "💱 CHANGE CURRENCY")
 def change_currency_button(m):
-    uid=str(m.from_user.id); refresh_market_rates()
-    current=cur_code(uid); amount=float(users.get(uid,{}).get("balance",0) or 0)
-    rate=fx_rate_for_code(current); usd=amount/rate if rate>0 else 0
+    uid=str(m.from_user.id)
+    current=cur_code(uid); rate=fx_rate(uid)
     bot.send_message(m.chat.id,
         f"💱 <b>CHANGE CURRENCY</b>\n\n"
-        f"Current holding: <b>{format_asset_amount(current,amount)}</b>\n"
-        f"Current USD value: <b>${usd:,.2f}</b>\n"
-        f"Market: <b>1 USD = {market_rate_text(current)} {current}</b>\n\n"
-        "⚠️ <b>Important:</b> choosing another currency converts your actual balance using the current/live market rate. After conversion, your balance is held in the currency you select. Its USD value can increase or decrease with the market.\n\n"
-        "Choose a currency below:", reply_markup=currency_kb())
+        f"Current: <b>{current}</b>\n"
+        f"Rate: 1 USD = <b>{rate:,.4f} {current}</b>\n\n"
+        "",
+        reply_markup=currency_kb())
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("currency:"))
+@bot.callback_query_handler(func=lambda c: c.data == "currency_refresh")
+def currency_refresh_callback(call):
+    try:
+        refresh_market_rates(force=True)
+        bot.answer_callback_query(call.id,"✅ Market rates updated")
+        code=cur_code(call.from_user.id)
+        bot.send_message(call.message.chat.id, f"📊 <b>Market updated</b>\n\n💱 {code}: <b>{market_rate_text(code)}</b> USD\n🕒 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(code) else 'fiat','market feed')}</b>", reply_markup=currency_kb())
+    except Exception:
+        bot.answer_callback_query(call.id,"❌ Market update failed. Try again later.",show_alert=True)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("currency:"))
 def currency_select_callback(call):
-    uid=str(call.from_user.id); code=call.data.split(":",1)[1].upper()
-    if code not in AVAILABLE_ASSETS:
-        bot.answer_callback_query(call.id,"❌ Invalid currency.",show_alert=True); return
-    refresh_market_rates(force=True)
-    current=cur_code(uid); amount=float(users.get(uid,{}).get("balance",0) or 0)
-    old_rate=fx_rate_for_code(current); new_rate=fx_rate_for_code(code)
-    usd=amount/old_rate if old_rate>0 else 0
-    new_amount=usd*new_rate
-    if current==code:
-        bot.answer_callback_query(call.id,"Already selected.",show_alert=True); return
-    pending_key=f"{uid}:{code}"
-    currency_conversion_pending[pending_key]={"old":current,"old_amount":amount,"usd":usd,"new":code,"new_amount":new_amount,"new_rate":new_rate,"created":time.time()}
-    kb=InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"currency_confirm:{code}"), InlineKeyboardButton("❌ CANCEL",callback_data="currency_cancel"))
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id,
-        f"⚠️ <b>CURRENCY CONVERSION WARNING</b>\n\n"
-        f"Current holding: <b>{format_asset_amount(current,amount)}</b>\n"
-        f"Current USD value: <b>${usd:,.2f}</b>\n\n"
-        f"New currency: <b>{code}</b>\n"
-        f"Current market rate: <b>1 USD = {market_rate_text(code)} {code}</b>\n"
-        f"Estimated new holding: <b>{format_asset_amount(code,new_amount)}</b>\n\n"
-        "📈📉 <b>Market warning:</b> after conversion, you hold the selected asset. Its USD value can move up or down. This conversion does not guarantee the displayed USD value will remain the same.",reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("currency_confirm:"))
-def currency_confirm_callback(call):
-    uid=str(call.from_user.id); code=call.data.split(":",1)[1].upper(); key=f"{uid}:{code}"
-    pending=currency_conversion_pending.get(key)
-    if not pending or time.time()-pending.get("created",0)>300:
-        bot.answer_callback_query(call.id,"❌ Conversion expired. Open Change Currency again.",show_alert=True); return
-    refresh_market_rates(force=True)
-    ok,new_amount,usd,new_rate=convert_user_asset(uid,code)
-    currency_conversion_pending.pop(key,None)
-    if not ok:
-        bot.answer_callback_query(call.id,"❌ Live market rate unavailable.",show_alert=True); return
-    bot.answer_callback_query(call.id,"✅ Converted successfully")
-    bot.send_message(call.message.chat.id,
-        f"✅ <b>Currency conversion complete</b>\n\n"
-        f"💰 Holding: <b>{format_asset_amount(code,new_amount)}</b>\n"
-        f"💵 USD value now: <b>${balance_usd_value(uid):,.2f}</b>\n"
-        f"📊 Market: <b>1 USD = {market_rate_text(code)} {code}</b>\n"
-        f"🌍 Source: <b>{MARKET_CACHE.get('sources',{}).get(code,'live market')}</b>\n\n"
-        "⚠️ Your balance is now held in this asset and follows its market value.",reply_markup=localized_user_menu(uid))
-
-@bot.callback_query_handler(func=lambda c: c.data == "currency_cancel")
-def currency_cancel_callback(call):
-    bot.answer_callback_query(call.id,"Conversion cancelled")
-    try: bot.edit_message_text("❌ Currency conversion cancelled.",call.message.chat.id,call.message.message_id)
+    uid=str(call.from_user.id); new=call.data.split(":",1)[1]
+    if new not in AVAILABLE_CURRENCIES or uid not in users: bot.answer_callback_query(call.id,"❌ Invalid currency",show_alert=True); return
+    refresh_market_rates(False); old,amt,usd,new_amt=conversion_preview(uid,new)
+    if old==new: bot.answer_callback_query(call.id,"Already using this currency"); return
+    if blocked_amount(uid)>0 or hold_amount_usd(uid)>0:
+        bot.answer_callback_query(call.id,"❌ Clear your active hold/blocked withdrawal before changing currency.",show_alert=True); return
+    if usd<=0 or new_amt<=0: bot.answer_callback_query(call.id,"❌ Market price unavailable",show_alert=True); return
+    nonce=uuid.uuid4().hex[:12]; users[uid]["pending_conversion"]={"nonce":nonce,"from":old,"to":new}; save_user(uid)
+    try: bot.delete_message(call.message.chat.id,call.message.message_id)
     except: pass
+    kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"convert_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"convert_cancel:{nonce}"))
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id,f"⚠️ <b>CURRENCY CONVERSION</b>\n\nCurrent holding: <b>{format_asset(old,amt)}</b>\nCurrent USD value: <b>${usd:,.2f} USD</b>\n\nNew currency: <b>{new}</b>\nMarket: <b>{market_rate_text(new)}</b>\nEstimated new holding: <b>{format_asset(new,new_amt)}</b>\n\n⚠️ This converts your actual balance into {new}. The market value can rise or fall.\n\nConfirm?",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("convert_cancel:"))
+def convert_cancel_callback(call):
+    uid=str(call.from_user.id); nonce=call.data.split(":",1)[1]
+    if users.get(uid,{}).get("pending_conversion",{}).get("nonce")!=nonce: bot.answer_callback_query(call.id,"Expired",show_alert=True); return
+    users[uid].pop("pending_conversion",None); save_user(uid)
+    try: bot.delete_message(call.message.chat.id,call.message.message_id)
+    except: pass
+    bot.answer_callback_query(call.id,"Cancelled"); bot.send_message(call.message.chat.id,"❌ Conversion cancelled.",reply_markup=localized_user_menu(uid))
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("convert_confirm:"))
+def convert_confirm_callback(call):
+    uid=str(call.from_user.id); nonce=call.data.split(":",1)[1]; p=users.get(uid,{}).get("pending_conversion") or {}
+    if p.get("nonce")!=nonce: bot.answer_callback_query(call.id,"Expired conversion",show_alert=True); return
+    old=p.get("from"); new=p.get("to"); refresh_market_rates(True); current=balance_amount(uid); usd=asset_to_usd(old,current); new_amt=usd_to_asset(new,usd)
+    if cur_code(uid)!=old or usd<=0 or new_amt<=0: bot.answer_callback_query(call.id,"Market changed; start again",show_alert=True); return
+    now=datetime.now(timezone.utc); users[uid]["balance"]=round(new_amt,12); users[uid]["balance_asset"]=new; users[uid]["currency"]=new; users[uid].pop("pending_conversion",None); save_user(uid)
+    hold_txt=""
+    if is_crypto(old) and new=="USD":
+        exp=now+timedelta(hours=1); snapshot=list(balance_ledger_col.find({"user_id":uid},{"_id":0}).sort("time",-1).limit(25))
+        conversion_holds_col.insert_one({"user_id":uid,"status":"hold","usd_amount":usd,"from_asset":old,"from_amount":current,"to_asset":"USD","to_amount":usd,"created_at":now,"expires_at":exp,"source_snapshot":snapshot})
+        hold_txt=f"\n⏱️ <b>Amount on Hold:</b> ${usd:,.2f} USD for 1 hour"
+    balance_ledger_col.insert_one({"user_id":uid,"type":"conversion","from_asset":old,"from_amount":current,"to_asset":new,"to_amount":new_amt,"usd_value":usd,"source":"currency_conversion","time":now})
+    try: bot.delete_message(call.message.chat.id,call.message.message_id)
+    except: pass
+    bot.answer_callback_query(call.id,"✅ Converted")
+    bot.send_message(call.message.chat.id,f"✅ <b>Currency conversion complete</b>\n\n💰 Holding: <b>{format_asset(new,new_amt)}</b>\n💵 USD value: <b>${asset_to_usd(new,new_amt):,.2f} USD</b>\n📊 Market: <b>{market_rate_text(new)}</b>\n📡 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(new) else 'fiat','market feed')}</b>{hold_txt}\n\nYour actual balance is now held in {new}.",reply_markup=localized_user_menu(uid))
 
 @bot.message_handler(func=lambda m: m.text in ["📜 HISTORY"] + [v.get("history","") for v in MAIN_LABELS.values()])
 def history_button(m):
@@ -4788,24 +4933,19 @@ def localized_action_dispatch(m):
             bot.send_message(m.chat.id,f"🔐 <b>Verification required</b>\n\nVerify once and your {days}-Day Premium Trial will activate automatically. You will NOT need to press the trial button again.",reply_markup=kb); return
         users[uid]["trial_pending"]=True; users[uid]["trial_pending_version"]=current_trial_version(); save_user(uid); activate_pending_trial(uid,m.chat.id)
 
-# Background market refresh. It updates cached market prices; holdings themselves remain
-# fixed coin/fiat quantities until the user makes another transaction/conversion.
-def market_refresh_worker():
-    while True:
-        try:
-            refresh_market_rates(force=True)
-        except Exception as e:
-            print("Market refresh error:", e)
-        time.sleep(MARKET_TTL)
-
 # ================= MAIN RUN LOOP =================
 
 if __name__ == "__main__":
     threading.Thread(target=premium_expiry_worker, daemon=True).start()
     threading.Thread(target=market_refresh_worker, daemon=True).start()
+    threading.Thread(target=conversion_hold_worker, daemon=True).start()
+    try: refresh_market_rates(force=True)
+    except Exception as e: print("Initial market refresh failed:", e)
+    try: migrate_legacy_ledger_once()
+    except Exception as e: print("Ledger migration warning:", e)
     print("🤖 Bot 1 and Bot 2 are starting...")
     print(f"🟢 WaForge WhatsApp configured: {bool(WAFORGE_API_KEY)} | D7 SMS configured: {bool(D7_TOKEN)}")
-    print(f"📦 Telegram upload target: {MAX_UPLOAD_MB} MB")
+    print("📦 Telegram upload limits: Admin-controlled FREE/TRIAL/PREMIUM values stored in MongoDB")
     
     def run_bot2():
         try:
