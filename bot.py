@@ -388,11 +388,18 @@ def ledger_debit(uid,asset_amount,source,meta=None):
 def conversion_preview(uid,new_code):
     old=cur_code(uid); amount=balance_amount(uid); usd=asset_to_usd(old,amount); return old,amount,usd,usd_to_asset(new_code,usd)
 def currency_kb():
-    kb=InlineKeyboardMarkup(); btn=[]
-    for code,(flag,_,_) in FIAT_CURRENCIES.items(): btn.append(InlineKeyboardButton(f"{flag} {code}",callback_data=f"currency:{code}"))
-    for code,(icon,_,_) in CRYPTO_CURRENCIES.items(): btn.append(InlineKeyboardButton(f"{icon} {code}",callback_data=f"currency:{code}"))
-    for i in range(0,len(btn),3): kb.row(*btn[i:i+3])
-    kb.row(InlineKeyboardButton("🔄 UPDATE MARKET",callback_data="currency_refresh")); return kb
+    # 3-column currency/crypto selector.  Buttons are rebuilt from the
+    # current asset catalogue so the UI never becomes a long 1-column list.
+    kb = InlineKeyboardMarkup(row_width=3)
+    btn = []
+    for code, (flag, _, _) in FIAT_CURRENCIES.items():
+        btn.append(InlineKeyboardButton(f"{flag} {code}", callback_data=f"currency:{code}"))
+    for code, (icon, _, _) in CRYPTO_CURRENCIES.items():
+        btn.append(InlineKeyboardButton(f"{icon} {code}", callback_data=f"currency:{code}"))
+    for i in range(0, len(btn), 3):
+        kb.row(*btn[i:i+3])
+    kb.row(InlineKeyboardButton("🔄 UPDATE MARKET", callback_data="currency_refresh"))
+    return kb
 
 def language_kb(prefix="lang"):
     kb=InlineKeyboardMarkup(row_width=2)
@@ -906,7 +913,8 @@ def admin_menu():
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
     kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
-    kb.add("📉 CHANGE MINIMUM", "➕ ADD FEE")
+    kb.add("📉 CHANGE MINIMUM", "💱 MIN CURRENCY CONVERT")
+    kb.add("➕ ADD FEE")
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
     kb.add("🗑️ REMOVE ALL", "📢 Send Email All")
     kb.add("⏱️ FREE MAX MIN", "⏱️ PREMIUM MAX MIN")
@@ -2792,38 +2800,41 @@ def check_membership(user_id):
     touch_user(user_id)
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        status = getattr(member, "status", "")
+        if status in ["member", "administrator", "creator"]:
             bot.send_message(
                 user_id,
                 render_start_message(str(user_id)),
                 reply_markup=localized_user_menu(str(user_id)),
                 parse_mode="HTML"
             )
-        else:
-            send_join_message(user_id)
-    except:
+            return True
         send_join_message(user_id)
+        return False
+    except Exception as e:
+        # Telegram cannot verify membership if the bot is not an admin in the
+        # channel or CHANNEL_USERNAME is wrong/private.  Never send a bare
+        # warning: the JOIN + CONFIRM controls must remain visible.
+        print("FORCE JOIN CHECK ERROR:", repr(e))
+        send_join_message(user_id)
+        return False
 
 def send_join_message(user_id):
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("➕ JOIN CHANNEL", url="https://t.me/tiktokvediodownload"))
-    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_join"))
+    kb = InlineKeyboardMarkup(row_width=2)
+    kb.row(
+        InlineKeyboardButton("➕ JOIN CHANNEL", url="https://t.me/tiktokvediodownload"),
+        InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_join")
+    )
     try:
         bot.send_message(
             user_id,
-            "⚠️ You must join our channel to use this bot.",
-            reply_markup=kb
+            "⚠️ <b>You must join our channel to use this bot.</b>\n\n"
+            "After joining, tap <b>CONFIRM</b> to continue.",
+            reply_markup=kb,
+            parse_mode="HTML"
         )
-    except: pass
-
-def send_multi_join(user_id):
-    kb = InlineKeyboardMarkup(row_width=3)
-    buttons = [InlineKeyboardButton("➕️ JOIN", url=f"https://t.me/{ch}") for ch in POST_CHANNELS]
-    kb.add(*buttons)
-    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="multi_checkjoin"))
-    try:
-        bot.send_message(user_id, "⚠️ Join all channels to continue.", reply_markup=kb)
-    except: pass
+    except Exception as e:
+        print("SEND JOIN MESSAGE ERROR:", repr(e))
 
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
 def confirm_join(call):
@@ -3360,6 +3371,23 @@ def cobalt_status_admin(m):
     status = "🟢 ONLINE" if ok else "🔴 OFFLINE / NOT CONFIGURED"
     bot.send_message(m.chat.id, f"🛰️ <b>COBALT STATUS</b>\n\n{status}\n{html.escape(str(info))}\n\n⏱️ FREE: {free_m} min\n💎 PREMIUM: {prem_m} min\n\nCOBALT_API_URL: {'configured' if COBALT_API_URL else 'not configured'}")
 
+
+@bot.message_handler(func=lambda m: m.text == "💱 MIN CURRENCY CONVERT")
+def admin_min_currency_convert(m):
+    if not is_admin(m.from_user.id): return
+    current=float(get_setting("min_currency_conversion_usd",5.0) or 0.0)
+    msg=bot.send_message(m.chat.id, f"💱 <b>MINIMUM CURRENCY CONVERSION</b>\n\nCurrent minimum: <b>${current:,.2f} USD</b>\n\nSend the new minimum in USD.\nExample: <code>5</code>\nSend <code>0</code> to disable the minimum.")
+    bot.register_next_step_handler(msg, admin_min_currency_convert_step)
+
+def admin_min_currency_convert_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        value=float((m.text or '').replace(',','').strip())
+        if value<0 or value>1000000: raise ValueError
+        set_setting("min_currency_conversion_usd", round(value,8))
+        bot.send_message(m.chat.id, f"✅ Minimum currency conversion set to <b>${value:,.2f} USD</b>." if value>0 else "✅ Minimum currency conversion disabled. Users can convert any positive amount.")
+    except Exception:
+        bot.send_message(m.chat.id,"❌ Enter a valid USD amount from 0 upward.")
 
 @bot.message_handler(func=lambda m: m.text == "📉 CHANGE MINIMUM")
 def change_min_start(m):
@@ -5010,59 +5038,105 @@ def stars_settings_step(m):
 
 @bot.message_handler(func=lambda m: m.text == "💱 CHANGE CURRENCY")
 def change_currency_button(m):
-    uid=str(m.from_user.id)
-    current=cur_code(uid); rate=fx_rate(uid)
-    bot.send_message(m.chat.id,
+    uid = str(m.from_user.id)
+    refresh_market_rates(False)
+    current = cur_code(uid)
+    rate = fx_rate(uid)
+    minimum = float(get_setting("min_currency_conversion_usd", 5.0) or 0.0)
+    min_text = "No minimum" if minimum <= 0 else f"${minimum:,.2f} USD"
+    bot.send_message(
+        m.chat.id,
         f"💱 <b>CHANGE CURRENCY</b>\n\n"
         f"Current: <b>{current}</b>\n"
-        f"Rate: 1 USD = <b>{rate:,.4f} {current}</b>\n\n"
-        "",
-        reply_markup=currency_kb())
+        f"Rate: <b>{market_rate_text(current)}</b>\n"
+        f"Minimum conversion: <b>{min_text}</b>\n\n"
+        "Choose the currency/coin you want. You will choose the amount and see the live market price before confirming.",
+        reply_markup=currency_kb()
+    )
 
 @bot.callback_query_handler(func=lambda c: c.data == "currency_refresh")
 def currency_refresh_callback(call):
     try:
         refresh_market_rates(force=True)
-        bot.answer_callback_query(call.id,"✅ Market rates updated")
-        code=cur_code(call.from_user.id)
-        bot.send_message(call.message.chat.id, f"📊 <b>Market updated</b>\n\n💱 {code}: <b>{market_rate_text(code)}</b> USD\n🕒 Source: <b>{FX_CACHE.get('sources',{}).get('crypto' if is_crypto(code) else 'fiat','market feed')}</b>", reply_markup=currency_kb())
+        code = cur_code(call.from_user.id)
+        minimum = float(get_setting("min_currency_conversion_usd", 5.0) or 0.0)
+        min_text = "No minimum" if minimum <= 0 else f"${minimum:,.2f} USD"
+        text = (
+            f"💱 <b>CHANGE CURRENCY</b>\n\n"
+            f"Current: <b>{code}</b>\n"
+            f"Rate: <b>{market_rate_text(code)}</b>\n"
+            f"Minimum conversion: <b>{min_text}</b>\n\n"
+            "Choose the currency/coin you want. You will choose the amount and see the live market price before confirming."
+        )
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=currency_kb(), parse_mode="HTML")
+        except Exception:
+            bot.send_message(call.message.chat.id, text, reply_markup=currency_kb())
+        bot.answer_callback_query(call.id, "✅ Market rates updated")
     except Exception:
-        bot.answer_callback_query(call.id,"❌ Market update failed. Try again later.",show_alert=True)
+        bot.answer_callback_query(call.id, "❌ Market update failed. Try again later.", show_alert=True)
 
 @bot.callback_query_handler(func=lambda c:c.data.startswith("currency:"))
 def currency_select_callback(call):
-    uid=str(call.from_user.id); new=call.data.split(":",1)[1]
+    uid = str(call.from_user.id)
+    new = call.data.split(":", 1)[1]
     if new not in AVAILABLE_CURRENCIES or uid not in users:
-        bot.answer_callback_query(call.id,"❌ Invalid currency",show_alert=True); return
-    refresh_market_rates(False); old=cur_code(uid)
-    if old==new:
-        bot.answer_callback_query(call.id,"Already using this currency",show_alert=True); return
-    if blocked_amount(uid)>0 or hold_amount_usd(uid)>0:
-        bot.answer_callback_query(call.id,"❌ Clear your active hold/blocked withdrawal first.",show_alert=True); return
-    cash=available_asset_amount(uid); usd=asset_to_usd(old,cash)
-    if cash<=0 or usd<=0:
-        bot.answer_callback_query(call.id,"❌ No available balance to convert/invest.",show_alert=True); return
-    # Crypto selections are now portfolio investments. The user chooses the amount; the rest stays in cash.
-    if is_crypto(new):
-        try: bot.delete_message(call.message.chat.id,call.message.message_id)
-        except: pass
-        bot.answer_callback_query(call.id)
-        msg=bot.send_message(call.message.chat.id,
-            f"🪙 <b>INVEST IN {new}</b>\n\nAvailable: <b>{format_asset(old,cash)}</b>\n"
-            f"Market: <b>1 {new} = ${asset_usd_price(new):,.8f}</b>\n"
-            f"USD value available: <b>${usd:,.2f}</b>\n\n"
-            f"Send the amount of <b>{old}</b> you want to invest in {new}.\nExample: <code>10</code>\n\n"
-            "⚠️ Crypto prices can rise or fall. Your chosen amount will be converted at the market price shown when you confirm.")
-        bot.register_next_step_handler(msg,crypto_invest_amount_step,new)
+        bot.answer_callback_query(call.id, "❌ Invalid currency", show_alert=True)
         return
-    # Fiat conversion: choose the exact amount too, so multiple currencies can coexist in the account.
-    try: bot.delete_message(call.message.chat.id,call.message.message_id)
-    except: pass
+    refresh_market_rates(False)
+    old = cur_code(uid)
+    if old == new:
+        bot.answer_callback_query(call.id, "Already using this currency", show_alert=True)
+        return
+    if blocked_amount(uid) > 0 or hold_amount_usd(uid) > 0:
+        bot.answer_callback_query(call.id, "❌ Clear your active hold/blocked withdrawal first.", show_alert=True)
+        return
+    cash = available_asset_amount(uid)
+    usd = asset_to_usd(old, cash)
+    minimum = max(0.0, float(get_setting("min_currency_conversion_usd", 5.0) or 0.0))
+    if cash <= 0 or usd <= 0:
+        bot.answer_callback_query(call.id, "❌ No available balance to convert/invest.", show_alert=True)
+        return
+    if minimum > 0 and usd + 1e-12 < minimum:
+        bot.answer_callback_query(call.id, f"❌ Minimum conversion is ${minimum:,.2f} USD.", show_alert=True)
+        return
+
+    # Every conversion/investment is amount-based.  The user keeps the rest of
+    # the source balance and can hold multiple crypto assets simultaneously.
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except Exception:
+        pass
     bot.answer_callback_query(call.id)
-    msg=bot.send_message(call.message.chat.id,
-        f"💱 <b>CONVERT TO {new}</b>\n\nAvailable: <b>{format_asset(old,cash)}</b>\n"
-        f"Market: <b>{market_rate_text(new)}</b>\n\nSend the amount of <b>{old}</b> you want to convert.\nExample: <code>10</code>")
-    bot.register_next_step_handler(msg,fiat_convert_amount_step,new)
+
+    if is_crypto(new):
+        price = asset_usd_price(new)
+        min_asset = usd_to_asset(old, minimum) if minimum > 0 else 0
+        msg = bot.send_message(
+            call.message.chat.id,
+            f"🪙 <b>INVEST IN {new}</b>\n\n"
+            f"Available: <b>{format_asset(old, cash)}</b>\n"
+            f"Market price: <b>1 {new} = ${price:,.8f}</b>\n"
+            f"Available USD value: <b>${usd:,.2f}</b>\n"
+            f"Minimum: <b>${minimum:,.2f} USD</b>" + (f" (≈ {min_asset:,.12f} {old})" if minimum > 0 else "") + "\n\n"
+            f"Send the amount of <b>{old}</b> you want to convert to {new}.\n"
+            f"Example: <code>{max(minimum, 5):g}</code> or <code>ALL</code>\n\n"
+            "You will see the exact live price and receive a confirmation screen before the conversion is completed.",
+        )
+        bot.register_next_step_handler(msg, crypto_invest_amount_step, new)
+        return
+
+    min_asset = usd_to_asset(old, minimum) if minimum > 0 else 0
+    msg = bot.send_message(
+        call.message.chat.id,
+        f"💱 <b>CONVERT TO {new}</b>\n\n"
+        f"Available: <b>{format_asset(old, cash)}</b>\n"
+        f"Market: <b>{market_rate_text(new)}</b>\n"
+        f"Minimum: <b>${minimum:,.2f} USD</b>" + (f" (≈ {min_asset:,.12f} {old})" if minimum > 0 else "") + "\n\n"
+        f"Send the amount of <b>{old}</b> you want to convert.\n"
+        "You will see the exact amount and a CONFIRM button before anything changes.",
+    )
+    bot.register_next_step_handler(msg, fiat_convert_amount_step, new)
 
 def crypto_invest_amount_step(m,new):
     uid=str(m.from_user.id); old=cur_code(uid)
@@ -5071,9 +5145,14 @@ def crypto_invest_amount_step(m,new):
         available=available_asset_amount(uid)
         amount=available if raw in ("ALL","MAX") else float(raw)
         if amount<=0: raise ValueError
+        minimum=max(0.0,float(get_setting("min_currency_conversion_usd",5.0) or 0.0))
         refresh_market_rates(True); available=available_asset_amount(uid)
         if amount>available+1e-12: raise ValueError
-        usd=asset_to_usd(old,amount); price=asset_usd_price(new); coin=usd_to_asset(new,usd)
+        usd=asset_to_usd(old,amount)
+        if minimum>0 and usd+1e-12<minimum:
+            bot.send_message(m.chat.id,f"❌ Minimum conversion is ${minimum:,.2f} USD.")
+            return
+        price=asset_usd_price(new); coin=usd_to_asset(new,usd)
         if price<=0 or coin<=0: raise ValueError
         nonce=uuid.uuid4().hex[:12]; users[uid]["pending_crypto_investment"]={"nonce":nonce,"from":old,"to":new,"amount":amount,"usd":usd,"coin":coin,"price":price}; save_user(uid)
         kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM",callback_data=f"invest_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"invest_cancel:{nonce}"))
@@ -5084,9 +5163,14 @@ def fiat_convert_amount_step(m,new):
     uid=str(m.from_user.id); old=cur_code(uid)
     try:
         amount=float((m.text or '').replace(',','').strip())
+        minimum=max(0.0,float(get_setting("min_currency_conversion_usd",5.0) or 0.0))
         refresh_market_rates(True); available=available_asset_amount(uid)
         if amount<=0 or amount>available+1e-12: raise ValueError
-        usd=asset_to_usd(old,amount); new_amt=usd_to_asset(new,usd)
+        usd=asset_to_usd(old,amount)
+        if minimum>0 and usd+1e-12<minimum:
+            bot.send_message(m.chat.id,f"❌ Minimum conversion is ${minimum:,.2f} USD.")
+            return
+        new_amt=usd_to_asset(new,usd)
         if new_amt<=0: raise ValueError
         nonce=uuid.uuid4().hex[:12]; users[uid]["pending_conversion"]={"nonce":nonce,"from":old,"to":new,"amount":amount,"usd":usd,"new_amount":new_amt}; save_user(uid)
         kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ CONFIRM CONVERSION",callback_data=f"convert_confirm:{nonce}"),InlineKeyboardButton("❌ CANCEL",callback_data=f"convert_cancel:{nonce}"))
