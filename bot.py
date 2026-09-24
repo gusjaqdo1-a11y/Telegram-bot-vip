@@ -65,11 +65,6 @@ WAFORGE_OTP_SEND_LEGACY_URL = f"{WAFORGE_LEGACY_BASE_URL}/otp/send"
 WAFORGE_OTP_VERIFY_LEGACY_URL = f"{WAFORGE_LEGACY_BASE_URL}/otp/verify"
 WAFORGE_OTP_TTL = 300
 WHATSAPP_OTP_TTL = WAFORGE_OTP_TTL
-# Optional WaForge transactional WhatsApp endpoint for verified-user notifications.
-# Leave empty unless your WaForge account provides a messaging endpoint.
-WAFORGE_MESSAGE_URL = os.getenv("WAFORGE_MESSAGE_URL", "").strip()
-WAFORGE_MESSAGE_MODE = os.getenv("WAFORGE_MESSAGE_MODE", "json").strip().lower()
-MP3_ORIGINAL_FALLBACK_DEFAULT = True
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "49"))
 YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE", "").strip()
 # Optional song-recognition service. If configured, it can identify Original Sounds and return
@@ -1471,50 +1466,6 @@ def verify_waforge_whatsapp(phone_number, code, request_id=None):
     return False, last
 
 
-
-def send_waforge_message(phone_number, text, subject="Downloader Bot"):
-    """Send a normal WhatsApp notification when a provider message endpoint is configured."""
-    if not WAFORGE_API_KEY or not WAFORGE_MESSAGE_URL:
-        return False, "WaForge message endpoint is not configured"
-    phone = re.sub(r"[\s().-]", "", str(phone_number or "").strip())
-    if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-        return False, "Invalid international WhatsApp number"
-    headers = _waforge_headers(WAFORGE_API_KEY_HEADER)
-    payload = {"to": phone, "message": str(text), "text": str(text)}
-    if subject:
-        payload["subject"] = str(subject)
-    if WAFORGE_MESSAGE_MODE == "to_text":
-        payload = {"to": phone, "text": str(text)}
-    elif WAFORGE_MESSAGE_MODE == "recipient_message":
-        payload = {"recipient": phone, "message": str(text)}
-    elif WAFORGE_MESSAGE_MODE == "phone_message":
-        payload = {"phone": phone, "message": str(text)}
-    try:
-        r = requests.post(WAFORGE_MESSAGE_URL, json=payload, headers=headers, timeout=30)
-        try: body = r.json()
-        except Exception: body = {"raw": r.text[:1000]}
-        if _waforge_success(body, r.status_code):
-            return True, body
-        return False, f"HTTP {r.status_code}: {body}"
-    except Exception as e:
-        return False, str(e)
-
-
-def notify_user_email_or_whatsapp(uid, subject, plain_text, html_body=None):
-    """WhatsApp-verified users prefer WhatsApp; otherwise use verified Gmail."""
-    uid = str(uid); u = users.get(uid, {})
-    if u.get("whatsapp_verified") and u.get("phone"):
-        ok, detail = send_waforge_message(u.get("phone"), plain_text, subject)
-        if ok:
-            return "whatsapp"
-        print("WhatsApp notification failed:", uid, detail)
-        return "none"
-    if u.get("email_verified") and u.get("email"):
-        body = html_body or html.escape(plain_text).replace("\n", "<br>")
-        return "email" if send_html_email(u["email"], subject, body) else "none"
-    return "none"
-
-
 def expire_whatsapp_session(uid, created_at):
     """Expire one WhatsApp OTP session after exactly 5 minutes."""
     time.sleep(WHATSAPP_OTP_TTL)
@@ -1597,8 +1548,6 @@ def admin_menu():
     kb.add("🟢 Open add group", "🔴 Close add group")
     kb.add("🟢 Open add channel", "🔴 Close add channel")
     kb.add("🟢 Open mp3 Cover", "🔴 Close mp3 Cover")
-    kb.add("🟢 Open Original", "🔴 Close Original")
-    kb.add("🗄 SEE STORAGE")
     kb.add("📢 REFERRAL BROADCAST")
     kb.add("📣 Send all G/CH")
     kb.add("🟢 Open song in bot", "🔴 Close Song in bot")
@@ -2431,19 +2380,15 @@ def send_email_all_process(m):
         return
     html_content = m.text
     
-    email_count=0; whatsapp_count=0; failed=0
-    for uid,data in users.items():
-        try:
-            if data.get("whatsapp_verified") and data.get("phone"):
-                ok,_=send_waforge_message(data.get("phone"),re.sub(r"<[^>]+>","",str(html_content)),"Announcement from Video Downloader Bot")
-                whatsapp_count += 1 if ok else 0; failed += 0 if ok else 1
-            elif data.get("email") and data.get("email_verified"):
-                ok=send_html_email(data.get("email"),"Announcement from Video Downloader Bot",html_content)
-                email_count += 1 if ok else 0; failed += 0 if ok else 1
-        except Exception as e:
-            failed += 1; print("Notification broadcast error:",uid,e)
+    count = 0
+    for uid, data in users.items():
+        email = data.get("email")
+        if email:
+            success = send_html_email(email, "Announcement from Video Downloader Bot", html_content)
+            if success:
+                count += 1
     try:
-        bot.send_message(m.chat.id,f"✅ <b>Notification broadcast completed.</b>\n\n📧 Gmail: <b>{email_count}</b>\n📱 WhatsApp: <b>{whatsapp_count}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+        bot.send_message(m.chat.id, f"✅ HTML Email successfully sent to {count} verified users with email addresses.")
     except: pass
 
 # ================= YOUTUBE 30 MIN ADMIN CONTROL =================
@@ -3883,10 +3828,10 @@ def download_media(chat_id, link, message_id, quality=None):
             markup=None
             if _is_video_file(path):
                 token=uuid.uuid4().hex[:24]
-                music_pending[token]={"uid":uid,"link":link,"local_source":path,"cache_dir":tmp,"created":time.time(),"source_title":source_title,"source_artist":source_artist,"source_uploader":_music_clean_text(info.get("uploader") or info.get("creator") or info.get("channel")) if isinstance(info,dict) else "","source_thumbnail":_music_clean_text(info.get("thumbnail")) if isinstance(info,dict) else "","source_is_original":bool(_music_is_original_label(info.get("title") or info.get("fulltitle") or source_title)) if isinstance(info,dict) else _music_is_original_label(source_title),"in_progress":False}
+                music_pending[token]={"uid":uid,"link":link,"local_source":path,"cache_dir":tmp,"created":time.time(),"source_title":source_title,"source_artist":source_artist,"in_progress":False}
                 music_cache_dirs.add(tmp)
                 markup=InlineKeyboardMarkup(row_width=1)
-                markup.add(InlineKeyboardButton("MUSIC🎵",callback_data=f"music:{token}"))
+                markup.add(InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}"))
             try:
                 _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup,platform=platform,link=link); sent+=1
             finally:
@@ -3976,24 +3921,6 @@ def admin_close_mp3_cover(m):
     if not is_admin(m.from_user.id): return
     set_setting("mp3_cover_enabled",False)
     bot.send_message(m.chat.id,"🔴 <b>MP3 COVER CLOSED</b>\n\nThe source video thumbnail will not be used. The MP3 will use genuine music/artist artwork only when available.",parse_mode="HTML",reply_markup=admin_menu())
-
-@bot.message_handler(func=lambda m: m.text == "🟢 Open Original")
-def admin_open_original(m):
-    if not is_admin(m.from_user.id): return
-    set_setting("mp3_original_fallback_enabled", True)
-    bot.send_message(m.chat.id,
-        "🟢 <b>ORIGINAL FALLBACK OPEN</b>\n\n"
-        "If the real artist cannot be identified, the bot may use the Original Sound owner/uploader and its source cover.",
-        parse_mode="HTML", reply_markup=admin_menu())
-
-@bot.message_handler(func=lambda m: m.text == "🔴 Close Original")
-def admin_close_original(m):
-    if not is_admin(m.from_user.id): return
-    set_setting("mp3_original_fallback_enabled", False)
-    bot.send_message(m.chat.id,
-        "🔴 <b>ORIGINAL FALLBACK CLOSED</b>\n\n"
-        "The Original Sound owner/uploader will not be used as the artist. If no real artist is found, the result stays Unknown artist.",
-        parse_mode="HTML", reply_markup=admin_menu())
 
 # ================= SONG SEARCH =================
 def _song_search_is_open():
@@ -4983,35 +4910,49 @@ def _embed_music_metadata(mp3_path, title, artist, cover_path=None, album=None):
         print("MP3 metadata embedding skipped:", repr(e))
 
 
-def _download_music_cover(info, tmp_dir, title=None, artist=None, recognized=None, source_thumbnail=None, source_is_original=False):
-    """Prefer genuine music artwork. Source video cover is only an Original fallback."""
-    info=info or {}; recognized=recognized or {}; candidates=[]
-    for value in recognized.get("artwork_candidates") or []:
-        if isinstance(value,str) and value.strip(): candidates.append(value.strip())
-    for key in ("artwork","artwork_url","cover","cover_url","album_art","album_artwork","album_cover"):
-        value=recognized.get(key) or info.get(key)
-        if isinstance(value,str) and value.strip(): candidates.append(value.strip())
-    lookup=_music_itunes_lookup(title or _music_title_from_info(info), artist or _music_artist_from_info(info))
-    if lookup.get("artwork"): candidates.append(lookup["artwork"])
-    for idx,url in enumerate(dict.fromkeys(candidates)):
-        cover=_music_download_image(url,tmp_dir,f"music_cover_{idx}.jpg")
-        if cover: return cover
-    allow_original=bool(get_setting("mp3_original_fallback_enabled",MP3_ORIGINAL_FALLBACK_DEFAULT))
-    if source_is_original and allow_original:
-        fallbacks=[]
-        thumb=_music_clean_text(source_thumbnail) or _music_clean_text(info.get("thumbnail"))
-        if thumb: fallbacks.append(thumb)
+def _download_music_cover(info, tmp_dir, title=None, artist=None, recognized=None):
+    """Return the configured MP3 cover. Open mode may use source thumbnail;
+    closed mode uses genuine music/artist artwork only."""
+    info = info or {}
+    recognized = recognized or {}
+    artwork_candidates = []
+    if get_setting("mp3_cover_enabled", MP3_COVER_DEFAULT):
+        thumb = info.get("thumbnail")
+        if isinstance(thumb, str) and thumb.strip():
+            artwork_candidates.append(thumb.strip())
         for t in info.get("thumbnails") or []:
-            if isinstance(t,dict) and isinstance(t.get("url"),str) and t.get("url").strip(): fallbacks.append(t["url"].strip())
-        for idx,url in enumerate(dict.fromkeys(fallbacks),100):
-            cover=_music_download_image(url,tmp_dir,f"original_fallback_{idx}.jpg")
-            if cover: return cover
-    elif get_setting("mp3_cover_enabled",MP3_COVER_DEFAULT):
-        # Keep the old admin-controlled cover behavior for non-Original sounds.
-        thumb=_music_clean_text(info.get("thumbnail"))
-        if thumb:
-            cover=_music_download_image(thumb,tmp_dir,"source_cover.jpg")
-            if cover: return cover
+            if isinstance(t, dict) and isinstance(t.get("url"), str) and t.get("url").strip():
+                artwork_candidates.append(t["url"].strip())
+
+    # AcoustID -> exact MusicBrainz release artwork has highest priority.
+    for value in recognized.get("artwork_candidates") or []:
+        if isinstance(value, str) and value.strip():
+            artwork_candidates.append(value.strip())
+
+    # Other recognition artwork sources.
+    for key in ("artwork", "artwork_url", "cover", "cover_url"):
+        value = recognized.get(key)
+        if isinstance(value, str) and value.strip():
+            artwork_candidates.append(value.strip())
+
+    # Some extractors provide explicit album artwork fields. These are acceptable;
+    # generic `thumbnail`/`thumbnails` are intentionally excluded because they are video frames.
+    for key in ("album_art", "album_artwork", "album_cover", "cover_url", "artwork_url", "artwork"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            artwork_candidates.append(value.strip())
+
+    for idx, url in enumerate(dict.fromkeys(artwork_candidates)):
+        cover = _music_download_image(url, tmp_dir, f"music_cover_{idx}.jpg")
+        if cover:
+            return cover
+
+    # If the song is identifiable, fetch its real album artwork from iTunes.
+    lookup = _music_itunes_lookup(title or _music_title_from_info(info), artist or _music_artist_from_info(info))
+    if lookup.get("artwork"):
+        cover = _music_download_image(lookup["artwork"], tmp_dir, "itunes_music_cover.jpg")
+        if cover:
+            return cover
     return None
 
 
@@ -5083,7 +5024,7 @@ def _send_mp3_file(chat_id, path, title, artist, cover_path=None, caption=None, 
             # Final safe fallback: Telegram can still deliver the exact MP3 file.
             bot.send_document(chat_id,audio,caption=caption or DOWNLOAD_CAPTION,reply_markup=reply_markup,parse_mode="HTML")
 
-def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, local_cache_dir=None, source_title="", source_artist="", pending_token=None, source_uploader="", source_thumbnail="", source_is_original=False):
+def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, local_cache_dir=None, source_title="", source_artist="", pending_token=None):
     uid=str(chat_id)
     music_platform=detect_platform(link)
     music_priority=is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
@@ -5217,56 +5158,50 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
             except Exception as meta_error:
                 print("MP3 metadata-only lookup skipped:",repr(meta_error))
                 info={}
-        raw_source_title = _music_clean_text(source_title)
-        raw_info_title = _music_clean_text(info.get("title") or info.get("fulltitle"))
-        source_title = _music_title_from_info(info) or raw_source_title
+        source_title = _music_title_from_info(info) or _music_clean_text(source_title)
         source_artist = _music_artist_from_info(info) or _music_clean_text(source_artist)
-        source_uploader = _music_clean_text(source_uploader) if "source_uploader" in locals() else ""
-        source_uploader = source_uploader or _music_clean_text(info.get("uploader") or info.get("creator") or info.get("channel"))
-        source_thumbnail = _music_clean_text(source_thumbnail) if "source_thumbnail" in locals() else ""
-        source_thumbnail = source_thumbnail or _music_clean_text(info.get("thumbnail"))
-        source_is_original = bool(source_is_original) if "source_is_original" in locals() else False
-        source_is_original = source_is_original or _music_is_original_label(raw_info_title) or _music_is_original_label(raw_source_title)
+        if not source_title:
+            raw_title = _music_clean_text(info.get("title") or info.get("fulltitle"))
+            if raw_title and not _music_is_original_label(raw_title) and not _music_is_provider_placeholder(raw_title):
+                source_title = raw_title
 
-        if not source_title and raw_info_title and not _music_is_original_label(raw_info_title) and not _music_is_provider_placeholder(raw_info_title):
-            source_title = raw_info_title
-
-        # Fingerprint the actual audio first.
+        # Local MUSIC still uses recognition when an identification service is
+        # configured. If it cannot identify the audio, we deliberately fall back
+        # to a numeric filename rather than exposing SaveAPI/Cobalt labels.
         recognized = _music_recognize_acoustid(path)
         if not recognized and AUDD_API_TOKEN:
             recognized = _music_recognize_audd(path)
+
         recognized_title = _music_clean_text(recognized.get("title"))
         recognized_artist = _music_clean_text(recognized.get("artist"))
         recognized_album = _music_clean_text(recognized.get("album"))
-        title = recognized_title or source_title or ""
+
+        # Never use uploader/channel as an artist. If recognition/catalog metadata
+        # cannot establish a real artist, the required fallback is "Unknown artist".
+        title = recognized_title or source_title or "Unknown title"
         artist = recognized_artist or ""
         album = recognized_album
 
-        # Search multiple music catalogs using the best available title.
+        # If AcoustID found no exact recording, try independent music catalogs only
+        # when we have a meaningful song title. These lookups must never use the
+        # source video's thumbnail as artwork.
         catalog_meta = {}
-        if title and not _music_is_original_label(title) and not _music_is_provider_placeholder(title):
+        if (not recognized_title or not recognized_artist) and title and not _music_is_provider_placeholder(title):
             for lookup_fn in (_music_musicbrainz_lookup, _music_deezer_lookup, _music_itunes_lookup):
                 try:
-                    catalog_meta = lookup_fn(title, recognized_artist or source_artist or "")
+                    catalog_meta = lookup_fn(title, "")
                 except Exception:
                     catalog_meta = {}
                 if catalog_meta.get("title") and catalog_meta.get("artist"):
                     break
+
             if catalog_meta:
                 title = catalog_meta.get("title") or title
                 artist = catalog_meta.get("artist") or artist
                 album = album or catalog_meta.get("album") or ""
 
-        original_open = bool(get_setting("mp3_original_fallback_enabled", MP3_ORIGINAL_FALLBACK_DEFAULT))
-        used_original_fallback = False
         if not artist or _music_is_original_label(artist):
-            if original_open and source_is_original and source_uploader:
-                artist = source_uploader
-                used_original_fallback = True
-            else:
-                artist = "Unknown artist"
-        if not title or _music_is_original_label(title) or _music_is_provider_placeholder(title):
-            title = "Original Sound" if used_original_fallback else "Unknown title"
+            artist = "Unknown artist"
 
         recognized_for_cover = dict(recognized)
         if recognized_for_cover.get("artwork_candidates"):
@@ -5274,15 +5209,15 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         if not recognized_for_cover.get("artwork") and catalog_meta.get("artwork"):
             recognized_for_cover["artwork"] = catalog_meta.get("artwork")
 
-        cover_path = _download_music_cover(
-            info,
-            tmp_dir,
-            title=title,
-            artist=artist,
-            recognized=recognized_for_cover,
-            source_thumbnail=source_thumbnail,
-            source_is_original=source_is_original,
-        )
+        cover_path = None
+        if not local_source or get_setting("mp3_cover_enabled", MP3_COVER_DEFAULT):
+            cover_path = _download_music_cover(
+                info,
+                tmp_dir,
+                title=title,
+                artist=artist,
+                recognized=recognized_for_cover,
+            )
 
         # Embed the same real artwork into the MP3 when possible. No source video frame is used.
         _embed_music_metadata(path, title, artist, cover_path=cover_path, album=album)
@@ -5551,9 +5486,6 @@ def music_callback_handler(call):
             data.get("source_title") or "",
             data.get("source_artist") or "",
             token,
-            data.get("source_uploader") or "",
-            data.get("source_thumbnail") or "",
-            bool(data.get("source_is_original")),
         )
     except Exception as e:
         print("MUSIC callback error:", e)
@@ -5759,8 +5691,7 @@ def refer_cmd(m):
         kb = InlineKeyboardMarkup()
         share_text="🎁 Join DownloadVedioYTBot and download videos, music and more.\n🔗 Referral link: " + link
         kb.add(_referral_share_button(link, share_text))
-        if get_setting("pay_rev_enabled", False):
-            kb.add(InlineKeyboardButton("💳 Buy Custom Referral Code", callback_data="buy_ref_menu"))
+        kb.add(InlineKeyboardButton("💳 Buy Custom Referral Code", callback_data="buy_ref_menu"))
         bot.send_message(
             m.chat.id,
             f"🔗 <b>Your Referral Link</b>:\n<code>{html.escape(link)}</code>\n\n"
@@ -8607,21 +8538,22 @@ def quality_callback(call):
     download_executor_for(call.from_user.id).submit(download_media, call.message.chat.id, data["link"], None, q)
 
 def send_premium_email(uid, subject, months, price, until):
-    uid=str(uid); duration=months if months else "Trial / Reward"
-    plain=(f"💎 Downloader Bot — {subject}\n\nDuration: {duration}\nPaid: ${price:.2f}\nExpires: {local_datetime_text(uid,until)}")
+    email=users.get(str(uid),{}).get("email")
+    if not email: return False
     body=("<html><body style='margin:0;background:#f3f8f5;font-family:Arial;color:#10231d'>"
           "<div style='max-width:620px;margin:30px auto;background:white;border-radius:22px;overflow:hidden'>"
           "<div style='padding:28px;background:linear-gradient(135deg,#087f5b,#19b77d);color:white'><h1 style='margin:0'>💎 Downloader Bot</h1><p>Premium account notification</p></div>"
-          f"<div style='padding:30px'><h2>{html.escape(subject)}</h2><div style='background:#f0faf6;padding:18px;border-radius:14px'><b>Duration:</b> {html.escape(str(duration))}<br><b>Paid:</b> ${price:.2f}<br><b>Expires:</b> {html.escape(local_datetime_text(uid, until))}</div></div></div></body></html>")
-    return notify_user_email_or_whatsapp(uid,subject,plain,body)!="none"
+          f"<div style='padding:30px'><h2>{html.escape(subject)}</h2><p>Your Premium access is active.</p><div style='background:#f0faf6;padding:18px;border-radius:14px'><b>Duration:</b> {months if months else 'Trial / Reward'}<br><b>Paid:</b> ${price:.2f}<br><b>Expires:</b> {html.escape(local_datetime_text(uid, until))}<br><b>Platforms:</b> {len(premium_platform_names())}<br><b>YouTube:</b> Premium only<br><b>Speed:</b> No artificial bot throttle</div><p>Thank you for using our service.</p></div></div></body></html>")
+    return send_html_email(email,subject,body)
 
 def send_premium_expiry_email(uid,until,days_left=None,expired=False):
-    uid=str(uid)
+    email=users.get(str(uid),{}).get("email")
+    if not email: return False
     subject="Your Downloader Bot Premium has expired" if expired else f"Your Downloader Bot Premium expires in {days_left} day(s)"
-    plain=f"⏰ {subject}\n\nExpiry: {until.strftime('%Y-%m-%d %H:%M UTC')}"
+    title="⏰ Premium Expired" if expired else "⚠️ Premium Expiry Reminder"
     body=("<html><body style='margin:0;background:#f4f7f6;font-family:Arial'><div style='max-width:620px;margin:30px auto;background:#fff;border-radius:20px;padding:30px'>"
-          f"<h1>{'⏰ Premium Expired' if expired else '⚠️ Premium Expiry Reminder'}</h1><p>{html.escape(subject)}</p><p><b>Expiry:</b> {until.strftime('%Y-%m-%d %H:%M UTC')}</p></div></body></html>")
-    return notify_user_email_or_whatsapp(uid,subject,plain,body)!="none"
+          f"<h1>{title}</h1><p>Your Premium {('has ended.' if expired else f'will expire in {days_left} day(s).')}</p><p><b>Expiry:</b> {until.strftime('%Y-%m-%d %H:%M UTC')}</p><p>Open <b>💎 PREMIUM</b> in Telegram to renew.</p></div></body></html>")
+    return send_html_email(email,subject,body)
 
 def conversion_hold_worker():
     while True:
@@ -9169,11 +9101,13 @@ def _notify_admin_premium_grant(uid, seconds, reason="Admin grant"):
             "⚡ Priority downloads\n🎥 Higher quality\n▶️ Full YouTube access")
     except Exception as e:
         print("Premium bot notification error:", uid, e)
-    try:
-        until_dt=datetime.fromisoformat(str(until).replace('Z','+00:00'))
-        send_premium_email(uid,'Premium Granted by Admin',duration,0,until_dt)
-    except Exception as e:
-        print("Premium external notification error:", uid, e)
+    u=users.get(uid,{})
+    if u.get('email') and u.get('email_verified'):
+        try:
+            until_dt=datetime.fromisoformat(str(until).replace('Z','+00:00'))
+            send_premium_email(uid,'Premium Granted by Admin',duration,0,until_dt)
+        except Exception as e:
+            print("Premium email notification error:", uid, e)
 
 @bot.message_handler(func=lambda m: m.text == "🔓 OPEN PREMIUM")
 def open_premium_start(m):
@@ -9841,78 +9775,6 @@ def localized_action_dispatch(m):
             kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("🔐 VERIFY ACCOUNT",callback_data="start_verify_flow"))
             bot.send_message(m.chat.id,f"🔐 <b>Verification required</b>\n\nVerify once and your {days}-Day Premium Trial will activate automatically. You will NOT need to press the trial button again.",reply_markup=kb); return
         users[uid]["trial_pending"]=True; users[uid]["trial_pending_version"]=current_trial_version(); save_user(uid); activate_pending_trial(uid,m.chat.id)
-
-# ================= ADMIN STORAGE / DATABASE INSPECTOR =================
-def _human_bytes(value):
-    value=float(value or 0); units=["B","KB","MB","GB","TB","PB"]; i=0
-    while value>=1024 and i<len(units)-1:
-        value/=1024.0; i+=1
-    return f"{value:,.2f} {units[i]}"
-
-def _storage_dir_size(path):
-    total=0
-    if not path or not os.path.exists(path): return 0
-    if os.path.isfile(path):
-        try: return os.path.getsize(path)
-        except Exception: return 0
-    for root, dirs, files in os.walk(path):
-        for name in files:
-            try: total += os.path.getsize(os.path.join(root,name))
-            except Exception: pass
-    return total
-
-def _mongo_storage_report(db):
-    result={"name":getattr(db,"name","unknown"),"collections":[],"error":None}
-    try: names=sorted(db.list_collection_names())
-    except Exception as e:
-        result["error"]=str(e); return result
-    for name in names:
-        row={"name":name,"documents":0,"data_size":0,"storage_size":0,"index_size":0,"total_size":0}
-        try:
-            st=db.command("collStats",name)
-            row["documents"]=int(st.get("count",0) or 0)
-            row["data_size"]=int(st.get("size",0) or 0)
-            row["storage_size"]=int(st.get("storageSize",0) or 0)
-            row["index_size"]=int(st.get("totalIndexSize",0) or 0)
-            row["total_size"]=row["storage_size"]+row["index_size"]
-        except Exception as e: row["error"]=str(e)
-        result["collections"].append(row)
-    try: result["dbstats"]=db.command("dbStats")
-    except Exception as e: result["dbstats"]={"error":str(e)}
-    return result
-
-@bot.message_handler(func=lambda m: m.text == "🗄 SEE STORAGE")
-def admin_see_storage(m):
-    if not is_admin(m.from_user.id): return
-    try:
-        db_reports=[_mongo_storage_report(db1), _mongo_storage_report(db2)]
-    except Exception as e:
-        db_reports=[]; print("Storage DB report error:",repr(e))
-    lines=["🗄 <b>SYSTEM STORAGE REPORT</b>",""]
-    root_total=root_used=root_free=0
-    try:
-        du=os.statvfs("/"); root_total=du.f_frsize*du.f_blocks; root_free=du.f_frsize*du.f_bavail; root_used=root_total-root_free
-        lines += [f"💽 <b>Server disk:</b> {_human_bytes(root_used)} used / {_human_bytes(root_total)} total / {_human_bytes(root_free)} free",""]
-    except Exception as e: lines.append(f"💽 Disk info unavailable: {html.escape(str(e))}")
-    for idx,rep in enumerate(db_reports,1):
-        lines.append(f"🍃 <b>MongoDB #{idx}: {html.escape(str(rep.get('name','')))}</b>")
-        if rep.get("error"): lines.append(f"❌ {html.escape(rep['error'])}"); continue
-        ds=rep.get("dbstats",{}) or {}
-        if isinstance(ds,dict):
-            lines.append(f"Data: {_human_bytes(ds.get('dataSize',0))} | Storage: {_human_bytes(ds.get('storageSize',0))} | Indexes: {_human_bytes(ds.get('indexSize',0))}")
-            lines.append(f"Collections: {len(rep.get('collections',[]))} | Documents: {sum(x.get('documents',0) for x in rep.get('collections',[])):,}")
-        for row in sorted(rep.get("collections",[]), key=lambda x:x.get("total_size",0), reverse=True):
-            if row.get("error"): lines.append(f"• {html.escape(row['name'])}: stats error")
-            else: lines.append(f"• <code>{html.escape(row['name'])}</code> — {row['documents']:,} docs | data {_human_bytes(row['data_size'])} | storage {_human_bytes(row['storage_size'])} | indexes {_human_bytes(row['index_size'])}")
-        lines.append("")
-    try:
-        downloads_size=_storage_dir_size("downloads")
-        lines += [f"📦 <b>downloads/:</b> {_human_bytes(downloads_size)}", f"🗂️ <b>music cache:</b> {_human_bytes(_storage_dir_size(os.path.join('downloads')))}"]
-    except Exception: pass
-    text="\n".join(lines)
-    # Telegram message limit safety: split without changing the report content.
-    for i in range(0,len(text),3900):
-        bot.send_message(m.chat.id,text[i:i+3900],parse_mode="HTML")
 
 # ================= MAIN RUN LOOP =================
 
