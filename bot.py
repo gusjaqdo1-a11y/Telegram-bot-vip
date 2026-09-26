@@ -365,6 +365,10 @@ video_files = {}
 music_pending = {}
 MUSIC_PENDING_TTL = int(os.getenv("MUSIC_PENDING_TTL", "1800"))
 song_search_pending = {}
+# Pending Search Song -> Add Group state.  This must exist before any handler
+# can reference it; otherwise one search can crash the polling thread with
+# NameError and no song results are shown.
+song_group_gate_pending = {}
 # Downloaded video directories kept briefly so the MUSIC button converts the exact
 # video the user already received instead of downloading the source again.
 music_cache_dirs = set()
@@ -4579,8 +4583,13 @@ def search_song_query_step(m):
     song_search_pending[token]={"uid":uid,"query":query,"results":rows,"created":time.time()}
     if not rows:
         bot.send_message(m.chat.id,"❌ No songs found. Try another title or artist.",reply_markup=localized_user_menu(uid)); return
-    if _song_maybe_require_group(m.chat.id,uid,token,query):
-        return
+    try:
+        if _song_maybe_require_group(m.chat.id,uid,token,query):
+            return
+    except Exception as e:
+        # Search results themselves are valid even if the optional group-gate
+        # state has a transient error. Never leave the user with a blank search.
+        print("Song group gate error:",repr(e))
     _send_song_results(m.chat.id,token,0)
 
 @bot.message_handler(func=_song_auto_search_should_handle)
@@ -4596,8 +4605,11 @@ def auto_song_search_handler(m):
             if not rows:
                 bot.send_message(m.chat.id,"❌ No songs found. Try another title or artist.",reply_markup=localized_user_menu(str(m.from_user.id)))
                 return
-            if _song_maybe_require_group(m.chat.id,str(m.from_user.id),token,query):
-                return
+            try:
+                if _song_maybe_require_group(m.chat.id,str(m.from_user.id),token,query):
+                    return
+            except Exception as e:
+                print("Auto song group gate error:",repr(e))
             _send_song_results(m.chat.id,token,0)
         except Exception as e:
             print("Auto song search error:",repr(e))
