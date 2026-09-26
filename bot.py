@@ -4207,7 +4207,9 @@ def _youtube_song_search(query, limit=10):
             "no_warnings":True,
             "skip_download":True,
             "extract_flat":"in_playlist",
-            "noplaylist":True,
+            # A YouTube Music search URL is itself a playlist-like result.
+            # Do NOT set noplaylist=True here or yt-dlp can suppress the search
+            # shelf entirely and return zero songs.
             "playlistend":max(10,want),
             "socket_timeout":4,
             "retries":1,
@@ -4256,6 +4258,44 @@ def _youtube_song_search(query, limit=10):
                 continue
             seen.add(key); x.pop("_score",None); clean.append(x)
             if len(clean)>=want: break
+        # If the dedicated Music shelf is temporarily unavailable, fall back to
+        # one normal YouTube search pass. We still apply the strict music/news
+        # filter and relevance ranking, so news/speeches are not blindly shown.
+        if len(clean) < min(want, 5):
+            try:
+                fallback_opts={
+                    "quiet":True,"no_warnings":True,"skip_download":True,
+                    "extract_flat":"in_playlist","playlistend":max(20,want*2),
+                    "socket_timeout":5,"retries":1,"fragment_retries":1,
+                    "extractor_retries":1,"cachedir":False,
+                }
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    finfo=ydl.extract_info(f"ytsearch{max(20,want*2)}:{query}",download=False) or {}
+                fentries=(finfo.get("entries") or [])
+                for item in fentries:
+                    if not isinstance(item,dict): continue
+                    vid=str(item.get("id") or "")
+                    webpage=item.get("webpage_url") or item.get("original_url") or item.get("url")
+                    if not webpage and vid and len(vid)==11:
+                        webpage=f"https://www.youtube.com/watch?v={vid}"
+                    title=_music_clean_text(item.get("title") or item.get("track") or item.get("fulltitle"))
+                    channel=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator") or item.get("channel_name"))
+                    artist=_song_parse_artists(title,channel) or channel
+                    dur=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
+                    if not webpage or not title or not _youtube_song_is_music(title,artist,dur,item): continue
+                    if not _song_is_relevant(query,title,artist,item.get("album") or "") and _song_norm(query) not in _song_norm(title):
+                        continue
+                    key=str(vid or webpage)
+                    if any(str(x.get("id") or x.get("download"))==key for x in clean): continue
+                    score=_song_similarity(query,title,artist,item.get("album") or "")
+                    if _song_norm(query)==_song_norm(artist): score+=10000
+                    elif _song_norm(query) in _song_norm(artist): score+=5000
+                    clean.append({"id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],"title":title,"artist":artist,"duration":dur,"album":_music_clean_text(item.get("album") or ""),"cover":item.get("thumbnail"),"download":webpage,"download_allowed":True,"license":"","source":"youtube","webpage_url":webpage,"_score":score})
+                clean.sort(key=lambda x:x.get("_score",0),reverse=True)
+                for x in clean: x.pop("_score",None)
+                clean=clean[:want]
+            except Exception as e:
+                print("YouTube fallback search failed:",repr(e))
         return clean
     except Exception as e:
         print("YouTube Music fast search failed:",repr(e)); return []
@@ -8854,6 +8894,33 @@ PLATFORM_PATTERNS.update({
 })
 PREMIUM_EXTRA_PLATFORMS = ["Reddit", "Threads", "Likee", "Vimeo", "Dailymotion", "SoundCloud", "Twitch", "Tumblr", "Streamable", "OK.ru"]
 
+def _download_request_job(chat_id, link, quality, uid):
+    """Run access checks and media extraction in the download worker.
+
+    This keeps the Telegram message handler responsive: link detection and queueing
+    happen immediately, while the potentially slow YouTube duration probe runs in
+    the worker instead of blocking the incoming-message handler.
+    """
+    try:
+        platform=detect_platform(link)
+        has_priority=is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
+        if premium_required_for_platform(platform,uid,link) and not has_priority:
+            if platform=="youtube" and users.get(str(uid),{}).get("youtube_30m",False):
+                pass
+            else:
+                duration=None
+                if platform=="youtube":
+                    try: duration=_youtube_duration_seconds(link)
+                    except Exception: duration=None
+                kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+                bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
+                return
+        download_media(chat_id,link,None,quality)
+    except Exception as e:
+        print("Download request worker failed:",repr(e))
+        try: bot.send_message(chat_id,"❌ Download failed. Please try again.")
+        except Exception: pass
+
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
     touch_user(message.from_user.id)
@@ -8881,23 +8948,8 @@ def handle_links(message):
         bot.send_message(message.chat.id, "🔐 Verification Required\n\nPlease verify your account before downloading.", reply_markup=kb); return
 
     platform = detect_platform(link)
-    # Free access policy: 6 social platforms + YouTube Shorts.
-    # Full YouTube and the 10 Premium-only extra platforms require Premium/Trial,
-    # unless Admin has explicitly enabled full YouTube for Free users.
-    has_priority_access = is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
-    if premium_required_for_platform(platform, uid, link) and not has_priority_access:
-        if platform == "youtube" and users.get(uid,{}).get("youtube_30m",False):
-            pass
-        else:
-            duration_seconds = None
-            if platform == "youtube":
-                try: duration_seconds = _youtube_duration_seconds(link)
-                except Exception: duration_seconds = None
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("💎 OPEN PREMIUM", callback_data="premium_menu"))
-            bot.send_message(message.chat.id, premium_gate_message(uid, platform, duration_seconds), reply_markup=kb, parse_mode="HTML")
-            return
-
+    # Access checks and any YouTube duration probe run inside the worker so the incoming
+    # link is acknowledged/queued immediately instead of blocking the message handler.
     # Premium quality is selected once and stored on the user.
     # If no quality has been selected yet, ask once; future links use the saved quality.
     if is_quick_access(uid):
@@ -8912,8 +8964,8 @@ def handle_links(message):
         # No visible preparation message. download_media immediately starts
         # Telegram's native upload action (Sending a video / Sending a photo).
         download_executor_for(uid).submit(
-            download_media, message.chat.id, link, None,
-            quality if (is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)) else None
+            _download_request_job, message.chat.id, link,
+            quality if (is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)) else None, uid
         )
     except Exception: pass
 
