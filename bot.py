@@ -927,22 +927,57 @@ def platform_display_name(platform):
 def youtube_full_free_enabled():
     return bool(get_setting("youtube_full_free", YOUTUBE_FULL_FREE_DEFAULT))
 
-YOUTUBE_FREE_MAX_MINUTES = 12
+YOUTUBE_FREE_MAX_MINUTES = int(os.getenv("YOUTUBE_FREE_MAX_MINUTES", "15"))
 
 def _youtube_duration_seconds(link):
-    """Best-effort lightweight duration probe used only for the Free YouTube gate."""
+    d,_=_youtube_duration_fast(link)
+    return d
+
+def _youtube_artwork_url(video_id):
+    """Return a stable YouTube thumbnail URL for Search Song album/artwork display."""
+    vid=str(video_id or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
+        return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+    return ""
+
+def _youtube_duration_fast(link, rapid_data=None):
+    """Get YouTube duration without waiting on a full yt-dlp extraction.
+
+    RapidAPI is checked first because it is the configured primary YouTube
+    resolver. yt-dlp is only the metadata fallback when RapidAPI is unavailable.
+    """
     if not link or detect_platform(link) != "youtube":
-        return None
+        return None, rapid_data
+    data=rapid_data
+    if data is None and RAPIDAPI_YT_KEY:
+        try:
+            vid=_extract_youtube_video_id(link)
+            if vid:
+                data=_rapidapi_youtube_details(vid)
+                d=_rapid_duration(data)
+                if d:
+                    return d, data
+        except Exception as e:
+            print("Fast YouTube duration RapidAPI probe failed:",repr(e))
+    if data is not None:
+        try:
+            d=_rapid_duration(data)
+            if d:
+                return d, data
+        except Exception: pass
+    # Last resort only. Keep this probe short so normal downloads are not held
+    # up unnecessarily when the API already returned the media metadata.
     try:
-        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":12}
+        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":5,"retries":1,"extractor_retries":1,"cachedir":False}
         extra=_youtube_extractor_args()
         if extra: opts["extractor_args"]=extra
         with yt_dlp.YoutubeDL(opts) as ydl:
             info=ydl.extract_info(link,download=False) or {}
-        return int(info.get("duration") or 0) or None
+        d=int(info.get("duration") or 0)
+        return (d or None), data
     except Exception as e:
-        print("YouTube duration yt-dlp probe failed:",repr(e))
-        return None
+        print("Fast YouTube duration yt-dlp fallback failed:",repr(e))
+        return None, data
 
 def premium_required_for_platform(platform, uid, link=None):
     """Return whether this exact link requires Premium/Trial access."""
@@ -4012,7 +4047,20 @@ def download_media(chat_id, link, message_id, quality=None):
     premium=is_premium(uid)
     priority=quick or premium or trial
     max_seconds=_download_limit_seconds(uid)
+    rapid_data_prefetched=None
     if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
+        # Check the exact duration first. If it exceeds the Free limit, stop
+        # here and show Premium instead of allowing the generic downloader
+        # failure message to appear. RapidAPI is preferred for this probe.
+        duration_check,rapid_data_prefetched=_youtube_duration_fast(link)
+        if duration_check and duration_check > YOUTUBE_FREE_MAX_MINUTES*60:
+            msg=premium_gate_message(uid,"youtube",duration_check)
+            kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+            try:
+                if message_id: bot.edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
+                else: bot.send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
+            except Exception as e: print("Premium duration gate send failed:",repr(e))
+            return
         max_seconds=YOUTUBE_FREE_MAX_MINUTES*60
     quality=quality or (users.get(uid,{}).get("premium_quality") if priority else "720") or ("1080" if quick else "720")
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
@@ -4037,7 +4085,7 @@ def download_media(chat_id, link, message_id, quality=None):
             try:
                 vid=_extract_youtube_video_id(link)
                 if not vid: raise RuntimeError("Could not extract YouTube video ID.")
-                rapid_data=_rapidapi_youtube_details(vid)
+                rapid_data=rapid_data_prefetched or _rapidapi_youtube_details(vid)
                 rapid_duration=_rapid_duration(rapid_data)
                 if rapid_duration and max_seconds and rapid_duration>max_seconds:
                     raise RuntimeError("YouTube video is too long for the current access tier.")
@@ -4289,28 +4337,47 @@ def _song_norm(value):
 
 
 def _song_similarity(query, title, artist, album=""):
-    """Strict relevance score so broad keyword collisions rank at zero."""
+    """High-recall music ranking with typo/fuzzy support."""
+    from difflib import SequenceMatcher
     q=_song_norm(query); t=_song_norm(title); a=_song_norm(artist); al=_song_norm(album)
     if not q: return 0
     score=0
-    if q==a: score+=5000
-    if q==t: score+=4800
-    if q in a: score+=4200
-    if q in t: score+=4000
-    if q in al: score+=800
-    for w in [x for x in q.split() if len(x)>=2]:
-        if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",a): score+=600
-        if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",t): score+=500
+    if q==a: score+=12000
+    if q==t: score+=11000
+    if q in a: score+=8500
+    if q in t: score+=8000
+    if q in al: score+=1000
+    for field,weight in ((a,800),(t,650),(al,120)):
+        for w in [x for x in q.split() if len(x)>=2]:
+            if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field): score+=weight
+    # Typo tolerance: BAN4BAND -> BAND4BAND, small spelling mistakes, etc.
+    for field,weight in ((a,5200),(t,4700)):
+        if field:
+            ratio=SequenceMatcher(None,q,field).ratio()
+            if ratio>=0.72: score += int(ratio*weight)
+            for token in field.split():
+                tr=SequenceMatcher(None,q,token).ratio()
+                if tr>=0.78: score += int(tr*1800)
     return score
 
 def _song_is_relevant(query,title,artist,album=""):
+    """Return True for exact/near title or artist matches, including small typos."""
+    from difflib import SequenceMatcher
     q=_song_norm(query); t=_song_norm(title); a=_song_norm(artist); al=_song_norm(album)
     if not q: return False
     if q in t or q in a or q in al: return True
     words=[w for w in q.split() if len(w)>=2]
-    if not words: return False
+    if words:
+        for field in (t,a):
+            if all(re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field) for w in words): return True
+    # Fuzzy whole-field and token matching catches common typos without allowing
+    # unrelated single-word collisions such as Central/Cee.
     for field in (t,a):
-        if all(re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field) for w in words): return True
+        if not field: continue
+        if SequenceMatcher(None,q,field).ratio()>=0.72: return True
+        fwords=field.split()
+        if words and all(max((SequenceMatcher(None,w,fw).ratio() for fw in fwords),default=0)>=0.78 for w in words):
+            return True
     return False
 
 def _jamendo_song_search(query, limit=100):
@@ -4733,7 +4800,7 @@ def _youtube_music_ytmsearch(query, limit=30):
             if qn==_song_norm(title): score+=5000
             webpage=f"https://www.youtube.com/watch?v={vid}"
             out.append({"id":vid,"title":title,"artist":artist,"duration":duration,
-                        "album":album,"cover":item.get("thumbnail") or "",
+                        "album":album,"cover":item.get("thumbnail") or _youtube_artwork_url(vid),
                         "download":webpage,"download_allowed":True,"license":"",
                         "source":"youtube","webpage_url":webpage,"_score":score})
             seen.add(vid)
@@ -4785,7 +4852,7 @@ def _youtube_song_search(query, limit=30):
             if qn==_song_norm(artist): score+=12000
             elif qn and qn in _song_norm(artist): score+=6000
             candidates.append({"id":vid,"title":title,"artist":artist,"duration":duration,
-                               "album":album,"cover":item.get("thumbnail") or "",
+                               "album":album,"cover":item.get("thumbnail") or _youtube_artwork_url(vid),
                                "download":item.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}",
                                "download_allowed":True,"license":"","source":"youtube",
                                "webpage_url":item.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}","_score":score})
@@ -4856,14 +4923,41 @@ def _rapidapi_youtube_song_search(query, limit=30):
         return ""
 
     def duration_value(d):
-        for k in ("duration","durationSeconds","lengthSeconds","length","durationText","duration_string"):
-            v=d.get(k)
+        keys=("duration","durationSeconds","duration_seconds","lengthSeconds","length_seconds","length","durationText","duration_text","durationString","duration_string","lengthText","length_text","lengthString","length_string")
+        def walk(v,depth=0):
+            if depth>4 or v is None: return 0
             x=_parse_duration_value(v)
             if x>0: return x
-            try:
-                if isinstance(v,(int,float)) and 0<v<172800: return int(v)
-            except Exception: pass
-        return 0
+            if isinstance(v,(int,float)) and 0<v<172800: return int(v)
+            if isinstance(v,dict):
+                for k in ("simpleText","text","label","runs","value","seconds"):
+                    if k in v:
+                        z=walk(v.get(k),depth+1)
+                        if z>0: return z
+            if isinstance(v,list):
+                for z0 in v:
+                    z=walk(z0,depth+1)
+                    if z>0: return z
+            return 0
+        for k in keys:
+            x=walk(d.get(k))
+            if x>0: return x
+        # Last resort: inspect nested metadata dictionaries from RapidAPI.
+        def scan(obj,depth=0):
+            if depth>3: return 0
+            if isinstance(obj,dict):
+                for k,v in obj.items():
+                    if any(mark in str(k).lower() for mark in ("duration","length")):
+                        z=walk(v,depth+1)
+                        if z>0: return z
+                    z=scan(v,depth+1)
+                    if z>0: return z
+            elif isinstance(obj,list):
+                for v in obj:
+                    z=scan(v,depth+1)
+                    if z>0: return z
+            return 0
+        return scan(d)
 
     def visit(obj):
         if isinstance(obj,dict):
@@ -4889,8 +4983,9 @@ def _rapidapi_youtube_song_search(query, limit=30):
                     low=_song_norm(title)
                     if any(x in low for x in ("official music","official audio","music video","audio")): score+=500
                     webpage=f"https://www.youtube.com/watch?v={vid}"
+                    cover=text_value(obj,("thumbnail","thumbnailUrl","thumbnailUrlHigh","thumbnailUrlMedium")) or _youtube_artwork_url(vid)
                     rows.append({"id":vid,"title":title,"artist":artist,"duration":duration,
-                                 "album":"","cover":text_value(obj,("thumbnail","thumbnailUrl")),
+                                 "album":"","cover":cover,
                                  "download":webpage,"download_allowed":True,"license":"",
                                  "source":"youtube","webpage_url":webpage,"_score":score})
                     seen.add(vid)
@@ -4905,26 +5000,39 @@ def _rapidapi_youtube_song_search(query, limit=30):
 
 
 def _song_search_all(query, limit=30):
-    """YouTube-first Search Song. Jamendo is intentionally not used.
-
-    Search titles remain the original YouTube titles for recognition; clean
-    audio metadata is calculated only when the user selects a result.
-    """
-    rows=_rapidapi_youtube_song_search(query,limit)
-    if len(rows)>=min(10,int(limit)):
-        return rows[:int(limit)]
-    # RapidAPI can occasionally return a short page. Use the YouTube Music page as
-    # a fast metadata fallback, then native ytmsearch only if necessary.
-    try:
-        fallback=_youtube_song_search(query,limit)
+    """Fast, high-recall YouTube music search. No Jamendo and no normal-video-only search."""
+    want=max(10,min(30,int(limit)))
+    # RapidAPI is primary. Its response is merged with the dedicated YouTube Music
+    # Songs shelf so short/partial API pages do not produce only 2-7 choices.
+    try: primary=_rapidapi_youtube_song_search(query,want)
     except Exception as e:
-        print("YouTube music fallback failed:",repr(e)); fallback=[]
+        print("RapidAPI primary search failed:",repr(e)); primary=[]
+    try: fallback=_youtube_music_http_search(query,want)
+    except Exception as e:
+        print("YouTube Music HTTP fallback failed:",repr(e)); fallback=[]
     merged=[]; seen=set()
-    for x in rows+fallback:
+    for x in primary+fallback:
         key=str(x.get("id") or x.get("download") or "")
         if not key or key in seen: continue
+        if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
         seen.add(key); merged.append(x)
-    return merged[:int(limit)]
+    # Native ytmsearch is only used when the first two fast paths still have too
+    # few results. This keeps normal searches fast while preserving recall.
+    if len(merged)<want:
+        try: extra=_youtube_music_ytmsearch(query,want)
+        except Exception as e:
+            print("YouTube Music ytmsearch fallback failed:",repr(e)); extra=[]
+        for x in extra:
+            key=str(x.get("id") or x.get("download") or "")
+            if not key or key in seen: continue
+            seen.add(key); merged.append(x)
+            if len(merged)>=want: break
+    # Re-rank the merged set so exact artist/title matches come first.
+    for x in merged:
+        x["_score"]=_song_similarity(query,x.get("title",""),x.get("artist",""),x.get("album",""))
+    merged.sort(key=lambda x:x.get("_score",0),reverse=True)
+    for x in merged: x.pop("_score",None)
+    return merged[:want]
 
 def _main_bot_username():
     global _MAIN_BOT_USERNAME_CACHE
@@ -4957,6 +5065,8 @@ def _song_audio_metadata(song):
             existing=[x.strip() for x in re.split(r"\s*&\s*",raw_artist) if x.strip()]
             if _song_norm(featured) not in {_song_norm(x) for x in existing}:
                 raw_artist=(raw_artist+" & " if raw_artist else "")+featured
+    if _song_norm(raw_artist) in {"unknown", "unknown artist", "youtube", "youtube music"}:
+        raw_artist = ""
     return raw_title or _music_clean_text(song.get("title")) or "Unknown title", raw_artist or "Unknown artist"
 
 def _default_song_caption(song):
@@ -5117,10 +5227,14 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
         title=_music_clean_text(x.get("title")) or ""
         artist=_music_clean_text(x.get("artist")) or ""
         duration_seconds=_parse_duration_value(x.get("duration"))
-        if not title or duration_seconds<=0: continue
-        display_artist=artist if " & " in artist else ""
-        suffix=f" — {html.escape(display_artist)}" if display_artist else ""
-        lines.append(f"<b>{i+1}.</b> {html.escape(title)}{suffix} {_song_duration(duration_seconds)}")
+        if not title: continue
+        if duration_seconds<=0:
+            # Never show 0:00. The search engine filters these out, but a provider
+            # can omit duration in one result; skip it rather than displaying fake time.
+            continue
+        # Search list intentionally shows the song title and duration only.
+        # Collaboration artists remain in the original title when YouTube supplies them.
+        lines.append(f"<b>{i+1}.</b> {html.escape(title)} {_song_duration(duration_seconds)}")
         visible+=1
     if not visible:
         lines.append("❌ No complete music results were found. Try another title or artist.")
@@ -5276,10 +5390,16 @@ def song_pick_callback(call):
                             _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=300)
                             if os.path.isfile(out):
                                 audio_title,audio_artist=_song_audio_metadata(song)
-                                _embed_music_metadata(out,audio_title,audio_artist)
+                                cover_path=_music_download_image(song.get("cover") or _youtube_artwork_url(vid),tmp,"cover.jpg")
+                                _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path)
                                 bot.edit_message_text("🎵 <b>Sending music...</b>",chat_id,status_id,parse_mode="HTML")
                                 with open(out,"rb") as fh:
-                                    bot.send_audio(chat_id,fh,title=audio_title,performer=audio_artist,duration=int(song.get("duration") or 0),caption=_song_caption(song),parse_mode="HTML")
+                                    kwargs={"title":audio_title,"performer":audio_artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
+                                    if cover_path and os.path.isfile(cover_path): kwargs["thumb"]=cover_path
+                                    try:
+                                        bot.send_audio(chat_id,fh,**kwargs)
+                                    except Exception:
+                                        kwargs.pop("thumb",None); fh.seek(0); bot.send_audio(chat_id,fh,**kwargs)
                                 _record_song_download(uid,{**song,"audio_title":audio_title,"audio_artist":audio_artist})
                                 return
                     except Exception as e:
@@ -11150,15 +11270,36 @@ def _managed_premium_menu(uid, chat_id):
     if premium_verification_required() and not user_is_verified(uid):
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("🔐 Verify Account",url=(f"https://t.me/{str(bot.get_me().username or '').lstrip('@')}?start=verifycreate" if getattr(bot.get_me(),'username',None) else "https://t.me/Downloadvedioytibot?start=verifycreate")))
         bot.send_message(chat_id,"🔐 <b>Verification Required</b>\n\nVerify your account before buying Premium.",reply_markup=kb); return
-    prices=get_premium_prices(); rate=max(1,int(get_setting("stars_per_usd",100) or 100)); kb=InlineKeyboardMarkup(row_width=2)
-    for months in ("1","3","9","12"):
-        stars=max(1,int(round(float(prices[months])*rate)))
-        kb.add(InlineKeyboardButton(f"💰 {months} Month",callback_data=f"mprem:{months}"),InlineKeyboardButton(f"⭐ {stars} Stars",callback_data=f"mpremstars:{months}"))
-    bot.send_message(chat_id,"💎 <b>Downloader Bot Premium</b>\n\nChoose <b>Shared Balance</b> or <b>Telegram Stars</b>.\n\n⭐ Stars payments are processed by @Downloadvedioytibot.\n💰 Balance payments use the shared wallet.\n\nWhile active, <b>Powered by</b> and creation promotional messages are hidden for your managed bot.",reply_markup=kb)
-
+    kb=InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("💰 Wallet",callback_data="mpaymethod:wallet"),InlineKeyboardButton("⭐ Telegram Stars",callback_data="mpaymethod:stars"))
+    bot.send_message(chat_id,"💎 <b>Premium Payment</b>\n\nChoose your payment method first.\n\n💰 <b>Wallet</b> — uses the shared @Downloadvedioytibot balance.\n⭐ <b>Telegram Stars</b> — payment is sent through @Downloadvedioytibot.",reply_markup=kb,parse_mode="HTML")
 
 def _managed_premium_callback(call):
     uid=str(call.from_user.id); data=str(call.data or '')
+    if data.startswith('mpaymethod:'):
+        method=data.split(':',1)[1].lower()
+        if method not in {'wallet','stars'}:
+            bot.answer_callback_query(call.id,'Invalid payment method.',show_alert=True); return
+        meta=_ACTIVE_MANAGED_META.get() or {}; bid=str(meta.get('bot_id') or '')
+        if not bid:
+            bot.answer_callback_query(call.id,'Managed bot context missing.',show_alert=True); return
+        d=_managed_bot_doc(bid)
+        if not d or str(d.get('owner_id'))!=uid:
+            bot.answer_callback_query(call.id,'Owner only.',show_alert=True); return
+        bot.answer_callback_query(call.id)
+        if method=='wallet':
+            prices=get_premium_prices(); rate=max(1,int(get_setting('stars_per_usd',100) or 100))
+            kb=InlineKeyboardMarkup(row_width=2)
+            for months in ('1','3','9','12'):
+                price=float(prices[months]); kb.add(InlineKeyboardButton(f'💰 {months} Month — ${price:.2f}',callback_data=f'mprem:{months}'))
+            bot.send_message(call.message.chat.id,'💰 <b>Wallet Premium</b>\n\nChoose your Premium period. Payment will use the shared @Downloadvedioytibot balance.',reply_markup=kb,parse_mode='HTML')
+            return
+        prices=get_premium_prices(); rate=max(1,int(get_setting('stars_per_usd',100) or 100)); kb=InlineKeyboardMarkup(row_width=2)
+        for months in ('1','3','9','12'):
+            stars=max(1,int(round(float(prices[months])*rate)))
+            kb.add(InlineKeyboardButton(f'⭐ {months} Month — {stars} Stars',callback_data=f'mpremstars:{months}'))
+        bot.send_message(call.message.chat.id,'⭐ <b>Telegram Stars</b>\n\nChoose your Premium period. The Stars invoice will be sent by <b>@Downloadvedioytibot</b>.',reply_markup=kb,parse_mode='HTML')
+        return
     if data.startswith('mpremstars:'):
         months=data.split(':',1)[1]; price=get_premium_prices().get(months)
         if price is None:
@@ -11173,9 +11314,8 @@ def _managed_premium_callback(call):
         rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
         payload=f"managed_premium_stars:{bid}:{months}:{stars}"
         try:
-            active_bot=_ACTIVE_BOT.get() or bot
-            active_bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)","Premium for this managed Downloader Bot. Pay securely here with Telegram Stars.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
-            bot.answer_callback_query(call.id,'⭐ Payment invoice sent by this Downloader Bot')
+            _main_bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)","Premium for your managed Downloader Bot. Pay securely with Telegram Stars through @Downloadvedioytibot.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
+            bot.answer_callback_query(call.id,'⭐ Payment invoice sent by @Downloadvedioytibot')
         except Exception as e:
             bot.answer_callback_query(call.id,'Could not create Stars invoice.',show_alert=True); print('Managed Stars invoice error:',repr(e))
         return
@@ -11576,7 +11716,7 @@ def _managed_bot_start_instance(doc):
             mb.message_handler(func=lambda m:m.text=="💎 PREMIUM")(_premium); mb.message_handler(func=lambda m:m.text=="💰 BALANCE")(_balance); mb.message_handler(func=lambda m:m.text=="💳 Link Wallet")(_wallet) ; mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create)
             mb.message_handler(func=lambda m:bool(m.text and extract_url(m.text)))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music)
-            mb.callback_query_handler(func=lambda c:c.data.startswith(("mprem:","mprempay:","mpremcancel")))(_cbpremium)
+            mb.callback_query_handler(func=lambda c:c.data.startswith(("mpaymethod:","mprem:","mpremstars:","mprempay:","mpremcancel")))(_cbpremium)
             mb.callback_query_handler(func=lambda c:c.data.startswith(("mwallet:","mopenprem:","mbotinfo:")))(_bot_admin_cb)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
