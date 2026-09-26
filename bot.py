@@ -1603,7 +1603,7 @@ def admin_menu():
     kb.add("⚡ AUTO SONG SEARCH ON", "⛔ AUTO SONG SEARCH OFF")
     # Keep the legacy song admin controls from the previous bot version.
     kb.add("➕ ADD CAPTION", "📝 DEFAULT CAPTION")
-    kb.add("📊 SONG STATS")
+    kb.add("📊 SONG STATS", "🏆 TOP SONG SEARCHERS")
     kb.add("📉 CHANGE MINIMUM", "➕ ADD FEE")
     kb.add("➕ ADD LOW FEE", "🎁 GIFT ALL")
     kb.add("🗑️ REMOVE ALL")
@@ -4168,84 +4168,95 @@ def _youtube_song_is_music(title, artist, duration=0, item=None):
     # an obvious news/talk result above.
     return True
 
-def _youtube_song_search(query, limit=10):
-    """Fast YouTube Music *Songs* search using yt-dlp + Railway cookies only.
+def _song_parse_artists(title, channel=""):
+    raw_title=_music_clean_text(title); raw_channel=_music_clean_text(channel); artists=[]
+    def add(value):
+        value=_music_clean_text(value)
+        if not value: return
+        value=re.sub(r"\s+"," ",value).strip(" -–—|,")
+        parts=re.split(r"\s+(?:ft\.?|feat\.?|featuring)\s+|\s*[&]\s*|\s+\bx\b\s+|\s*,\s*",value,flags=re.I)
+        for part in parts:
+            part=_music_clean_text(part).strip(" -–—")
+            part=re.sub(r"^@","",part)
+            if part and not any(_song_norm(part)==_song_norm(a) for a in artists): artists.append(part)
+    m=re.match(r"^(.{1,120}?)\s[-–—]\s+(.+)$",raw_title)
+    if m and len(m.group(1).split())<=12:
+        add(m.group(1))
+        fm=re.search(r"\b(?:ft\.?|feat\.?|featuring)\s+(.+?)(?:\)|\]|$)",m.group(2),flags=re.I)
+        if fm: add(fm.group(1))
+    else:
+        fm=re.search(r"\b(?:ft\.?|feat\.?|featuring)\s+(.+?)(?:\)|\]|$)",raw_title,flags=re.I)
+        if fm: add(fm.group(1))
+    if raw_channel and _song_norm(raw_channel) not in {"youtube","unknown","unknown artist"}:
+        if not artists: add(raw_channel)
+        elif _song_norm(raw_channel) not in {_song_norm(a) for a in artists}: add(raw_channel)
+    return " & ".join(artists)
 
-    One direct YouTube Music request is used. No iTunes, RapidAPI, Jamendo or
-    ordinary YouTube search is used here. Search results are kept flat so the
-    bot responds quickly; full metadata is obtained when the selected song is
-    actually downloaded.
-    """
+def _parse_duration_value(value):
+    try:
+        if value is None: return 0
+        if isinstance(value,(int,float)): return max(0,int(value))
+        text=str(value).strip()
+        m=re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{2})",text)
+        if m: return int(m.group(1) or 0)*3600+int(m.group(2))*60+int(m.group(3))
+        m=re.fullmatch(r"(\d+)\s*min(?:ute)?s?\s*(?:(\d+)\s*sec(?:ond)?s?)?",text,re.I)
+        if m: return int(m.group(1))*60+int(m.group(2) or 0)
+    except Exception: pass
+    return 0
+
+def _youtube_song_search(query, limit=10):
     query=_music_clean_text(query)
     if not query: return []
     try:
-        opts={
-            "quiet":True,"no_warnings":True,"skip_download":True,
-            "extract_flat":True,"noplaylist":True,
-            "playlistend":max(10,int(limit)*2),
-        }
+        opts={"quiet":True,"no_warnings":True,"skip_download":True,"extract_flat":True,"noplaylist":True,"playlistend":max(30,int(limit)*4)}
         opts.update(_ytdlp_cookie_args())
-        rows=_youtube_song_search_one(query,limit,opts)
-        qn=_song_norm(query)
-        exact_artist=[x for x in rows if _song_norm(x.get("artist","")) == qn]
-        if exact_artist:
-            rows=exact_artist
-        else:
-            rows=[x for x in rows if _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album",""))]
+        rows=_youtube_song_search_one(query,max(30,int(limit)*4),opts)
+        rows=[x for x in rows if _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album",""))]
         rows.sort(key=lambda x:x.get("_score",0),reverse=True)
-        for x in rows: x.pop("_score",None)
-        return rows[:int(limit)]
+        seen=set(); clean=[]
+        for x in rows:
+            key=str(x.get("id") or x.get("download") or "")
+            if key and key in seen: continue
+            if key: seen.add(key)
+            x.pop("_score",None); clean.append(x)
+            if len(clean)>=int(limit): break
+        return clean
     except Exception as e:
-        print("YouTube Music song search failed:",repr(e))
-        return []
+        print("YouTube Music song search failed:",repr(e)); return []
 
 def _youtube_song_search_one(query, limit, opts):
     out=[]
     try:
         import urllib.parse
-        q=urllib.parse.quote_plus(str(query))
-        songs_sp="EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
+        q=urllib.parse.quote_plus(str(query)); songs_sp="EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
         url=f"https://music.youtube.com/search?q={q}&sp={songs_sp}"
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info=ydl.extract_info(url,download=False)
+        with yt_dlp.YoutubeDL(opts) as ydl: info=ydl.extract_info(url,download=False)
         entries=((info or {}).get("entries") or [])
-        for item in entries[:max(1,int(limit)*2)]:
+        for item in entries[:max(1,int(limit))]:
             if not isinstance(item,dict): continue
             vid=str(item.get("id") or "")
-            webpage=item.get("webpage_url") or item.get("original_url")
-            if not webpage and vid and len(vid)==11:
-                webpage=f"https://www.youtube.com/watch?v={vid}"
+            webpage=item.get("webpage_url") or item.get("original_url") or item.get("url")
+            if webpage and webpage.startswith("https://music.youtube.com/watch"): webpage=webpage.replace("https://music.youtube.com/watch","https://www.youtube.com/watch",1)
+            if not webpage and vid and len(vid)==11: webpage=f"https://www.youtube.com/watch?v={vid}"
             title=_music_clean_text(item.get("track") or item.get("title") or item.get("fulltitle"))
-            artist=_music_clean_text(item.get("artist") or item.get("artists") or item.get("uploader") or item.get("channel") or item.get("creator"))
+            channel=_music_clean_text(item.get("channel") or item.get("uploader") or item.get("creator") or item.get("artist"))
             album=_music_clean_text(item.get("album") or item.get("series"))
-            if isinstance(artist,list): artist=_music_clean_text(", ".join(map(str,artist)))
-            # YouTube Music sometimes exposes the artist only inside the title
-            # (e.g. "Central Cee - Doja"). Recover it without another API call.
-            if not artist and " - " in title:
-                prefix=title.split(" - ",1)[0].strip()
-                if 1 <= len(prefix.split()) <= 8:
-                    artist=prefix
-            artist=artist or "Unknown artist"
+            artist=_song_parse_artists(title,channel) or channel
             if not webpage or not title: continue
-            try: dur=int(float(item.get("duration") or 0))
-            except Exception: dur=0
+            dur=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
             if not _youtube_song_is_music(title,artist,dur,item): continue
             if not _song_is_relevant(query,title,artist,album): continue
             score=_song_similarity(query,title,artist,album)
-            out.append({
-                "id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],
-                "title":title,"artist":artist,"duration":dur,"album":album,
-                "cover":item.get("thumbnail"),"download":webpage,
-                "download_allowed":True,"license":"","source":"youtube",
-                "webpage_url":webpage,"_score":score,
-            })
-    except Exception as e:
-        print("YouTube Music song search one failed:",repr(e))
+            qn=_song_norm(query); an=_song_norm(artist); tn=_song_norm(title)
+            if qn and qn==an: score+=10000
+            elif qn and qn in an: score+=5000
+            if qn and qn==tn: score+=4000
+            out.append({"id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],"title":title,"artist":artist,"duration":dur,"album":album,"cover":item.get("thumbnail"),"download":webpage,"download_allowed":True,"license":"","source":"youtube","webpage_url":webpage,"_score":score})
+    except Exception as e: print("YouTube Music song search one failed:",repr(e))
     return out
 
 def _song_search_all(query, limit=12):
-    """Search Song only through YouTube Music Songs with yt-dlp + cookies."""
-    return _youtube_song_search(query, min(12, int(limit)))
+    return _youtube_song_search(query,min(10,int(limit)))
 
 def _main_bot_username():
     global _MAIN_BOT_USERNAME_CACHE
@@ -4262,8 +4273,6 @@ def _default_song_caption(song):
     return f"🎤 <b>{artist}</b>\n🎵 <b>{title}</b>\n\n@{html.escape(_main_bot_username())}"
 
 def _song_caption(song):
-    # Music captions are intentionally bot-only. Artist/album/title stay in the
-    # Telegram music metadata where supported, never in the visible caption.
     return DOWNLOAD_CAPTION
 
 def _song_auto_search_should_handle(m):
@@ -4323,6 +4332,21 @@ def _song_stats_text():
     except Exception as e:
         return f"❌ Could not load song statistics: {html.escape(str(e)[:300])}"
 
+def _top_song_searchers_text(limit=100):
+    try:
+        pipeline=[{"$match":{"action":"song_download"}},{"$group":{"_id":"$user_id","downloads":{"$sum":1}}},{"$sort":{"downloads":-1,"_id":1}},{"$limit":int(limit)}]
+        rows=list(activity_col.aggregate(pipeline))
+        lines=["🏆 <b>TOP SONG SEARCHERS</b>","",f"Top <b>{len(rows)}</b> users by completed song downloads.",""]
+        if not rows:
+            lines.append("No song downloads recorded yet."); return "\n".join(lines)
+        for i,row in enumerate(rows,1):
+            uid=str(row.get("_id") or ""); u=users.get(uid,{}) or {}; username=str(u.get("username") or "").strip()
+            label=f"@{username}" if username else str(u.get("first_name") or "User")
+            lines.append(f"<b>{i}.</b> {html.escape(label)} — ID: <code>{html.escape(uid)}</code> — 🎵 <b>{int(row.get('downloads',0))}</b>")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Could not load top song searchers: {html.escape(str(e)[:300])}"
+
 def _cleanup_song_search():
     now=time.time()
     for token,data in list(song_search_pending.items()):
@@ -4344,10 +4368,12 @@ def _song_results_markup(token, page, total):
         buttons.append(InlineKeyboardButton(label,callback_data=f"songpick:{token}:{i}"))
     for i in range(0,len(buttons),5):
         kb.row(*buttons[i:i+5])
-    nav=[]
-    if page>0: nav.append(InlineKeyboardButton("⬅️",callback_data=f"songpage:{token}:{page-1}"))
-    nav.append(InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"))
-    if end<total: nav.append(InlineKeyboardButton("➡️",callback_data=f"songpage:{token}:{page+1}"))
+    last_page=max(0,(total-1)//SONG_SEARCH_PAGE_SIZE)
+    nav=[
+        InlineKeyboardButton("⬅️",callback_data=f"songpage:{token}:{max(0,page-1)}"),
+        InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"),
+        InlineKeyboardButton("➡️",callback_data=f"songpage:{token}:{min(last_page,page+1)}"),
+    ]
     kb.row(*nav)
     return kb
 
@@ -4357,16 +4383,15 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
     rows=data.get("results",[]); total=len(rows)
     start=page*SONG_SEARCH_PAGE_SIZE; end=min(start+SONG_SEARCH_PAGE_SIZE,total)
     query=html.escape(data.get("query","") or "")
-    lines=[f"🔎 <b>{query}</b>",""]
+    lines=[f"🔍 <b>{query}</b>",""]
     if not rows:
         lines.append("❌ No songs found.")
     else:
         for i in range(start,end):
             x=rows[i]
             title=html.escape(str(x.get("title") or "Unknown title"))
-            artist=html.escape(str(x.get("artist") or "Unknown artist"))
             duration=_song_duration(x.get("duration"))
-            lines.append(f"<b>{i+1}.</b> {title} — {artist} <code>{duration}</code>")
+            lines.append(f"<b>{i+1}.</b> {title} <code>{duration}</code>")
     text="\n".join(lines)
     kb=_song_results_markup(token,page,total) if rows else InlineKeyboardMarkup().add(InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"))
     if edit_message:
@@ -4473,7 +4498,7 @@ def song_pick_callback(call):
     if str(x.get("source")) == "youtube":
         def _download_youtube_song_job(chat_id,status_id,song,uid):
             try:
-                convert_link_to_mp3(chat_id,song.get("download"),status_id)
+                convert_link_to_mp3(chat_id,song.get("download"),status_id,source_title=str(song.get("title") or ""),source_artist=str(song.get("artist") or ""))
             except Exception as e:
                 print("YouTube song job failed:",repr(e))
                 try: bot.edit_message_text("❌ Music download failed. Please try again.",chat_id,status_id)
@@ -5241,8 +5266,8 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
             except Exception as meta_error:
                 print("MP3 metadata-only lookup skipped:",repr(meta_error))
                 info={}
-        source_title = _music_title_from_info(info) or _music_clean_text(source_title)
-        source_artist = _music_artist_from_info(info) or _music_clean_text(source_artist)
+        source_title = _music_clean_text(source_title) or _music_title_from_info(info)
+        source_artist = _music_clean_text(source_artist) or _music_artist_from_info(info)
         if not source_title:
             raw_title = _music_clean_text(info.get("title") or info.get("fulltitle"))
             if raw_title and not _music_is_original_label(raw_title) and not _music_is_provider_placeholder(raw_title):
@@ -5280,7 +5305,8 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
 
             if catalog_meta:
                 title = catalog_meta.get("title") or title
-                artist = catalog_meta.get("artist") or artist
+                if not artist:
+                    artist = catalog_meta.get("artist") or artist
                 album = album or catalog_meta.get("album") or ""
 
         if not artist or _music_is_original_label(artist):
@@ -5972,6 +5998,11 @@ def admin_default_song_caption(m):
 def admin_song_stats(m):
     if not is_admin(m.from_user.id): return
     bot.send_message(m.chat.id,_song_stats_text(),parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🏆 TOP SONG SEARCHERS")
+def admin_top_song_searchers(m):
+    if not is_admin(m.from_user.id): return
+    bot.send_message(m.chat.id,_top_song_searchers_text(100),parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "👑 ADMIN PANEL")
 def open_admin_panel(m):
