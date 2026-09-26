@@ -2179,8 +2179,7 @@ def profile_handler(m):
     u_data = users.get(uid, {})
     
     verified = u_data.get("verified", False)
-    sticker = u_data.get("sticker", "Verified" if verified else "Not Verified")
-    status_str = f"Verified ({sticker})" if verified else "Not Verified"
+    status_str = f"Verified{_verified_badge_html()}" if verified else "Not Verified"
     joined = u_data.get("joined_date", datetime.now().strftime("%Y-%m-%d"))
     downloads = videos_data.get("users", {}).get(uid, 0)
     balance = u_data.get("balance", 0.0)
@@ -2601,6 +2600,34 @@ def process_whatsapp_code(m):
     trial_activated=activate_pending_trial(uid,m.chat.id)
     bot.send_message(m.chat.id,"✅ <b>WhatsApp verification successful.</b> Your account is now verified."+("\n\n🎁 Your pending 1-Day Premium Trial was activated automatically." if trial_activated else ""),reply_markup=localized_user_menu(uid))
 
+
+# ================= GLOBAL VERIFIED CUSTOM EMOJI =================
+def _custom_emoji_from_message(message):
+    """Return (custom_emoji_id, fallback_emoji) from a Telegram custom-emoji text message."""
+    text=str(getattr(message,"text","") or "")
+    for ent in (getattr(message,"entities",None) or []):
+        typ=str(getattr(ent,"type","") or "")
+        if typ != "custom_emoji":
+            continue
+        cid=str(getattr(ent,"custom_emoji_id","") or "").strip()
+        if not cid:
+            continue
+        try:
+            off=int(getattr(ent,"offset",0)); ln=int(getattr(ent,"length",1))
+            raw=text.encode("utf-16-le")
+            alt=raw[off*2:(off+ln)*2].decode("utf-16-le") or "💠"
+        except Exception:
+            alt="💠"
+        return cid, alt
+    return "", ""
+
+def _verified_badge_html():
+    cid=str(get_setting("verified_badge_custom_emoji_id","") or "").strip()
+    alt=str(get_setting("verified_badge_custom_emoji_alt","💠") or "💠").strip() or "💠"
+    if cid:
+        return f'<tg-emoji emoji-id="{html.escape(cid, quote=True)}">{html.escape(alt)}</tg-emoji>'
+    return "💠"
+
 # ================= ADMIN VERIFIED USERS & STICKER MANAGER =================
 
 @bot.message_handler(func=lambda m: m.text == "✅ Verified Users")
@@ -2632,33 +2659,32 @@ def sticker_admin_start(m):
     if not is_admin(m.from_user.id):
         return
     try:
-        msg = bot.send_message(m.chat.id, "Send User ID or BOT ID and the sticker/badge separated by pipe (|)\nExample:\n123456789 | 🌟 Verified")
+        msg = bot.send_message(
+            m.chat.id,
+            "🏷️ <b>GLOBAL VERIFIED BADGE</b>\n\n"
+            "Send one Telegram <b>custom emoji</b> from your Telegram Premium/custom-emoji picker.\n\n"
+            "The custom emoji ID will be saved and shown to every verified user.\n"
+            "Do <b>not</b> type an emoji ID and do not use a normal keyboard emoji.",
+            parse_mode="HTML"
+        )
         bot.register_next_step_handler(msg, sticker_admin_process)
-    except: pass
+    except Exception as e:
+        print("Sticker admin start error:",repr(e))
 
 def sticker_admin_process(m):
     if not is_admin(m.from_user.id):
         return
-    try:
-        parts = m.text.split("|")
-        if len(parts) < 2:
-            bot.send_message(m.chat.id, "❌ Format error. Use: UserID | StickerText")
-            return
-        uid_str = parts[0].strip()
-        sticker_text = parts[1].strip()
-        
-        uid = uid_str if uid_str in users else find_user_by_botid(uid_str)
-        if not uid or uid not in users:
-            bot.send_message(m.chat.id, "❌ User not found.")
-            return
-        users[uid]["sticker"] = sticker_text
-        save_user(uid)
-        bot.send_message(m.chat.id, f"✅ Sticker successfully updated for user {uid}!")
-        try:
-            bot.send_message(int(uid), f"🌟 Your profile status sticker has been updated to: {sticker_text}")
-        except: pass
-    except Exception as e:
-        bot.send_message(m.chat.id, f"❌ Error: {e}")
+    cid,alt=_custom_emoji_from_message(m)
+    if not cid:
+        bot.send_message(m.chat.id,"❌ That is not a Telegram custom emoji. Please send a custom emoji from Telegram.",parse_mode="HTML")
+        return
+    set_setting("verified_badge_custom_emoji_id",cid)
+    set_setting("verified_badge_custom_emoji_alt",alt or "💠")
+    bot.send_message(
+        m.chat.id,
+        f"✅ <b>Global verified badge updated.</b>\n\nBadge: {_verified_badge_html()}\n\nIt will now appear on every verified user's profile.",
+        parse_mode="HTML"
+    )
 
 # ================= ADMIN SEND EMAIL ALL =================
 
@@ -5821,12 +5847,16 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
             if raw_title and not _music_is_original_label(raw_title) and not _music_is_provider_placeholder(raw_title):
                 source_title = raw_title
 
-        # Local MUSIC still uses recognition when an identification service is
-        # configured. If it cannot identify the audio, we deliberately fall back
-        # to a numeric filename rather than exposing SaveAPI/Cobalt labels.
-        recognized = _music_recognize_acoustid(path)
-        if not recognized and AUDD_API_TOKEN:
-            recognized = _music_recognize_audd(path)
+        # Search Song already provides trusted title/artist metadata. Do not run
+        # AcoustID/Audd/catalog lookups again: those network calls made MP3
+        # conversion unnecessarily slow. Recognition remains available for raw
+        # MUSIC conversions where metadata was not supplied.
+        if source_title or source_artist:
+            recognized = {}
+        else:
+            recognized = _music_recognize_acoustid(path)
+            if not recognized and AUDD_API_TOKEN:
+                recognized = _music_recognize_audd(path)
 
         recognized_title = _music_clean_text(recognized.get("title"))
         recognized_artist = _music_clean_text(recognized.get("artist"))
@@ -5842,7 +5872,7 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         # when we have a meaningful song title. These lookups must never use the
         # source video's thumbnail as artwork.
         catalog_meta = {}
-        if (not recognized_title or not recognized_artist) and title and not _music_is_provider_placeholder(title):
+        if (not (source_title or source_artist)) and (not recognized_title or not recognized_artist) and title and not _music_is_provider_placeholder(title):
             for lookup_fn in (_music_musicbrainz_lookup, _music_deezer_lookup, _music_itunes_lookup):
                 try:
                     catalog_meta = lookup_fn(title, "")
@@ -5867,13 +5897,11 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
             recognized_for_cover["artwork"] = catalog_meta.get("artwork")
 
         cover_path = None
-        if not local_source or get_setting("mp3_cover_enabled", MP3_COVER_DEFAULT):
+        # Search-result MP3s prioritize speed. Avoid another remote artwork lookup;
+        # Telegram will still display the title/performer metadata.
+        if not (source_title or source_artist) and (not local_source or get_setting("mp3_cover_enabled", MP3_COVER_DEFAULT)):
             cover_path = _download_music_cover(
-                info,
-                tmp_dir,
-                title=title,
-                artist=artist,
-                recognized=recognized_for_cover,
+                info, tmp_dir, title=title, artist=artist, recognized=recognized_for_cover
             )
 
         # Embed the same real artwork into the MP3 when possible. No source video frame is used.
@@ -8589,11 +8617,18 @@ def broadcast_start(m):
 def broadcast_send(m):
     if not is_admin(m.from_user.id):
         return
-    text = m.text
-    sent,failed=broadcast_users(lambda uid: bot.send_message(int(uid), text), list(users.keys()))
+    # copyMessage preserves Telegram custom-emoji entities instead of flattening
+    # them into ordinary keyboard emoji. It also preserves the original rich text.
+    sent=failed=0
+    for uid in list(users.keys()):
+        try:
+            bot.copy_message(int(uid), m.chat.id, m.message_id)
+            sent+=1
+        except Exception:
+            failed+=1
     try:
         bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
-    except: pass
+    except Exception: pass
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
@@ -9000,6 +9035,47 @@ def successful_payment_handler(message):
     payload = payment.invoice_payload
     uid = str(message.from_user.id)
     stars = int(getattr(payment, "total_amount", 0) or 0)
+    if payload.startswith("managed_premium_stars:"):
+        parts=payload.split(":")
+        if len(parts)>=4:
+            bid=str(parts[1]); months=str(parts[2]); expected_stars=int(parts[3] or 0)
+            d=managed_bots_col.find_one({"bot_id":bid})
+            if not d or str(d.get("owner_id"))!=uid:
+                bot.send_message(message.chat.id,"❌ This Premium payment is not linked to a valid managed Downloader Bot.")
+                return
+            if stars < expected_stars:
+                bot.send_message(message.chat.id,"❌ Premium payment amount was not sufficient.")
+                return
+            price=get_premium_prices().get(months)
+            if price is None:
+                bot.send_message(message.chat.id,"❌ Premium plan is no longer available."); return
+            now=datetime.now(timezone.utc); old=users.get(uid,{}).get("premium_until")
+            try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now; old_dt=old_dt if old_dt.tzinfo else old_dt.replace(tzinfo=timezone.utc)
+            except Exception: old_dt=now
+            until=max(now,old_dt)+timedelta(days=30*int(months))
+            users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; users[uid]["premium_source"]="stars"; save_user(uid)
+            premium_logs_col.insert_one({"user_id":uid,"months":int(months),"price":price,"until":until.isoformat(),"time":now.isoformat(),"type":"managed_bot_stars_purchase","bot_id":bid,"stars":stars})
+            bot.send_message(message.chat.id,f"🎉 <b>Premium Activated</b>\\n\\n⭐ Paid: <b>{stars} Stars</b>\\n⏱️ {months} month(s)\\n⏰ Expires: <b>{html.escape(local_datetime_text(uid,until))}</b>\\n\\nYour managed Downloader Bot Premium is now active.",parse_mode="HTML")
+            mb=managed_bot_objects.get(bid) or _managed_bot_start_instance(d)
+            if mb:
+                try: mb.send_message(int(uid),f"🎉 <b>Premium Activated</b>\\n\\n⭐ Paid with Telegram Stars: <b>{stars}</b>\\n⏰ Expires: <b>{html.escape(local_datetime_text(uid,until))}</b>",parse_mode="HTML")
+                except Exception: pass
+        return
+
+    if payload.startswith("managed_creator_premium_stars:"):
+        parts=payload.split(":")
+        if len(parts)>=3:
+            months=str(parts[1]); expected_stars=int(parts[2] or 0); price=get_premium_prices().get(months)
+            if price is None or stars < expected_stars:
+                bot.send_message(message.chat.id,"❌ Premium Stars payment could not be validated."); return
+            now=datetime.now(timezone.utc); old=users.get(uid,{}).get("premium_until")
+            try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now; old_dt=old_dt if old_dt.tzinfo else old_dt.replace(tzinfo=timezone.utc)
+            except Exception: old_dt=now
+            until=max(now,old_dt)+timedelta(days=30*int(months)); users[uid]["premium_until"]=until.isoformat(); users[uid]["premium_warning_sent"]=False; users[uid]["premium_source"]="stars"; save_user(uid)
+            premium_logs_col.insert_one({"user_id":uid,"months":int(months),"price":price,"until":until.isoformat(),"time":now.isoformat(),"type":"creator_stars_purchase","stars":stars})
+            bot.send_message(message.chat.id,f"🎉 <b>Premium Activated</b>\\n\\n⭐ Paid: <b>{stars} Stars</b>\\n⏱️ {months} month(s)\\n⏰ Expires: <b>{html.escape(local_datetime_text(uid,until))}</b>",parse_mode="HTML")
+        return
+
     if payload.startswith("balance_topup:"):
         rate = float(get_setting("stars_per_usd", 100))
         usd = stars / rate if rate > 0 else 0.0
@@ -10715,10 +10791,22 @@ def _creator_handle_text(uid, chat_id, text):
     text=(text or "").strip(); low=text.lower()
     if text in ("/start", "/start creator"):
         _creator_send(chat_id,
-            "🚀 <b>Bot Creator</b>\n\n"
-            "Create and manage your own Downloader Bot directly through Telegram.\n\n"
-            f"Creation: {'🟢 OPEN' if _creation_open() else '🔴 CLOSED'}\n"
-            f"Verify before creation: {'🟢 ON' if _creation_verify_required() else '⚪ OFF'}",
+            "🚀 <b>WELCOME TO BOT CREATOR</b>\n\n"
+            "Build your own Downloader Bot directly through Telegram's official managed-bot system.\n\n"
+            "<b>HOW IT WORKS</b>\n"
+            "1️⃣ Tap <b>🤖 Create My Bot</b>.\n"
+            "2️⃣ Enter your bot name.\n"
+            "3️⃣ Enter your bot username ending in <code>bot</code>.\n"
+            "4️⃣ Tap Telegram's official <b>Create</b> button.\n"
+            "5️⃣ Telegram creates the bot and sends the Creator Bot the managed-bot event.\n"
+            "6️⃣ Your bot is automatically registered, secured and started on the server.\n\n"
+            "<b>YOUR BOT FEATURES</b>\n"
+            "🎬 Video & Shorts downloads\n"
+            "🎵 Full MP3/Music downloads\n"
+            "💰 Shared balance with @Downloadvedioytibot\n"
+            "💎 Premium options\n"
+            "📊 Owner controls\n\n"
+            "Use <b>🤖 My Bots</b> to see your bots in one message, or <b>🗑 Delete Bot</b> to remove a bot from this system.",
             reply_markup=_creator_keyboard(uid)); return
     if low.startswith("/start "):
         _creator_send(chat_id,"👋 Welcome to the Bot Creator.",reply_markup=_creator_keyboard(uid)); return
@@ -10769,20 +10857,16 @@ def _creator_handle_text(uid, chat_id, text):
 def _creator_my_bots(uid, chat_id):
     rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
     if not rows:
-        _creator_send(chat_id,"🤖 <b>My Bots</b>\n\nYou have no bots yet.",reply_markup=_creator_keyboard(uid)); return
-    for d in rows[:20]:
-        status="🟢 Active" if d.get("active",True) and not d.get("suspended") else "🔴 Suspended"
-        premium="💎 Premium" if is_premium(uid) else "🆓 Standard"
-        _creator_send(chat_id,
-            f"🤖 <b>{html.escape(str(d.get('name') or 'Downloader Bot'))}</b>\n\n"
-            f"🔗 @{html.escape(str(d.get('username') or 'unknown'))}\n"
-            f"📡 {status}\n{premium}\n"
-            f"🆔 <code>{html.escape(str(d.get('bot_id') or ''))}</code>",
-            reply_markup={"inline_keyboard":[
-                [{"text":"📊 Bot Info","callback_data":f"cbotinfo:{d.get('bot_id')}"}],
-                [{"text":"🗑 Remove From System","callback_data":f"cbotdel:{d.get('bot_id')}"}],
-            ]})
-
+        _creator_send(chat_id,"🤖 <b>MY BOTS</b>\n\nYou have no bots yet.",reply_markup=_creator_keyboard(uid)); return
+    lines=["🤖 <b>MY BOTS</b>","",f"You have <b>{len(rows)}</b> managed bot(s).","" ]
+    buttons=[]
+    for i,d in enumerate(rows[:50],1):
+        status="🟢" if d.get("active",True) and not d.get("suspended") else "🔴"
+        lines.append(f"<b>{i}.</b> {status} <b>{html.escape(str(d.get('name') or 'Downloader Bot'))}</b> — @{html.escape(str(d.get('username') or 'unknown'))}")
+        lines.append(f"   🆔 <code>{html.escape(str(d.get('bot_id') or ''))}</code>")
+        buttons.append([{"text":f"📊 {i}. @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},
+                        {"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}])
+    _creator_send(chat_id,"\n".join(lines),reply_markup={"inline_keyboard":buttons})
 
 def _creator_delete_menu(uid, chat_id):
     rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
@@ -10796,34 +10880,89 @@ def _managed_wallet_start(m, bid, user_id=None):
     uid=str(user_id or m.from_user.id); d=_managed_bot_doc(bid)
     if not d or str(d.get("owner_id"))!=uid:
         bot.send_message(m.chat.id,"🔐 <b>Wallet linking is owner-only.</b>"); return
-    _ACTIVE_BOT.set(managed_bot_objects.get(bid) or _main_bot); _ACTIVE_MANAGED_META.set({"bot_id":bid,"owner_id":uid,"username":d.get("username") or "","name":d.get("name") or ""})
-    msg=bot.send_message(m.chat.id,"💳 <b>Link Shared Wallet</b>\n\nOpen the Creator Bot → <b>Wallet Card</b>, copy your 16-digit virtual card number, and send it here.\n\nYour managed bot will then use the same balance as @Downloadvedioytibot.")
-    bot.register_next_step_handler(msg,lambda x:_managed_wallet_process(x,bid))
+    if d.get("wallet_linked"):
+        bot.send_message(m.chat.id,f"✅ <b>Wallet already linked.</b>\n\n💰 Shared balance: <b>{html.escape(money_text(uid,balance_usd_value(uid)))}</b>")
+        return
+    # The main downloader bot sends the consent request. No wallet/card number is
+    # copied by the user anymore.
+    kb=InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("✅ Confirm",callback_data=f"mwconfirm:{bid}"),InlineKeyboardButton("❌ Reject",callback_data=f"mwreject:{bid}"))
+    _main_bot.send_message(
+        int(uid),
+        "💳 <b>SHARED WALLET CONNECTION</b>\n\n"
+        f"You are connecting your Downloader Bot <b>@{html.escape(str(d.get('username') or 'unknown'))}</b> to your main <b>@Downloadvedioytibot</b> account.\n\n"
+        "After you confirm, both bots will use the <b>same balance</b>. No 16-digit code is required.\n\n"
+        "<b>Confirm</b> only if you own this Downloader Bot and want it to use your main balance.",
+        parse_mode="HTML",reply_markup=kb
+    )
+    try: bot.send_message(m.chat.id,"📨 <b>Confirmation sent to your main @Downloadvedioytibot account.</b>\n\nOpen the main bot and press <b>Confirm</b> to finish linking.",parse_mode="HTML")
+    except Exception: pass
 
-
-def _managed_wallet_process(m,bid):
-    uid=str(m.from_user.id); d=_managed_bot_doc(bid); card=re.sub(r"\s+","",str(m.text or ""))
+@bot.callback_query_handler(func=lambda c: c.data.startswith(("mwconfirm:","mwreject:")))
+def managed_wallet_consent_callback(call):
+    uid=str(call.from_user.id); data=str(call.data or ""); action,bid=data.split(":",1)
+    d=_managed_bot_doc(bid)
     if not d or str(d.get("owner_id"))!=uid:
-        bot.send_message(m.chat.id,"❌ Only the bot owner can link its wallet."); return
-    expected=str(users.get(uid,{}).get("creator_wallet_card") or "")
-    if not re.fullmatch(r"\d{16}",card) or card!=expected:
-        bot.send_message(m.chat.id,"❌ Invalid wallet card. Open the Creator Bot → Wallet Card and copy the current 16-digit number exactly."); return
-    managed_bots_col.update_one({"bot_id":bid},{"$set":{"wallet_linked":True,"wallet_owner_id":uid,"wallet_linked_at":datetime.now(timezone.utc)}})
-    bot.send_message(m.chat.id,f"✅ <b>Wallet linked</b>\n\n💰 Shared balance: <b>{html.escape(money_text(uid,balance_usd_value(uid)))}</b>\n\nPremium purchases from this bot now use the same balance as @Downloadvedioytibot.")
+        bot.answer_callback_query(call.id,"❌ This wallet request is not yours.",show_alert=True); return
+    if action=="mwreject":
+        bot.answer_callback_query(call.id,"Wallet connection rejected.")
+        try: bot.edit_message_text("❌ <b>Wallet connection rejected.</b>\n\nNo balance was shared.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+        except Exception: pass
+        return
+    managed_bots_col.update_one({"bot_id":str(bid)},{"$set":{"wallet_linked":True,"wallet_owner_id":uid,"wallet_linked_at":datetime.now(timezone.utc)}})
+    bot.answer_callback_query(call.id,"✅ Wallet linked!")
+    try: bot.edit_message_text("✅ <b>Wallet connection confirmed.</b>\n\nYour Downloader Bot and @Downloadvedioytibot now share the same balance.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+    except Exception: pass
+    mb=managed_bot_objects.get(str(bid)) or _managed_bot_start_instance(d)
+    if mb:
+        try: mb.send_message(int(uid),f"✅ <b>Wallet linked successfully.</b>\n\n💰 Shared balance: <b>{html.escape(money_text(uid,balance_usd_value(uid)))}</b>\n\nYour Downloader Bot now uses the same balance as @Downloadvedioytibot.",parse_mode="HTML")
+        except Exception: pass
+
+
+def _premium_balance_help(uid):
+    uid=str(uid); reward=referral_reward_amount(); ref=str(users.get(uid,{}).get("ref") or "").strip()
+    try: uname=str(_main_bot_username() or "Downloadvedioytibot")
+    except Exception: uname="Downloadvedioytibot"
+    link=f"https://t.me/{uname}?start={urllib.parse.quote(ref)}" if ref else f"https://t.me/{uname}"
+    return ("💡 <b>Need more balance?</b>\n\n"
+            f"👥 Share your referral link with friends:\n<code>{html.escape(link)}</code>\n\n"
+            f"🎁 Current referral reward: <b>${reward:.2f}</b> per qualifying referral.\n"
+            "💳 You can also add balance directly in @Downloadvedioytibot.\n\n"
+            "When your shared balance is insufficient, use your referral link to earn according to the current referral rules.")
 
 def _managed_premium_menu(uid, chat_id):
     uid=str(uid)
     if premium_verification_required() and not user_is_verified(uid):
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("🔐 Verify Account",url=(f"https://t.me/{str(bot.get_me().username or '').lstrip('@')}?start=verifycreate" if getattr(bot.get_me(),'username',None) else "https://t.me/Downloadvedioytibot?start=verifycreate")))
         bot.send_message(chat_id,"🔐 <b>Verification Required</b>\n\nVerify your account before buying Premium.",reply_markup=kb); return
-    prices=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=1)
+    prices=get_premium_prices(); rate=max(1,int(get_setting("stars_per_usd",100) or 100)); kb=InlineKeyboardMarkup(row_width=2)
     for months in ("1","3","9","12"):
-        kb.add(InlineKeyboardButton(f"💎 {months} Month — ${prices[months]:.2f}",callback_data=f"mprem:{months}"))
-    bot.send_message(chat_id,"💎 <b>Downloader Bot Premium</b>\n\nPremium is paid from your shared @Downloadvedioytibot balance.\n\nWhile active, <b>Powered by</b> and creation promotional messages are hidden for your managed bot.",reply_markup=kb)
+        stars=max(1,int(round(float(prices[months])*rate)))
+        kb.add(InlineKeyboardButton(f"💰 {months} Month",callback_data=f"mprem:{months}"),InlineKeyboardButton(f"⭐ {stars} Stars",callback_data=f"mpremstars:{months}"))
+    bot.send_message(chat_id,"💎 <b>Downloader Bot Premium</b>\n\nChoose <b>Shared Balance</b> or <b>Telegram Stars</b>.\n\n⭐ Stars payments are processed by @Downloadvedioytibot.\n💰 Balance payments use the shared wallet.\n\nWhile active, <b>Powered by</b> and creation promotional messages are hidden for your managed bot.",reply_markup=kb)
 
 
 def _managed_premium_callback(call):
     uid=str(call.from_user.id); data=str(call.data or '')
+    if data.startswith('mpremstars:'):
+        months=data.split(':',1)[1]; price=get_premium_prices().get(months)
+        if price is None:
+            bot.answer_callback_query(call.id,'Invalid plan.',show_alert=True); return
+        if premium_verification_required() and not user_is_verified(uid):
+            bot.answer_callback_query(call.id,'Verify your account first.',show_alert=True); return
+        # Resolve the managed bot from the callback message's active context.
+        meta=_ACTIVE_MANAGED_META.get() or {}
+        bid=str(meta.get("bot_id") or "")
+        if not bid:
+            bot.answer_callback_query(call.id,'Managed bot context missing.',show_alert=True); return
+        rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
+        payload=f"managed_premium_stars:{bid}:{months}:{stars}"
+        try:
+            _main_bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)","Premium for this managed Downloader Bot. Payment is collected by the main downloader bot.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
+            bot.answer_callback_query(call.id,'⭐ Payment invoice sent by @Downloadvedioytibot')
+        except Exception as e:
+            bot.answer_callback_query(call.id,'Could not create Stars invoice.',show_alert=True); print('Managed Stars invoice error:',repr(e))
+        return
     if data.startswith('mprem:'):
         months=data.split(':',1)[1]; price=get_premium_prices().get(months)
         if price is None: bot.answer_callback_query(call.id,'Invalid plan.',show_alert=True); return
@@ -10831,7 +10970,7 @@ def _managed_premium_callback(call):
         price_asset=usd_to_asset(cur_code(uid),price); available=available_asset_amount(uid)
         if available<price_asset:
             bot.answer_callback_query(call.id,'Insufficient shared balance.',show_alert=True)
-            bot.send_message(call.message.chat.id,f"❌ <b>Insufficient balance</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),price_asset))}\nAvailable: {html.escape(format_asset(cur_code(uid),available))}\n\n💡 Add balance in @Downloadvedioytibot or earn through referrals.")
+            bot.send_message(call.message.chat.id,f"❌ <b>Insufficient balance</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),price_asset))}\nAvailable: {html.escape(format_asset(cur_code(uid),available))}\n\n"+_premium_balance_help(uid),parse_mode="HTML")
             return
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton(f"✅ Pay ${price:.2f}",callback_data=f"mprempay:{months}"),InlineKeyboardButton("❌ Cancel",callback_data="mpremcancel"))
         bot.answer_callback_query(call.id)
@@ -10877,12 +11016,15 @@ def _creator_premium(uid, chat_id):
     if not user_is_verified(uid) and premium_verification_required():
         _creator_send(chat_id,"🔐 Verify your account before purchasing Premium.")
         return
-    prices=get_premium_prices(); rows=[]
+    prices=get_premium_prices(); rate=max(1,int(get_setting("stars_per_usd",100) or 100)); rows=[]
     for months in ("1","3","9","12"):
-        rows.append([{"text":f"💎 {months} Month — ${prices[months]:.2f}","callback_data":f"cprem:{months}"}])
+        stars=max(1,int(round(float(prices[months])*rate)))
+        rows.append([{"text":f"💰 {months} Month — ${prices[months]:.2f}","callback_data":f"cprem:{months}"},
+                     {"text":f"⭐ {stars} Stars","callback_data":f"cpremstars:{months}"}])
     _creator_send(chat_id,
         "💎 <b>Downloader Bot Premium</b>\n\n"
-        "Premium uses your shared @Downloadvedioytibot balance. No second wallet is required.\n\n"
+        "Choose either <b>Shared Balance</b> or <b>Telegram Stars</b>.\n"
+        "Stars payments are collected by the main @Downloadvedioytibot bot.\n\n"
         "Premium removes the system Powered-by/create promotional messages while it is active.",
         reply_markup={"inline_keyboard":rows})
 
@@ -11024,7 +11166,21 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
         _managed_bot_remove_from_system(bid)
-        _creator_send(chat_id,"🗑 <b>Bot removed from this system.</b>",reply_markup=_creator_keyboard(uid)); return
+        _creator_send(chat_id,"🗑 <b>Bot deleted from this system.</b>\n\nIts polling worker, database record and local management entry have been removed. Telegram itself does not provide a Bot API method for deleting the bot account permanently.",reply_markup=_creator_keyboard(uid)); return
+    if data.startswith("cpremstars:"):
+        months=data.split(":",1)[1]; prices=get_premium_prices(); price=prices.get(months)
+        if price is None:
+            _creator_answer(call.get("id"),"Invalid plan.",True); return
+        if premium_verification_required() and not user_is_verified(uid):
+            _creator_answer(call.get("id"),"Verify your account first.",True); return
+        rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
+        payload=f"managed_creator_premium_stars:{months}:{stars}"
+        try:
+            bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)",f"Premium for your managed Downloader Bot. Paid with Telegram Stars.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
+            _creator_answer(call.get("id"),"⭐ Payment invoice sent by @Downloadvedioytibot")
+        except Exception as e:
+            _creator_answer(call.get("id"),"Could not create Stars invoice.",True); print("Creator Stars invoice error:",repr(e))
+        return
     if data.startswith("cprem:"):
         months=data.split(":",1)[1]
         if not managed_bots_col.find_one({"owner_id":uid}): _creator_answer(call.get("id"),"Create a bot first.",True); return
@@ -11032,7 +11188,7 @@ def _creator_callback(call):
         if months not in PREMIUM_DEFAULT_PRICES: _creator_answer(call.get("id"),"Invalid plan.",True); return
         price=get_premium_prices()[months]; available=available_asset_amount(uid); price_asset=usd_to_asset(cur_code(uid),price)
         if available<price_asset:
-            _creator_send(chat_id,f"❌ <b>Insufficient shared balance.</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),price_asset))}\nAvailable: {html.escape(format_asset(cur_code(uid),available))}\n\nEarn more through referrals or add balance in @Downloadvedioytibot."); return
+            _creator_send(chat_id,f"❌ <b>Insufficient shared balance.</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),price_asset))}\nAvailable: {html.escape(format_asset(cur_code(uid),available))}\n\n"+_premium_balance_help(uid),reply_markup=_creator_keyboard(uid)); return
         kb={"inline_keyboard":[[{"text":f"✅ Pay ${price:.2f}","callback_data":f"cprempay:{months}"},{"text":"❌ Cancel","callback_data":"cpremcancel"}]]}
         _creator_send(chat_id,f"💎 <b>{months} Month Premium</b>\n\nPrice: {html.escape(money_text(uid,price))}\nShared balance: {html.escape(money_text(uid,balance_usd_value(uid)))}\n\nConfirm?",reply_markup=kb); return
     if data.startswith("cprempay:"):
@@ -11052,12 +11208,23 @@ def _creator_callback(call):
 
 
 def _managed_bot_remove_from_system(bot_id):
-    bid=str(bot_id); mb=managed_bot_objects.pop(bid,None)
+    bid=str(bot_id); doc=managed_bots_col.find_one({"bot_id":bid}) or {}
+    mb=managed_bot_objects.pop(bid,None)
     if mb:
         try: mb.stop_polling()
         except Exception: pass
     managed_bot_threads.pop(bid,None)
-    managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"suspended":True,"removed_at":datetime.now(timezone.utc)}})
+    # Ask Telegram to close the managed bot's cloud session when possible.
+    try:
+        token=_decrypt_managed_token(doc)
+        if token:
+            requests.post(f"https://api.telegram.org/bot{token}/close",json={},timeout=10)
+    except Exception as e:
+        print("Managed bot close on delete skipped:",repr(e))
+    # Remove the bot completely from this application's database/system. Telegram
+    # does not expose a Bot API method for deleting the bot account itself.
+    try: managed_bots_col.delete_one({"bot_id":bid})
+    except Exception: pass
 
 
 def _managed_bot_doc(bot_id):
