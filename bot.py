@@ -305,8 +305,11 @@ def _destination_intro_text(dtype="group"):
         )
     return (
         "🤖 <b>Download Bot Connected</b>\n\n"
-        "This group is now connected to the bot.\n"
-        "The bot can send admin broadcasts and updates here. ⚡"
+        "🎵 <b>Search and download songs</b>\n"
+        "🎬 Download videos from supported platforms\n"
+        "🎧 Convert videos to MP3\n"
+        "⚡ Fast downloads with automatic music metadata\n\n"
+        "Thanks for adding <b>@Downloadvedioytibot</b> to this group."
     )
 
 def _send_destination_intro(chat_id, dtype):
@@ -1593,7 +1596,7 @@ def admin_menu():
     kb.add("🔗 GET REFERRAL CODE", "📊 Feedback Stats")
     kb.add("🟢 Open Feedback", "🔴 Close Feedback")
     kb.add("🗑️ Reset All Feedbacks", "🔓 OPEN 30 MIN")
-    kb.add("🟢 Open add group", "🔴 Close add group")
+    kb.add("🟢 Add Group REQUIRED", "🔴 Add Group OPTIONAL")
     kb.add("🟢 Open add channel", "🔴 Close add channel")
     kb.add("🟢 Open mp3 Cover", "🔴 Close mp3 Cover")
     kb.add("📢 REFERRAL BROADCAST")
@@ -3897,23 +3900,23 @@ def rapidapi_status_handler(m):
     except Exception as e:
         bot.send_message(m.chat.id,f"❌ RapidAPI failed: {str(e)[:700]}")
 
-@bot.message_handler(func=lambda m: m.text == "🟢 Open add group")
+@bot.message_handler(func=lambda m: m.text in {"🟢 Open add group","🟢 Add Group REQUIRED"})
 def admin_open_add_group(m):
     if not is_admin(m.from_user.id): return
     set_setting("add_group_enabled", True)
     bot.send_message(m.chat.id,
-        "🟢 <b>ADD GROUP OPEN</b>\n\n"
-        "Users will now see <b>➕ Add Group</b> under the /start welcome message and on MP3 files. "
+        "🟢 <b>ADD GROUP REQUIRED FOR SONG SEARCH</b>\n\n"
+        "Users who search songs must add this bot to a group and make it an administrator before the 10-song picker is shown. "
         "They can use Telegram's <b>Select Chat</b> picker to choose their group and make this bot an administrator.",
         parse_mode="HTML", reply_markup=admin_menu())
 
-@bot.message_handler(func=lambda m: m.text == "🔴 Close add group")
+@bot.message_handler(func=lambda m: m.text in {"🔴 Close add group","🔴 Add Group OPTIONAL"})
 def admin_close_add_group(m):
     if not is_admin(m.from_user.id): return
     set_setting("add_group_enabled", False)
     bot.send_message(m.chat.id,
-        "🔴 <b>ADD GROUP CLOSED</b>\n\n"
-        "New MP3s and the /start welcome message will no longer show the Add Group button. MP3 remains normal.",
+        "🔴 <b>ADD GROUP OPTIONAL</b>\n\n"
+        "Users can search songs normally. No group connection is required.",
         parse_mode="HTML", reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🟢 Open add channel")
@@ -4205,21 +4208,56 @@ def _parse_duration_value(value):
     return 0
 
 def _youtube_song_search(query, limit=10):
+    """Fast YouTube Music *Songs* search with real title/channel/duration metadata.
+
+    The dedicated music-search URL is used so ordinary news, speeches and generic
+    videos are not the search source. We intentionally do not use a correction API.
+    """
     query=_music_clean_text(query)
     if not query: return []
     try:
-        opts={"quiet":True,"no_warnings":True,"skip_download":True,"extract_flat":True,"noplaylist":True,"playlistend":max(30,int(limit)*4)}
+        want=max(10,int(limit))
+        opts={
+            "quiet":True,
+            "no_warnings":True,
+            "skip_download":True,
+            # Do not use extract_flat here: Music search entries need their
+            # duration/uploader metadata resolved by yt-dlp.
+            "extract_flat":False,
+            "noplaylist":True,
+            "playlistend":max(60,want*8),
+            "socket_timeout":8,
+        }
         opts.update(_ytdlp_cookie_args())
-        rows=_youtube_song_search_one(query,max(30,int(limit)*4),opts)
-        rows=[x for x in rows if _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album",""))]
+        rows=_youtube_song_search_one(query,max(60,want*8),opts)
+        # First take strict matches. If YouTube's metadata is incomplete (common
+        # for independent artists), fill the remaining slots from music-only
+        # candidates using token overlap instead of returning an empty/short list.
+        strict=[x for x in rows if _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album",""))]
+        strict_ids={str(x.get("id") or x.get("download") or "") for x in strict}
+        fallback=[]
+        qwords=[w for w in _song_norm(query).split() if len(w)>=2]
+        for x in rows:
+            key=str(x.get("id") or x.get("download") or "")
+            if key in strict_ids: continue
+            field=_song_norm(f"{x.get('title','')} {x.get('artist','')}")
+            overlap=sum(1 for w in qwords if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field))
+            if overlap:
+                x["_score"]=max(int(x.get("_score",0)),overlap*700)
+                fallback.append(x)
+        rows=strict+fallback
         rows.sort(key=lambda x:x.get("_score",0),reverse=True)
         seen=set(); clean=[]
         for x in rows:
             key=str(x.get("id") or x.get("download") or "")
             if key and key in seen: continue
             if key: seen.add(key)
-            x.pop("_score",None); clean.append(x)
-            if len(clean)>=int(limit): break
+            x.pop("_score",None)
+            # Never expose placeholder metadata in the search UI.
+            if not x.get("title") or not x.get("download"):
+                continue
+            clean.append(x)
+            if len(clean)>=want: break
         return clean
     except Exception as e:
         print("YouTube Music song search failed:",repr(e)); return []
@@ -4230,16 +4268,26 @@ def _youtube_song_search_one(query, limit, opts):
         import urllib.parse
         q=urllib.parse.quote_plus(str(query)); songs_sp="EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
         url=f"https://music.youtube.com/search?q={q}&sp={songs_sp}"
-        with yt_dlp.YoutubeDL(opts) as ydl: info=ydl.extract_info(url,download=False)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info=ydl.extract_info(url,download=False)
         entries=((info or {}).get("entries") or [])
         for item in entries[:max(1,int(limit))]:
             if not isinstance(item,dict): continue
             vid=str(item.get("id") or "")
             webpage=item.get("webpage_url") or item.get("original_url") or item.get("url")
-            if webpage and webpage.startswith("https://music.youtube.com/watch"): webpage=webpage.replace("https://music.youtube.com/watch","https://www.youtube.com/watch",1)
-            if not webpage and vid and len(vid)==11: webpage=f"https://www.youtube.com/watch?v={vid}"
+            if webpage and webpage.startswith("https://music.youtube.com/watch"):
+                webpage=webpage.replace("https://music.youtube.com/watch","https://www.youtube.com/watch",1)
+            if not webpage and vid and len(vid)==11:
+                webpage=f"https://www.youtube.com/watch?v={vid}"
             title=_music_clean_text(item.get("track") or item.get("title") or item.get("fulltitle"))
-            channel=_music_clean_text(item.get("channel") or item.get("uploader") or item.get("creator") or item.get("artist"))
+            # YouTube/YouTube Music exposes artist/channel through different
+            # metadata fields depending on the renderer and client.
+            channel=_music_clean_text(
+                item.get("artist") or item.get("artists") or item.get("channel") or
+                item.get("uploader") or item.get("creator") or item.get("channel_name")
+            )
+            if isinstance(item.get("artists"),list):
+                channel=" & ".join(_music_clean_text(v) for v in item.get("artists") if _music_clean_text(v))
             album=_music_clean_text(item.get("album") or item.get("series"))
             artist=_song_parse_artists(title,channel) or channel
             if not webpage or not title: continue
@@ -4251,8 +4299,26 @@ def _youtube_song_search_one(query, limit, opts):
             if qn and qn==an: score+=10000
             elif qn and qn in an: score+=5000
             if qn and qn==tn: score+=4000
-            out.append({"id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],"title":title,"artist":artist,"duration":dur,"album":album,"cover":item.get("thumbnail"),"download":webpage,"download_allowed":True,"license":"","source":"youtube","webpage_url":webpage,"_score":score})
-    except Exception as e: print("YouTube Music song search one failed:",repr(e))
+            # If yt-dlp exposes a clean channel/uploader, prefer it as artist
+            # rather than ever printing "Unknown artist".
+            if not artist:
+                artist=channel or ""
+            out.append({
+                "id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],
+                "title":title,
+                "artist":artist,
+                "duration":dur,
+                "album":album,
+                "cover":item.get("thumbnail"),
+                "download":webpage,
+                "download_allowed":True,
+                "license":"",
+                "source":"youtube",
+                "webpage_url":webpage,
+                "_score":score,
+            })
+    except Exception as e:
+        print("YouTube Music song search one failed:",repr(e))
     return out
 
 def _song_search_all(query, limit=12):
@@ -4347,6 +4413,38 @@ def _top_song_searchers_text(limit=100):
     except Exception as e:
         return f"❌ Could not load top song searchers: {html.escape(str(e)[:300])}"
 
+def _user_has_connected_group(uid):
+    uid=str(uid)
+    for d in _destinations():
+        if str(d.get("type")) not in {"group","supergroup"}: continue
+        if str(d.get("added_by") or "") == uid:
+            return True
+    return False
+
+def _song_group_gate_markup():
+    kb=InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("➕ Add Group",callback_data="songaddgroup"))
+    return kb
+
+def _song_group_gate_text(query):
+    q=html.escape(str(query or ""))
+    return (
+        f"🔍 <b>{q}</b>\n\n"
+        "👥 <b>Group access is required</b>\n\n"
+        "You can only use Search Song after you add this bot to a group and make it an <b>administrator</b>.\n\n"
+        "Tap <b>➕ Add Group</b>, choose your group, and give the bot admin access. "
+        "Your search is already saved — after the group is connected, your songs will appear automatically."
+    )
+
+def _song_maybe_require_group(chat_id, uid, token, query):
+    if not bool(get_setting("add_group_enabled", True)):
+        return False
+    if _user_has_connected_group(uid):
+        return False
+    song_group_gate_pending[str(uid)]={"token":token,"query":query,"created":time.time()}
+    bot.send_message(chat_id,_song_group_gate_text(query),parse_mode="HTML",reply_markup=_song_group_gate_markup())
+    return True
+
 def _cleanup_song_search():
     now=time.time()
     for token,data in list(song_search_pending.items()):
@@ -4389,7 +4487,14 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
     else:
         for i in range(start,end):
             x=rows[i]
-            title=html.escape(str(x.get("title") or "Unknown title"))
+            raw_title=_music_clean_text(x.get("title")) or "Unknown title"
+            raw_artist=_music_clean_text(x.get("artist"))
+            # Show the real artist when the title itself does not already contain
+            # the artist. Never display the old "Unknown artist" placeholder.
+            display_title=raw_title
+            if raw_artist and _song_norm(raw_artist) not in _song_norm(raw_title):
+                display_title=f"{raw_title} — {raw_artist}"
+            title=html.escape(display_title)
             duration=_song_duration(x.get("duration"))
             lines.append(f"<b>{i+1}.</b> {title} <code>{duration}</code>")
     text="\n".join(lines)
@@ -4424,13 +4529,14 @@ def search_song_query_step(m):
     if not query:
         msg=bot.send_message(m.chat.id,"❌ Please enter a song or artist name.")
         bot.register_next_step_handler(msg,search_song_query_step); return
-    bot.send_message(m.chat.id,"🔎 Searching songs...")
-    rows=_song_search_all(query,12)
+    rows=_song_search_all(query,10)
     _cleanup_song_search()
     token=uuid.uuid4().hex[:16]
     song_search_pending[token]={"uid":uid,"query":query,"results":rows,"created":time.time()}
     if not rows:
         bot.send_message(m.chat.id,"❌ No songs found. Try another title or artist.",reply_markup=localized_user_menu(uid)); return
+    if _song_maybe_require_group(m.chat.id,uid,token,query):
+        return
     _send_song_results(m.chat.id,token,0)
 
 @bot.message_handler(func=_song_auto_search_should_handle)
@@ -4438,25 +4544,39 @@ def auto_song_search_handler(m):
     if bot_locked_guard(m) or banned_guard(m): return
     query=_music_clean_text(m.text)
     if not query or len(query)<2: return
-    status=bot.send_message(m.chat.id,"🔎 Searching songs...")
     def _song_job():
-        stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",stop)
         try:
-            rows=_song_search_all(query,12)
+            rows=_song_search_all(query,10)
             _cleanup_song_search(); token=uuid.uuid4().hex[:16]
             song_search_pending[token]={"uid":str(m.from_user.id),"query":query,"results":rows,"created":time.time()}
-            stop.set()
             if not rows:
-                bot.edit_message_text("❌ No matching songs found. Try the song title, artist, or a small part of the name.",m.chat.id,status.message_id)
+                bot.send_message(m.chat.id,"❌ No songs found. Try another title or artist.",reply_markup=localized_user_menu(str(m.from_user.id)))
                 return
-            try: bot.delete_message(m.chat.id,status.message_id)
-            except Exception: pass
+            if _song_maybe_require_group(m.chat.id,str(m.from_user.id),token,query):
+                return
             _send_song_results(m.chat.id,token,0)
         except Exception as e:
-            stop.set(); print("Auto song search error:",repr(e))
-            try: bot.edit_message_text("❌ Song search failed. Please try again.",m.chat.id,status.message_id)
+            print("Auto song search error:",repr(e))
+            try: bot.send_message(m.chat.id,"❌ Song search failed. Please try again.")
             except Exception: pass
     ThreadPoolExecutor(max_workers=1).submit(_song_job)
+
+@bot.callback_query_handler(func=lambda c: c.data == "songaddgroup")
+def song_add_group_inline(call):
+    uid=str(call.from_user.id)
+    if not bool(get_setting("add_group_enabled",True)):
+        bot.answer_callback_query(call.id,"Add Group is currently optional.",show_alert=True); return
+    pending=song_group_gate_pending.get(uid)
+    if not pending:
+        bot.answer_callback_query(call.id,"Search session expired. Please search again.",show_alert=True); return
+    bot.answer_callback_query(call.id)
+    try:
+        prompt,kb=_destination_request_keyboard(uid,"group")
+        bot.send_message(uid,prompt,reply_markup=kb,parse_mode="HTML")
+    except Exception as e:
+        print("Song Add Group picker error:",repr(e))
+        bot.send_message(uid,"❌ Could not open the group picker. Please try again.")
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("songpage:"))
 def song_page_callback(call):
@@ -5452,12 +5572,13 @@ def _destination_feature_open(dtype):
 def _destination_feature_status_text():
     g=_destination_feature_open("group")
     c=_destination_feature_open("channel")
-    return f"👥 Add Group: <b>{'OPEN' if g else 'CLOSED'}</b>\n📢 Add Channel: <b>{'OPEN' if c else 'CLOSED'}</b>"
+    return f"👥 Add Group: <b>{'REQUIRED' if g else 'OPTIONAL'}</b>\n📢 Add Channel: <b>{'OPEN' if c else 'CLOSED'}</b>"
 
 @bot.message_handler(func=lambda m: m.text == "❌ Cancel")
 def destination_cancel_button(message):
     # Cancel the native Select Chat keyboard and immediately restore the user's menu.
     uid=str(message.from_user.id)
+    song_group_gate_pending.pop(uid,None)
     for rid,data in list(DESTINATION_REQUESTS.items()):
         if str(data.get("user_id"))==uid:
             DESTINATION_REQUESTS.pop(rid,None)
@@ -5551,6 +5672,9 @@ def destination_chat_shared(message):
         _upsert_destination(chat,uid)
         DESTINATION_REQUESTS.pop(rid,None)
         name=html.escape(getattr(chat,"title","") or getattr(shared,"title","") or str(chat_id))
+        # If this group was requested as the Search Song requirement, keep the
+        # already-completed search and show its 10-song picker immediately.
+        pending_song=song_group_gate_pending.pop(uid,None) if dtype=="group" else None
         kind="Group" if dtype=="group" else "Channel"
         bot.send_message(
             message.chat.id,
@@ -5561,6 +5685,15 @@ def destination_chat_shared(message):
             reply_markup=ReplyKeyboardRemove(),
             parse_mode="HTML"
         )
+        if pending_song:
+            token=str(pending_song.get("token") or "")
+            pdata=song_search_pending.get(token)
+            if pdata and str(pdata.get("uid"))==uid and pdata.get("results"):
+                _send_song_results(uid,token,0)
+            elif pending_song.get("query"):
+                # The original result set is kept in memory; this fallback is
+                # only for a stale process state and should be rare.
+                bot.send_message(uid,"❌ Your saved search expired. Please search the song again.")
     except Exception as e:
         print("Destination chat_shared error:",repr(e))
         bot.send_message(
