@@ -367,7 +367,7 @@ song_search_pending = {}
 music_cache_dirs = set()
 _MAIN_BOT_USERNAME_CACHE = ""
 SONG_SEARCH_TTL = int(os.getenv("SONG_SEARCH_TTL", "900"))
-SONG_SEARCH_PAGE_SIZE = 5
+SONG_SEARCH_PAGE_SIZE = 10
 
 DOWNLOAD_CAPTION = "Downloaded Via\n@Downloadvedioytibot"
 MP3_COVER_DEFAULT = False
@@ -4121,30 +4121,11 @@ def _jamendo_song_search(query, limit=100):
     for x in rows: x.pop("_score",None)
     return rows[:limit]
 
-def _song_query_variants(query, max_variants=4):
-    """Build tolerant search variants so small spelling mistakes still find the song."""
+def _song_query_variants(query, max_variants=1):
+    """Return only the user's query. Search Song must not call a third-party
+    correction/search API; YouTube Music itself is the search source."""
     query=_music_clean_text(query)
-    variants=[]
-    def add(v):
-        v=_music_clean_text(v)
-        if v and v.casefold() not in {x.casefold() for x in variants}: variants.append(v)
-    add(query)
-    add(re.sub(r"[^\w\s'&.-]+"," ",query))
-    # Public iTunes search is useful for correcting artist/title spelling without
-    # requiring another API key. It is metadata-only; downloads still come from
-    # the configured song source/YouTube path.
-    try:
-        r=requests.get("https://itunes.apple.com/search",params={"term":query,"media":"music","entity":"song","limit":5},timeout=8,headers={"User-Agent":"Downloadvedioytibot/1.0"})
-        if r.ok:
-            for item in (r.json() or {}).get("results") or []:
-                if not isinstance(item,dict): continue
-                artist=_music_clean_text(item.get("artistName")); title=_music_clean_text(item.get("trackName"))
-                if artist and title:
-                    add(f"{artist} {title}")
-                if len(variants)>=max_variants: break
-    except Exception as e:
-        print("Song correction lookup skipped:",repr(e))
-    return variants[:max_variants]
+    return [query] if query else []
 
 def _youtube_song_is_music(title, artist, duration=0, item=None):
     """Strictly keep music-like YouTube Music results and reject news/talk content.
@@ -4187,37 +4168,25 @@ def _youtube_song_is_music(title, artist, duration=0, item=None):
     # an obvious news/talk result above.
     return True
 
-def _youtube_song_search(query, limit=8):
-    """Search YouTube Music's Songs section only, using Railway cookies.
+def _youtube_song_search(query, limit=10):
+    """Fast YouTube Music *Songs* search using yt-dlp + Railway cookies only.
 
-    No ordinary youtube.com search is used here. This prevents queries such as
-    "War" from returning news reports, speeches, interviews or livestreams.
+    One direct YouTube Music request is used. No iTunes, RapidAPI, Jamendo or
+    ordinary YouTube search is used here. Search results are kept flat so the
+    bot responds quickly; full metadata is obtained when the selected song is
+    actually downloaded.
     """
     query=_music_clean_text(query)
     if not query: return []
     try:
-        variants=_song_query_variants(query,4)
         opts={
             "quiet":True,"no_warnings":True,"skip_download":True,
-            "extract_flat":False,"noplaylist":True,
+            "extract_flat":True,"noplaylist":True,
             "playlistend":max(10,int(limit)*2),
         }
         opts.update(_ytdlp_cookie_args())
-        rows=[]; seen=set()
-        with ThreadPoolExecutor(max_workers=min(4,len(variants))) as pool:
-            futures=[pool.submit(_youtube_song_search_one,v,limit,opts) for v in variants]
-            for fut in futures:
-                try:
-                    for item in fut.result(timeout=20) or []:
-                        url=item.get("download")
-                        if not url or url in seen: continue
-                        seen.add(url)
-                        item["_score"]=_song_similarity(query,item.get("title",""),item.get("artist",""),item.get("album",""))
-                        rows.append(item)
-                except Exception as e:
-                    print("YouTube Music search variant failed:",repr(e))
+        rows=_youtube_song_search_one(query,limit,opts)
         qn=_song_norm(query)
-        # If the query exactly identifies the artist, prefer only that artist.
         exact_artist=[x for x in rows if _song_norm(x.get("artist","")) == qn]
         if exact_artist:
             rows=exact_artist
@@ -4233,9 +4202,6 @@ def _youtube_song_search(query, limit=8):
 def _youtube_song_search_one(query, limit, opts):
     out=[]
     try:
-        # Official yt-dlp support includes YouTube Music search URLs with a
-        # selectable "songs" section. Use that section instead of ytsearch,
-        # which searches all YouTube videos and caused news/speech results.
         import urllib.parse
         q=urllib.parse.quote_plus(str(query))
         songs_sp="EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
@@ -4253,49 +4219,32 @@ def _youtube_song_search_one(query, limit, opts):
             artist=_music_clean_text(item.get("artist") or item.get("artists") or item.get("uploader") or item.get("channel") or item.get("creator"))
             album=_music_clean_text(item.get("album") or item.get("series"))
             if isinstance(artist,list): artist=_music_clean_text(", ".join(map(str,artist)))
+            # YouTube Music sometimes exposes the artist only inside the title
+            # (e.g. "Central Cee - Doja"). Recover it without another API call.
+            if not artist and " - " in title:
+                prefix=title.split(" - ",1)[0].strip()
+                if 1 <= len(prefix.split()) <= 8:
+                    artist=prefix
+            artist=artist or "Unknown artist"
             if not webpage or not title: continue
             try: dur=int(float(item.get("duration") or 0))
             except Exception: dur=0
-            # YouTube Music search results can omit artist/duration even though
-            # the selected song page contains both. Hydrate only incomplete rows
-            # so the Telegram list keeps the classic: title — artist  m:ss format.
-            if (not artist or not dur) and webpage:
-                try:
-                    detail_opts=dict(opts)
-                    detail_opts.update({"extract_flat":False,"noplaylist":True})
-                    with yt_dlp.YoutubeDL(detail_opts) as detail_ydl:
-                        detail=detail_ydl.extract_info(webpage,download=False) or {}
-                    if not artist:
-                        artist=_music_clean_text(detail.get("artist") or detail.get("artists") or detail.get("uploader") or detail.get("channel") or detail.get("creator"))
-                        if isinstance(artist,list): artist=_music_clean_text(", ".join(map(str,artist)))
-                    if not album:
-                        album=_music_clean_text(detail.get("album") or detail.get("series"))
-                    if not dur:
-                        try: dur=int(float(detail.get("duration") or 0))
-                        except Exception: dur=0
-                    if not title:
-                        title=_music_clean_text(detail.get("track") or detail.get("title") or title)
-                except Exception as e:
-                    print("YouTube Music metadata hydration failed:",repr(e))
-            artist=artist or "Unknown artist"
             if not _youtube_song_is_music(title,artist,dur,item): continue
             if not _song_is_relevant(query,title,artist,album): continue
+            score=_song_similarity(query,title,artist,album)
             out.append({
                 "id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],
                 "title":title,"artist":artist,"duration":dur,"album":album,
                 "cover":item.get("thumbnail"),"download":webpage,
                 "download_allowed":True,"license":"","source":"youtube",
-                "webpage_url":webpage,
+                "webpage_url":webpage,"_score":score,
             })
     except Exception as e:
         print("YouTube Music song search one failed:",repr(e))
     return out
 
 def _song_search_all(query, limit=12):
-    """Search Song directly on YouTube with yt-dlp and the configured cookies.
-
-    No Jamendo, RapidAPI, or other song-search API is used here.
-    """
+    """Search Song only through YouTube Music Songs with yt-dlp + cookies."""
     return _youtube_song_search(query, min(12, int(limit)))
 
 def _main_bot_username():
@@ -4381,22 +4330,25 @@ def _cleanup_song_search():
             song_search_pending.pop(token,None)
 
 def _song_results_markup(token, page, total):
-    kb=InlineKeyboardMarkup(row_width=1)
+    # Match the requested clean layout: 1-5 on the first row, 6-10 on the
+    # second row, then navigation.
+    kb=InlineKeyboardMarkup(row_width=5)
     start=page*SONG_SEARCH_PAGE_SIZE
     end=min(start+SONG_SEARCH_PAGE_SIZE,total)
     data=song_search_pending.get(token,{})
     rows=data.get("results",[])
+    buttons=[]
     for i in range(start,end):
         x=rows[i]
-        kb.add(InlineKeyboardButton(
-            f"{i+1}. {x['title'][:45]} — {x['artist'][:28]} { _song_duration(x['duration']) }",
-            callback_data=f"songpick:{token}:{i}"
-        ))
+        label=f"{i+1}"
+        buttons.append(InlineKeyboardButton(label,callback_data=f"songpick:{token}:{i}"))
+    for i in range(0,len(buttons),5):
+        kb.row(*buttons[i:i+5])
     nav=[]
-    if page>0: nav.append(InlineKeyboardButton("⬅️ Back",callback_data=f"songpage:{token}:{page-1}"))
-    if end<total: nav.append(InlineKeyboardButton("Next ➡️",callback_data=f"songpage:{token}:{page+1}"))
-    if nav: kb.row(*nav)
-    kb.add(InlineKeyboardButton("❌ Cancel",callback_data=f"songcancel:{token}"))
+    if page>0: nav.append(InlineKeyboardButton("⬅️",callback_data=f"songpage:{token}:{page-1}"))
+    nav.append(InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"))
+    if end<total: nav.append(InlineKeyboardButton("➡️",callback_data=f"songpage:{token}:{page+1}"))
+    kb.row(*nav)
     return kb
 
 def _send_song_results(chat_id, token, page=0, edit_message=None):
@@ -4404,18 +4356,23 @@ def _send_song_results(chat_id, token, page=0, edit_message=None):
     if not data: return
     rows=data.get("results",[]); total=len(rows)
     start=page*SONG_SEARCH_PAGE_SIZE; end=min(start+SONG_SEARCH_PAGE_SIZE,total)
-    lines=["🔎 <b>SONG SEARCH</b>",f"<b>Search:</b> {html.escape(data.get('query',''))}",""]
+    query=html.escape(data.get("query","") or "")
+    lines=[f"🔎 <b>{query}</b>",""]
     if not rows:
         lines.append("❌ No songs found.")
     else:
-        lines.append(f"Showing <b>{start+1}-{end}</b> of <b>{total}</b> songs")
         for i in range(start,end):
             x=rows[i]
-            lines.append(f"{i+1}. {html.escape(x['title'])} — {html.escape(x['artist'])} <code>{_song_duration(x['duration'])}</code>")
+            title=html.escape(str(x.get("title") or "Unknown title"))
+            artist=html.escape(str(x.get("artist") or "Unknown artist"))
+            duration=_song_duration(x.get("duration"))
+            lines.append(f"<b>{i+1}.</b> {title} — {artist} <code>{duration}</code>")
     text="\n".join(lines)
-    kb=_song_results_markup(token,page,total) if rows else InlineKeyboardMarkup().add(InlineKeyboardButton("❌ Cancel",callback_data=f"songcancel:{token}"))
+    kb=_song_results_markup(token,page,total) if rows else InlineKeyboardMarkup().add(InlineKeyboardButton("❌",callback_data=f"songcancel:{token}"))
     if edit_message:
-        try: bot.edit_message_text(text,edit_message.chat.id,edit_message.message_id,parse_mode="HTML",reply_markup=kb); return
+        try:
+            bot.edit_message_text(text,edit_message.chat.id,edit_message.message_id,parse_mode="HTML",reply_markup=kb)
+            return
         except Exception: pass
     bot.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
 
