@@ -694,16 +694,6 @@ def _youtube_duration_seconds(link):
     if not link or detect_platform(link) != "youtube":
         return None
     try:
-        if RAPIDAPI_YT_KEY:
-            vid=_extract_youtube_video_id(link)
-            if vid:
-                data=_rapidapi_youtube_details(vid)
-                d=_rapid_duration(data)
-                if d is not None:
-                    return int(d)
-    except Exception as e:
-        print("YouTube duration RapidAPI probe failed:",repr(e))
-    try:
         opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":12}
         extra=_youtube_extractor_args()
         if extra: opts["extractor_args"]=extra
@@ -3567,8 +3557,10 @@ def _youtube_ffmpeg_available():
 
 def _youtube_direct_formats(quality):
     target=int(quality or 720)
+    # Combined/progressive media avoids a second stream + FFmpeg merge and is much
+    # faster to deliver. If unavailable, yt-dlp falls back to the best split pair.
     if _ffmpeg_bin():
-        return [f"bestvideo[height<={target}]+bestaudio/best[height<={target}]/best", f"best[height<={target}]/best"]
+        return [f"best[height<={target}]/best", f"bestvideo[height<={target}]+bestaudio/best[height<={target}]/best"]
     return [f"best[height<={target}]/best"]
 
 def _pinterest_direct_media(link, tmp_dir):
@@ -3679,7 +3671,9 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
     common["retries"]=10; common["fragment_retries"]=10; common["extractor_retries"]=5; common["sleep_interval_requests"]=0
     attempts=[]
     if platform=="youtube":
-        for client in (None,"mweb","web_safari","android","tv","ios","web_embedded","web_creator"):
+        # Keep the first path fast. Only try one alternate client after a real
+        # extraction failure instead of walking a long 8-client ladder.
+        for client in (None,"mweb"):
             for yfmt in _youtube_direct_formats(quality):
                 o=dict(common); o["format"]=yfmt; o["match_filter"]=_youtube_duration_filter(max_duration)
                 if client:
@@ -3739,17 +3733,6 @@ def download_media(chat_id, link, message_id, quality=None):
     if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
         max_seconds=YOUTUBE_FREE_MAX_MINUTES*60
     quality=quality or (users.get(uid,{}).get("premium_quality") if priority else "720") or ("1080" if quick else "720")
-    # Final access check inside the worker as well, so links queued through join/verification
-    # callbacks follow exactly the same YouTube 12-minute policy.
-    if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
-        duration=_youtube_duration_seconds(link)
-        if duration and duration>YOUTUBE_FREE_MAX_MINUTES*60:
-            text=f"💎 <b>Premium Required</b>\n\nThis YouTube video is {duration//60}:{duration%60:02d}. Free users can download YouTube videos up to <b>{YOUTUBE_FREE_MAX_MINUTES} minutes</b>."
-            try:
-                if message_id: bot.edit_message_text(text,chat_id,message_id,parse_mode="HTML")
-                else: bot.send_message(chat_id,text,parse_mode="HTML")
-            except Exception: pass
-            return
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     # Do not send/edit a visible "Preparing..." message. Telegram's native
     # upload action is shown immediately and is refreshed until the real media
@@ -3798,8 +3781,8 @@ def download_media(chat_id, link, message_id, quality=None):
             cookie_args=_ytdlp_cookie_args() if platform=="youtube" else {}
             opts={
                 "quiet":True,"no_warnings":True,"noplaylist":True,
-                "retries":5 if quick else 6,"fragment_retries":6 if quick else 8,"extractor_retries":4 if quick else 5,
-                "socket_timeout":25 if quick else 40,
+                "retries":2 if quick else 2,"fragment_retries":3 if quick else 3,"extractor_retries":2,
+                "socket_timeout":12 if quick else 18,
                 "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
                 "concurrent_fragment_downloads":48 if is_quick_access(uid) else (32 if premium or _is_trial_active(uid) else 20),
                 "http_chunk_size": 24 * 1024 * 1024 if is_quick_access(uid) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
@@ -4208,59 +4191,75 @@ def _parse_duration_value(value):
     return 0
 
 def _youtube_song_search(query, limit=10):
-    """Fast YouTube Music *Songs* search with real title/channel/duration metadata.
+    """Very fast YouTube Music *Songs* search.
 
-    The dedicated music-search URL is used so ordinary news, speeches and generic
-    videos are not the search source. We intentionally do not use a correction API.
+    Search is intentionally metadata-light: YouTube Music's Songs renderer already
+    supplies title/artist/duration for most results, so resolving every result as a
+    separate video would make search unnecessarily slow. Cookies are NOT needed for
+    public search and are therefore not loaded here.
     """
     query=_music_clean_text(query)
     if not query: return []
     try:
-        want=max(10,int(limit))
+        want=max(1,min(10,int(limit)))
         opts={
             "quiet":True,
             "no_warnings":True,
             "skip_download":True,
-            # Do not use extract_flat here: Music search entries need their
-            # duration/uploader metadata resolved by yt-dlp.
-            "extract_flat":False,
+            "extract_flat":"in_playlist",
             "noplaylist":True,
-            "playlistend":max(60,want*8),
-            "socket_timeout":8,
+            "playlistend":max(10,want),
+            "socket_timeout":4,
+            "retries":1,
+            "fragment_retries":1,
+            "extractor_retries":1,
+            "cachedir":False,
         }
-        opts.update(_ytdlp_cookie_args())
-        rows=_youtube_song_search_one(query,max(60,want*8),opts)
-        # First take strict matches. If YouTube's metadata is incomplete (common
-        # for independent artists), fill the remaining slots from music-only
-        # candidates using token overlap instead of returning an empty/short list.
-        strict=[x for x in rows if _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album",""))]
-        strict_ids={str(x.get("id") or x.get("download") or "") for x in strict}
-        fallback=[]
-        qwords=[w for w in _song_norm(query).split() if len(w)>=2]
+        # Search does not require authenticated cookies. Avoiding cookies here
+        # removes a needless auth/session step and prevents stale cookies from
+        # breaking public YouTube Music search.
+        rows=_youtube_song_search_one(query,want,opts)
+        # If the first page has fewer than requested results, do one cheap retry
+        # with a larger playlist window. This is still only a single HTTP search
+        # pass and does not resolve each video individually.
+        if len(rows)<want:
+            opts2=dict(opts); opts2["playlistend"]=max(20,want*2); opts2["socket_timeout"]=5
+            more=_youtube_song_search_one(query,max(20,want*2),opts2)
+            seen={str(x.get("id") or x.get("download")) for x in rows}
+            rows += [x for x in more if str(x.get("id") or x.get("download")) not in seen]
+
+        qn=_song_norm(query)
+        qwords=[w for w in qn.split() if len(w)>=2]
+        scored=[]
         for x in rows:
-            key=str(x.get("id") or x.get("download") or "")
-            if key in strict_ids: continue
-            field=_song_norm(f"{x.get('title','')} {x.get('artist','')}")
+            title=x.get("title",""); artist=x.get("artist",""); album=x.get("album","")
+            field=_song_norm(f"{title} {artist} {album}")
+            # The source is already the dedicated Songs section. Keep clean music
+            # candidates, but strongly prioritize exact artist/title matches.
+            score=_song_similarity(query,title,artist,album)
             overlap=sum(1 for w in qwords if re.search(rf"(?<!\w){re.escape(w)}(?!\w)",field))
-            if overlap:
-                x["_score"]=max(int(x.get("_score",0)),overlap*700)
-                fallback.append(x)
-        rows=strict+fallback
-        rows.sort(key=lambda x:x.get("_score",0),reverse=True)
-        seen=set(); clean=[]
-        for x in rows:
+            score += overlap*300
+            if qn and qn==_song_norm(artist): score += 12000
+            elif qn and qn in _song_norm(artist): score += 6000
+            if qn and qn==_song_norm(title): score += 5000
+            x["_score"]=score
+            scored.append(x)
+        scored.sort(key=lambda x:x.get("_score",0),reverse=True)
+        clean=[]; seen=set()
+        for x in scored:
             key=str(x.get("id") or x.get("download") or "")
-            if key and key in seen: continue
-            if key: seen.add(key)
-            x.pop("_score",None)
-            # Never expose placeholder metadata in the search UI.
-            if not x.get("title") or not x.get("download"):
+            if not key or key in seen: continue
+            if not x.get("title") or not x.get("download"): continue
+            # Do not show obvious talk/news content. The Songs section is the
+            # primary filter; this is only a final safety filter.
+            if not _youtube_song_is_music(x.get("title",""),x.get("artist",""),x.get("duration",0),x):
                 continue
-            clean.append(x)
+            seen.add(key); x.pop("_score",None); clean.append(x)
             if len(clean)>=want: break
         return clean
     except Exception as e:
-        print("YouTube Music song search failed:",repr(e)); return []
+        print("YouTube Music fast search failed:",repr(e)); return []
+
 
 def _youtube_song_search_one(query, limit, opts):
     out=[]
@@ -4280,29 +4279,34 @@ def _youtube_song_search_one(query, limit, opts):
             if not webpage and vid and len(vid)==11:
                 webpage=f"https://www.youtube.com/watch?v={vid}"
             title=_music_clean_text(item.get("track") or item.get("title") or item.get("fulltitle"))
-            # YouTube/YouTube Music exposes artist/channel through different
-            # metadata fields depending on the renderer and client.
-            channel=_music_clean_text(
-                item.get("artist") or item.get("artists") or item.get("channel") or
-                item.get("uploader") or item.get("creator") or item.get("channel_name")
-            )
-            if isinstance(item.get("artists"),list):
-                channel=" & ".join(_music_clean_text(v) for v in item.get("artists") if _music_clean_text(v))
+            channel=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator") or item.get("channel_name"))
+            artists=item.get("artists")
+            if isinstance(artists,list):
+                names=[]
+                for v in artists:
+                    if isinstance(v,dict): v=v.get("name") or v.get("artist") or v.get("title")
+                    v=_music_clean_text(v)
+                    if v: names.append(v)
+                if names: channel=" & ".join(names)
             album=_music_clean_text(item.get("album") or item.get("series"))
             artist=_song_parse_artists(title,channel) or channel
             if not webpage or not title: continue
             dur=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
+            # Flat YouTube Music results may expose duration as a numeric string.
+            if not dur:
+                try: dur=int(float(item.get("duration") or 0))
+                except Exception: dur=0
             if not _youtube_song_is_music(title,artist,dur,item): continue
-            if not _song_is_relevant(query,title,artist,album): continue
+            if not _song_is_relevant(query,title,artist,album):
+                # Artist metadata can be absent on some independent tracks. The
+                # dedicated Songs section is still authoritative, so retain them
+                # when the title itself contains the full query.
+                if _song_norm(query) not in _song_norm(title): continue
             score=_song_similarity(query,title,artist,album)
-            qn=_song_norm(query); an=_song_norm(artist); tn=_song_norm(title)
-            if qn and qn==an: score+=10000
-            elif qn and qn in an: score+=5000
-            if qn and qn==tn: score+=4000
-            # If yt-dlp exposes a clean channel/uploader, prefer it as artist
-            # rather than ever printing "Unknown artist".
-            if not artist:
-                artist=channel or ""
+            qn=_song_norm(query)
+            if qn and qn==_song_norm(artist): score+=10000
+            elif qn and qn in _song_norm(artist): score+=5000
+            if qn and qn==_song_norm(title): score+=4000
             out.append({
                 "id":vid or hashlib.sha1(webpage.encode()).hexdigest()[:16],
                 "title":title,
