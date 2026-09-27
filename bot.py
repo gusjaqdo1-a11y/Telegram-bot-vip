@@ -7221,12 +7221,16 @@ def _is_force_join_member(user_id):
 
 
 def _send_force_join_success(user_id):
-    """Send the saved-language welcome + localized main menu after verification."""
+    """Send the saved-language /start welcome and then the localized main menu.
+
+    The Force Join flow must not depend on an optional/undefined welcome markup
+    helper: if that helper is missing, Python raises before send_message() runs,
+    which makes /start and CONFIRM appear completely silent.
+    """
     uid = str(user_id)
     _main_bot.send_message(
         int(user_id),
         render_start_message(uid),
-        reply_markup=welcome_destination_markup(),
         parse_mode="HTML"
     )
     _main_bot.send_message(
@@ -10387,7 +10391,6 @@ def multi_checkjoin(call):
                 bot.send_message(
                     user_id,
                     render_start_message(str(user_id)),
-                    reply_markup=welcome_destination_markup(),
                     parse_mode="HTML"
                 )
                 bot.send_message(user_id, "👇 <b>Main Menu</b>", reply_markup=localized_user_menu(str(user_id)), parse_mode="HTML")
