@@ -21,7 +21,6 @@ import html
 import urllib.parse
 import contextvars
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     from cryptography.fernet import Fernet
 except Exception:
@@ -171,6 +170,14 @@ RAPIDAPI_IG_KEY = os.getenv("RAPIDAPI_IG_KEY", "").strip()
 SAVEAPI_KEY = (os.getenv("SAVEAPI_KEY") or os.getenv("SAVE_API_KEY") or "").strip()
 SAVEAPI_URL = (os.getenv("SAVEAPI_URL") or os.getenv("SAVE_API_URL") or "https://api.saveapi.org/v1/download").strip()
 SAVEAPI_TIMEOUT = int(os.getenv("SAVEAPI_TIMEOUT", "45"))
+
+# AD gate configuration
+AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").strip().rstrip("/")
+AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","https://www.profitableratecpmnetwork.com/zniv39az4q?key=e7ab3c91928f44615e99bf64ff2fe97c").strip()
+AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
+AD_GATE_SECONDS=max(1,int(os.getenv("AD_GATE_SECONDS","5")))
+AD_HTTP_HOST=os.getenv("AD_HTTP_HOST","0.0.0.0")
+AD_HTTP_PORT=int(os.getenv("PORT",os.getenv("AD_HTTP_PORT","8080")))
 
 MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "64"))
 
@@ -518,15 +525,13 @@ song_group_gate_pending = {}
 # Downloaded video directories kept briefly so the MUSIC button converts the exact
 # video the user already received instead of downloading the source again.
 music_cache_dirs = set()
-# Managed Video Downloader MUSIC buttons keep the exact downloaded file.
-managed_video_music_pending = {}
 _MAIN_BOT_USERNAME_CACHE = ""
 SONG_SEARCH_TTL = int(os.getenv("SONG_SEARCH_TTL", "900"))
 SONG_SEARCH_PAGE_SIZE = 10
 
 DOWNLOAD_CAPTION = "Downloaded Via\n@Downloadvedioytibot"
 MANAGED_POWERED_BY = "Powered by:\n@Downloadvedioytibot"
-MP3_COVER_DEFAULT = False
+MP3_COVER_DEFAULT = True
 
 
 # User-created downloader bots. Telegram's Managed Bots system creates the bot
@@ -636,25 +641,6 @@ ADS_ENABLED = False
 ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = ""
-
-# ================= MANAGED-BOT ADSTERRA / REMOVE-ADS SYSTEM =================
-# SmartLink is a URL-based Adsterra unit. The bot does not embed Adsterra
-# JavaScript inside Telegram; it opens the SmartLink in Telegram's browser.
-# The optional gate endpoint below lets the bot detect that the SmartLink URL
-# was opened, then immediately releases the pending download/search.
-ADSTERRA_SMARTLINK_URL = os.getenv("ADSTERRA_SMARTLINK_URL", "https://www.profitableratecpmnetwork.com/zniv39az4q?key=e7ab3c91928f44615e99bf64ff2fe97c").strip()
-AD_GATE_BASE_URL = (os.getenv("AD_GATE_BASE_URL") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-if not AD_GATE_BASE_URL:
-    _railway_domain = str(os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().strip("/")
-    if _railway_domain:
-        AD_GATE_BASE_URL = "https://" + _railway_domain
-AD_SHOW_INTERVAL_SECONDS = max(60, int(os.getenv("AD_SHOW_INTERVAL_SECONDS", "600")))
-REMOVE_ADS_STARS_DEFAULT = max(1, int(os.getenv("REMOVE_ADS_STARS", "50")))
-REMOVE_ADS_PLAN_DEFAULTS = {"3": 50, "6": 90, "12": 150}
-AD_GATE_PORT = int(os.getenv("PORT", "8080"))
-managed_ad_pending = {}
-managed_ad_pending_lock = threading.RLock()
-managed_ad_http_server = None
 
 # Premium/download state
 premium_pending = {}
@@ -1288,8 +1274,6 @@ except Exception as e:
 
 settings_col = db1["settings"]
 managed_bots_col = db1["managed_bots"]
-managed_ad_users_col = db1["managed_ad_users"]
-managed_ad_clicks_col = db1["managed_ad_clicks"]
 creator_sessions_col = db1["creator_sessions"]
 premium_logs_col = db1["premium_logs"]
 activity_col = db1["activity_logs"]
@@ -1303,6 +1287,7 @@ song_stats_col = db2["song_stats"]
 balance_freezes_col = db1["balance_freezes"]
 # Support tickets live in the second database; initialize only after db2 exists.
 SUPPORT_TICKETS_COL = db2["support_tickets"]
+ad_gates_col = db1["ad_gates"]
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -1310,6 +1295,100 @@ def get_setting(key, default):
 
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
+
+def _ad_enabled_for(uid, bot_id=None):
+    if is_admin(uid) or is_quick_access(uid): return True
+    try:
+        row=ad_gates_col.find_one({"user_id":str(uid),"status":"opened","cooldown_until":{"$gt":datetime.now(timezone.utc)}},sort=[("cooldown_until",-1)])
+        return bool(row)
+    except Exception as e:
+        print("Ad pass lookup failed:",repr(e)); return False
+
+
+def _ad_gate_keyboard(token,premium_url=None):
+    url=premium_url or (_creator_bot_url() if "_creator_bot_url" in globals() else "https://t.me/Downloadvedioytibot")
+    kb=InlineKeyboardMarkup(row_width=2)
+    kb.add(InlineKeyboardButton("▶️ Watch Ad",url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"),InlineKeyboardButton("💎 Premium",url=url))
+    return kb
+
+
+def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
+    if _ad_enabled_for(uid,bot_id): return False
+    token=secrets.token_urlsafe(18).replace("-","").replace("_","")[:32]
+    now=datetime.now(timezone.utc)
+    ad_gates_col.insert_one({"token":token,"user_id":str(uid),"chat_id":int(chat_id),"bot_id":str(bot_id or "main"),"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","created_at":now})
+    try:
+        msg=bot_obj.send_message(chat_id,"To continue, watch a short ad (5 sec) or buy /premium",reply_markup=_ad_gate_keyboard(token,premium_url))
+        ad_gates_col.update_one({"token":token},{"$set":{"message_id":int(msg.message_id)}})
+        return True
+    except Exception as e:
+        ad_gates_col.delete_one({"token":token}); print("Ad gate send failed:",repr(e)); return True
+
+
+def _dispatch_ad_action(doc):
+    try:
+        uid=str(doc.get("user_id") or ""); chat_id=int(doc.get("chat_id")); bid=str(doc.get("bot_id") or "main"); action=str(doc.get("action") or ""); payload=doc.get("payload") or {}
+        if bid=="main":
+            if action=="download":
+                link=str(payload.get("link") or ""); quality=payload.get("quality")
+                if link: download_executor_for(uid).submit(_download_request_job,chat_id,link,quality,uid)
+            elif action=="song_search":
+                q=_music_clean_text(payload.get("query")); rows=_song_search_all(q,30) if q else []
+                _cleanup_song_search(); token=uuid.uuid4().hex[:16]; song_search_pending[token]={"uid":uid,"query":q,"results":rows,"created":time.time()}
+                if rows: _send_song_results(chat_id,token,0)
+                else: bot.send_message(chat_id,"❌ No matching songs found. Try the song title, artist, or a small part of the name.")
+            elif action=="song_download":
+                song=payload.get("song") or {}; url=str(song.get("download") or "")
+                if url:
+                    status=bot.send_message(chat_id,"⏳ Downloading the full track...")
+                    download_executor_for(uid).submit(convert_link_to_mp3,chat_id,url,status.message_id,None,None,str(song.get("title") or ""),str(song.get("artist") or ""))
+            return
+        d=managed_bots_col.find_one({"bot_id":bid}); mb=managed_bot_objects.get(bid) or (_managed_bot_start_instance(d) if d else None)
+        if not mb: return
+        if action=="download":
+            link=str(payload.get("link") or "")
+            if link:
+                ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,download_media,chat_id,link,None,None)
+        elif action=="music_search":
+            q=_music_clean_text(payload.get("query"))
+            if q: _run_managed_music_search(mb,chat_id,q,uid,bid)
+        elif action=="music_download":
+            ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,_managed_download_song,mb,chat_id,payload.get("song") or {},uid,bid)
+    except Exception as e: print("Ad action dispatch failed:",repr(e))
+
+
+class _AdGateHandler(BaseHTTPRequestHandler):
+    def log_message(self,fmt,*args): return
+    def do_GET(self):
+        path=urllib.parse.urlparse(self.path).path
+        if path in {"/","/health"}:
+            body=b"ok"; self.send_response(200); self.send_header("Content-Type","text/plain"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+        m=re.fullmatch(r"/ad/open/([A-Za-z0-9]{8,64})",path)
+        if not m: self.send_response(404); self.end_headers(); return
+        row=ad_gates_col.find_one({"token":m.group(1),"status":"pending"})
+        if not row:
+            self.send_response(410); self.send_header("Content-Type","text/html; charset=utf-8"); self.end_headers(); self.wfile.write(b"<h3>Ad link expired or already used.</h3>"); return
+        now=datetime.now(timezone.utc); until=now+timedelta(seconds=AD_COOLDOWN_SECONDS)
+        ad_gates_col.update_one({"_id":row["_id"],"status":"pending"},{"$set":{"status":"opened","opened_at":now,"cooldown_until":until}})
+        mid=row.get("message_id"); bid=str(row.get("bot_id") or "main")
+        try:
+            if mid:
+                obj=bot if bid=="main" else managed_bot_objects.get(bid)
+                if obj: obj.delete_message(int(row.get("chat_id")),int(mid))
+        except Exception as e: print("Ad gate delete failed:",repr(e))
+        threading.Timer(AD_GATE_SECONDS,lambda:_dispatch_ad_action(row)).start()
+        html_body=(f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickDL</title><style>body{{font-family:Arial;background:#0b1220;color:#fff;text-align:center;padding:50px 18px}}.box{{max-width:460px;margin:auto;background:#111b2e;border-radius:20px;padding:28px}}#n{{font-size:46px;font-weight:800}}</style></head><body><div class="box"><h2>QuickDL</h2><p>Short ad gate</p><div id="n">{AD_GATE_SECONDS}</div><p>Your download/search will continue automatically.</p></div><script>let n={AD_GATE_SECONDS},e=document.getElementById('n');let t=setInterval(()=>{{n--;e.textContent=n;if(n<=0){{clearInterval(t);location.href={json.dumps(AD_SMARTLINK_URL)};}}}},1000);</script></body></html>''').encode()
+        self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(html_body)
+
+
+def _start_ad_http_server():
+    try:
+        server=ThreadingHTTPServer((AD_HTTP_HOST,AD_HTTP_PORT),_AdGateHandler)
+        threading.Thread(target=server.serve_forever,daemon=True,name="ad-gate-http").start()
+        print(f"Ad gate server listening on {AD_HTTP_HOST}:{AD_HTTP_PORT}")
+    except Exception as e: print("Ad gate HTTP server failed:",repr(e))
+
 
 def touch_user(uid, save=True):
     uid=str(uid)
@@ -4241,26 +4320,17 @@ def download_media(chat_id, link, message_id, quality=None):
             start_action_heartbeat(chat_id,upload_action,upload_stop)
             markup=None
             if _is_video_file(path):
-                managed_meta=_ACTIVE_MANAGED_META.get() or {}
-                bid=str(managed_meta.get("bot_id") or "")
-                if bid:
-                    token=uuid.uuid4().hex[:18]
-                    managed_video_music_pending.setdefault(bid,{})[token]={"uid":uid,"link":link,"local_source":path,"cache_dir":tmp,"source_title":source_title,"source_artist":source_artist,"created":time.time()}
-                    markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎵 MUSIC",callback_data=f"mmusic:{bid}:{token}")]])
-                else:
-                    token=uuid.uuid4().hex[:18]
-                    music_pending[token]={"uid":uid,"link":link,"local_source":path,"cache_dir":tmp,"source_title":source_title,"source_artist":source_artist,"created":time.time()}
-                    music_cache_dirs.add(tmp)
-                    markup=InlineKeyboardMarkup([[InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}")]])
+                token=uuid.uuid4().hex[:24]
+                music_pending[token]={"uid":uid,"link":link,"local_source":path,"cache_dir":tmp,"created":time.time(),"source_title":source_title,"source_artist":source_artist,"in_progress":False,"bot_id":str((_ACTIVE_MANAGED_META.get() or {}).get("bot_id") or "main")}
+                music_cache_dirs.add(tmp)
+                markup=InlineKeyboardMarkup(row_width=1)
+                markup.add(InlineKeyboardButton("🎵 MUSIC",callback_data=f"music:{token}"))
             try:
                 _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup,platform=platform,link=link); sent+=1
                 if _is_video_file(path):
                     powered=_active_powered_text()
                     if powered:
-                        try:
-                            # Keep this as plain text: Telegram HTML does not support <br>,
-                            # and custom-entity parsing here previously caused 400 errors.
-                            bot.send_message(chat_id, powered)
+                        try: bot.send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
                         except Exception as e: print("Managed powered-by send failed:",repr(e))
             finally:
                 upload_stop.set()
@@ -4290,12 +4360,7 @@ def download_media(chat_id, link, message_id, quality=None):
             except Exception: pass
     finally:
         action_stop.set()
-        managed_active_cache = any(
-            str(x.get("cache_dir")) == str(tmp)
-            for rows in managed_video_music_pending.values()
-            for x in rows.values()
-        )
-        active_cache = any(str(x.get("cache_dir")) == str(tmp) for x in music_pending.values()) or managed_active_cache
+        active_cache = any(str(x.get("cache_dir")) == str(tmp) for x in music_pending.values())
         if not active_cache:
             shutil.rmtree(tmp,ignore_errors=True)
         else:
@@ -4807,7 +4872,7 @@ def _youtube_music_http_search(query, limit=30):
             if qn==_song_norm(artist): score+=12000
             elif qn and qn in _song_norm(artist): score+=6000
             if qn==_song_norm(title): score+=5000
-            rows.append({"id":video_id,"title":title,"artist":artist,"channel":artist,"duration":duration,
+            rows.append({"id":video_id,"title":title,"artist":artist,"duration":duration,
                          "album":album,"cover":"","download":webpage,"download_allowed":True,
                          "license":"","source":"youtube","webpage_url":webpage,"_score":score})
             seen.add(video_id)
@@ -5038,7 +5103,7 @@ def _rapidapi_youtube_song_search(query, limit=30):
                     if any(x in low for x in ("official music","official audio","music video","audio")): score+=500
                     webpage=f"https://www.youtube.com/watch?v={vid}"
                     cover=text_value(obj,("thumbnail","thumbnailUrl","thumbnailUrlHigh","thumbnailUrlMedium")) or _youtube_artwork_url(vid)
-                    rows.append({"id":vid,"title":title,"artist":artist,"channel":channel,"duration":duration,
+                    rows.append({"id":vid,"title":title,"artist":artist,"duration":duration,
                                  "album":"","cover":cover,
                                  "download":webpage,"download_allowed":True,"license":"",
                                  "source":"youtube","webpage_url":webpage,"_score":score})
@@ -5054,68 +5119,36 @@ def _rapidapi_youtube_song_search(query, limit=30):
 
 
 def _song_search_all(query, limit=30):
-    """High-recall YouTube music search with parallel fast providers.
-
-    RapidAPI remains the preferred provider for modern/current songs, while the
-    YouTube Music HTML and yt-dlp Music search paths run as fallbacks in parallel
-    so a slow provider does not hold the whole Search Song flow hostage.
-    """
-    want=max(10,min(30,int(limit))); query=_music_clean_text(query)
-    if not query: return []
-    jobs=[]
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        if RAPIDAPI_YT_KEY:
-            jobs.append(pool.submit(_rapidapi_youtube_song_search,query,want))
-        jobs.append(pool.submit(_youtube_music_http_search,query,want))
-        jobs.append(pool.submit(_youtube_music_ytmsearch,query,want))
-        results=[]
-        for fut in jobs:
-            try: results.extend(fut.result(timeout=9) or [])
-            except Exception as e: print("Parallel song provider failed:",repr(e))
+    """Fast, high-recall YouTube music search. No Jamendo and no normal-video-only search."""
+    want=max(10,min(30,int(limit)))
+    # RapidAPI is primary. Its response is merged with the dedicated YouTube Music
+    # Songs shelf so short/partial API pages do not produce only 2-7 choices.
+    try: primary=_rapidapi_youtube_song_search(query,want)
+    except Exception as e:
+        print("RapidAPI primary search failed:",repr(e)); primary=[]
+    try: fallback=_youtube_music_http_search(query,want)
+    except Exception as e:
+        print("YouTube Music HTTP fallback failed:",repr(e)); fallback=[]
     merged=[]; seen=set()
-    for x in results:
-        if not isinstance(x,dict): continue
+    for x in primary+fallback:
         key=str(x.get("id") or x.get("download") or "")
         if not key or key in seen: continue
-        title=_music_clean_text(x.get("title")); dur=_parse_duration_value(x.get("duration"))
-        if not title or dur<=0 or not _youtube_song_is_music(title,x.get("artist") or "",dur,x): continue
-        # Keep fuzzy relevance, but for multi-word artist searches require the
-        # complete query phrase/artist or a close typo match rather than Central/Cee alone.
-        if not _song_is_relevant(query,title,x.get("artist") or "",x.get("album") or ""):
-            continue
-        x=dict(x); x["title"]=title; x["duration"]=dur; x["download_allowed"]=True; x.setdefault("source","youtube")
-        x["_score"]=_song_similarity(query,title,x.get("artist") or "",x.get("album") or "")
-        qn=_song_norm(query); an=_song_norm(x.get("artist") or ""); tn=_song_norm(title)
-        if qn==an: x["_score"]+=20000
-        elif qn and qn in an: x["_score"]+=10000
-        if qn==tn: x["_score"]+=12000
+        if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
         seen.add(key); merged.append(x)
-    # If the query exactly names an artist and we have artist-labelled rows,
-    # keep only that artist (including collaborations). This prevents a search
-    # such as "Central Cee" from returning videos merely mentioning Central/Cee.
-    qn=_song_norm(query)
-    qwords=qn.split()
-    if len(qwords)>=2:
-        artist_rows=[x for x in merged if qn==_song_norm(x.get("artist") or "") or qn in _song_norm(x.get("artist") or "")]
-        if artist_rows:
-            merged=artist_rows
-
-    # If the parallel paths returned too few results, make one broader public
-    # YouTube search as a last resort. This is deliberately after the fast paths.
+    # Native ytmsearch is only used when the first two fast paths still have too
+    # few results. This keeps normal searches fast while preserving recall.
     if len(merged)<want:
-        try:
-            extra=_youtube_song_search(query,want)
-            for x in extra:
-                key=str(x.get("id") or x.get("download") or "")
-                if not key or key in seen: continue
-                if _parse_duration_value(x.get("duration"))<=0: continue
-                if not _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album","")): continue
-                x=dict(x); x["_score"]=_song_similarity(query,x.get("title",""),x.get("artist",""),x.get("album","")); seen.add(key); merged.append(x)
-                if len(merged)>=want: break
-        except Exception as e: print("Last-resort song search failed:",repr(e))
-    if len(qwords)>=2:
-        artist_rows=[x for x in merged if qn==_song_norm(x.get("artist") or "") or qn in _song_norm(x.get("artist") or "")]
-        if artist_rows: merged=artist_rows
+        try: extra=_youtube_music_ytmsearch(query,want)
+        except Exception as e:
+            print("YouTube Music ytmsearch fallback failed:",repr(e)); extra=[]
+        for x in extra:
+            key=str(x.get("id") or x.get("download") or "")
+            if not key or key in seen: continue
+            seen.add(key); merged.append(x)
+            if len(merged)>=want: break
+    # Re-rank the merged set so exact artist/title matches come first.
+    for x in merged:
+        x["_score"]=_song_similarity(query,x.get("title",""),x.get("artist",""),x.get("album",""))
     merged.sort(key=lambda x:x.get("_score",0),reverse=True)
     for x in merged: x.pop("_score",None)
     return merged[:want]
@@ -5131,36 +5164,28 @@ def _main_bot_username():
     return "bot"
 
 def _song_audio_metadata(song):
-    """Return clean Telegram audio metadata: title only in title, artist in performer."""
-    song=song or {}
+    """Return clean Telegram audio title/artist metadata from a YouTube search result."""
     raw_title=_music_clean_text(song.get("audio_title") or song.get("title") or "")
-    raw_artist=_music_clean_text(song.get("audio_artist") or song.get("artist") or song.get("artist_name") or "")
-    if not raw_artist or _song_norm(raw_artist) in {"unknown","unknown artist","youtube","youtube music"}:
-        raw_artist=_music_clean_text(song.get("channel") or song.get("channel_name") or song.get("uploader") or song.get("creator") or "")
-    # Common YouTube music format: ARTIST - TITLE (Music Video).
+    raw_artist=_music_clean_text(song.get("audio_artist") or song.get("artist") or "")
     m=re.match(r"^(.{1,140}?)\s+[-–—]\s+(.+)$",raw_title)
     if m:
         left=_music_clean_text(m.group(1)); right=_music_clean_text(m.group(2))
-        artist_parts=[_music_clean_text(x).strip(" -–—") for x in re.split(r"\s+(?:x|&|ft\.?|feat\.?|featuring)\s+",left,flags=re.I) if _music_clean_text(x).strip(" -–—")]
-        parsed_left=" & ".join(artist_parts)
+        parsed_left=_song_parse_artists(left,"")
         if parsed_left:
-            if not raw_artist or _song_norm(raw_artist) in {"youtube","unknown","unknown artist"}: raw_artist=parsed_left
+            if not raw_artist or _song_norm(raw_artist) in {"youtube","unknown","unknown artist"}:
+                raw_artist=parsed_left
             raw_title=right
-    # Clean presentation suffixes from the actual Telegram title.
-    raw_title=re.sub(r"\s*(?:\[|\()\s*(?:official\s+)?(?:music\s+video|official\s+video|official\s+audio|audio|lyrics?|lyric\s+video|visualizer|video)\s*(?:\]|\))", "", raw_title, flags=re.I)
+    raw_title=re.sub(r"\s*(?:\[|\()\s*(?:official\s+)?(?:music\s+video|official\s+video|official\s+audio|audio|lyrics?|lyric\s+video|visualizer|video)\s*(?:\]|\))\s*$", "", raw_title, flags=re.I)
     raw_title=re.sub(r"\s+", " ", raw_title).strip(" -–—[]()")
-    # Featured artist belongs in performer, not in the song title.
-    fm=re.search(r"\b(?:ft\.?|feat\.?|featuring)\s+(.+)$",raw_title,flags=re.I)
+    fm=re.search(r"\b(?:ft\.?|feat\.?|featuring)\s+([^\[\]()]+)",raw_title,flags=re.I)
     if fm:
-        featured=_music_clean_text(fm.group(1)).strip(" -–—[]()")
+        featured=_music_clean_text(fm.group(1)).strip(" -–—")
         if featured:
-            raw_title=_music_clean_text(raw_title[:fm.start()]).strip(" -–—[]()")
             existing=[x.strip() for x in re.split(r"\s*&\s*",raw_artist) if x.strip()]
-            if _song_norm(featured) not in {_song_norm(x) for x in existing}: raw_artist=(raw_artist+" & " if raw_artist else "")+featured
-    if _song_norm(raw_artist) in {"unknown","unknown artist","youtube","youtube music"}: raw_artist=""
-    if not raw_artist:
-        parsed=_song_parse_artists(raw_title, "")
-        if parsed: raw_artist=parsed
+            if _song_norm(featured) not in {_song_norm(x) for x in existing}:
+                raw_artist=(raw_artist+" & " if raw_artist else "")+featured
+    if _song_norm(raw_artist) in {"unknown", "unknown artist", "youtube", "youtube music"}:
+        raw_artist = ""
     return raw_title or _music_clean_text(song.get("title")) or "Unknown title", raw_artist or "Unknown artist"
 
 def _default_song_caption(song):
@@ -5363,6 +5388,8 @@ def search_song_query_step(m):
     if not query:
         msg=bot.send_message(m.chat.id,"❌ Please enter a song or artist name.")
         bot.register_next_step_handler(msg,search_song_query_step); return
+    if not _ad_enabled_for(uid,"main"):
+        if _send_ad_gate(bot,uid,m.chat.id,"main","song_search",{"query":query},premium_url="https://t.me/Downloadvedioytibot"): return
     def _job():
         try:
             rows=_song_search_all(query,30)
@@ -5387,6 +5414,8 @@ def auto_song_search_handler(m):
     if bot_locked_guard(m) or banned_guard(m): return
     query=_music_clean_text(m.text)
     if not query or len(query)<2: return
+    if not _ad_enabled_for(str(m.from_user.id),"main"):
+        if _send_ad_gate(bot,str(m.from_user.id),m.chat.id,"main","song_search",{"query":query},premium_url="https://t.me/Downloadvedioytibot"): return
     def _song_job():
         try:
             rows=_song_search_all(query,30)
@@ -5461,6 +5490,9 @@ def song_pick_callback(call):
         if premium_required_for_platform("youtube",song_uid,song_url) and not song_priority and not users.get(song_uid,{}).get("youtube_30m",False):
             bot.answer_callback_query(call.id,"💎 Premium/Trial is required for full YouTube songs.",show_alert=True)
             return
+    if not _ad_enabled_for(str(call.from_user.id),"main"):
+        if _send_ad_gate(bot,str(call.from_user.id),call.message.chat.id,"main","song_download",{"song":x},premium_url="https://t.me/Downloadvedioytibot"):
+            bot.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
     bot.answer_callback_query(call.id,"⬇️ Downloading full song...")
     status=bot.send_message(call.message.chat.id,"⏳ Downloading the full track...")
     if str(x.get("source")) == "youtube":
@@ -5484,12 +5516,8 @@ def song_pick_callback(call):
                             _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=300)
                             if os.path.isfile(out):
                                 audio_title,audio_artist=_song_audio_metadata(song)
-                                catalog=_music_deezer_lookup(audio_title,audio_artist) or _music_itunes_lookup(audio_title,audio_artist)
-                                if catalog.get("title"): audio_title=_music_clean_text(catalog.get("title"))
-                                if catalog.get("artist"): audio_artist=_music_clean_text(catalog.get("artist"))
-                                if catalog.get("album") and not song.get("album"): song={**song,"album":catalog.get("album")}
-                                cover_path=_best_song_cover(song,audio_title,audio_artist,tmp,vid)
-                                _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path,album=song.get("album"))
+                                cover_path=_music_download_image(song.get("cover") or _youtube_artwork_url(vid),tmp,"cover.jpg")
+                                _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path)
                                 bot.edit_message_text("🎵 <b>Sending music...</b>",chat_id,status_id,parse_mode="HTML")
                                 with open(out,"rb") as fh:
                                     kwargs={"title":audio_title,"performer":audio_artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
@@ -6308,7 +6336,7 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         if (not (source_title or source_artist)) and (not recognized_title or not recognized_artist) and title and not _music_is_provider_placeholder(title):
             for lookup_fn in (_music_musicbrainz_lookup, _music_deezer_lookup, _music_itunes_lookup):
                 try:
-                    catalog_meta = lookup_fn(title, "")
+                    catalog_meta = lookup_fn(title, source_artist)
                 except Exception:
                     catalog_meta = {}
                 if catalog_meta.get("title") and catalog_meta.get("artist"):
@@ -6625,7 +6653,7 @@ def music_callback_handler(call):
 @bot.message_handler(func=lambda m: m.text == "🎵 MUSIC")
 def music_menu_button(m):
     if bot_locked_guard(m) or banned_guard(m): return
-    bot.send_message(m.chat.id, "🎵 Send a supported video link, then tap the 🎵 MUSIC button under the downloaded video to convert that exact video to MP3.")
+    bot.send_message(m.chat.id, "🎵 Send a video link and tap the 🎵 MUSIC button under the downloaded video. I will convert it to MP3 with the song/album cover and artist. If no real artist can be identified, the artist will be shown as <b>Unknown artist</b>.")
 
 # ================= LANGUAGE COMMAND =================
 @bot.message_handler(commands=["language", "lang"])
@@ -9469,36 +9497,6 @@ def successful_payment_handler(message):
     payload = payment.invoice_payload
     uid = str(message.from_user.id)
     stars = int(getattr(payment, "total_amount", 0) or 0)
-    if payload.startswith("managed_remove_ads:"):
-        parts=payload.split(":")
-        if len(parts)>=5:
-            bid=str(parts[1]); buyer=str(parts[2]); months=str(parts[3]); expected=int(parts[4] or 0); d=managed_bots_col.find_one({"bot_id":bid})
-            if str(message.from_user.id)!=buyer or not d or months not in {"3","6","12"} or stars < expected:
-                bot.send_message(message.chat.id,"❌ Remove Ads payment could not be validated."); return
-            now=datetime.now(timezone.utc); until=now+timedelta(days=30*int(months))
-            state=managed_ad_users_col.find_one({"bot_id":bid,"user_id":buyer}) or {}
-            old=state.get("ads_until")
-            try:
-                old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now
-                if old_dt.tzinfo is None: old_dt=old_dt.replace(tzinfo=timezone.utc)
-            except Exception: old_dt=now
-            until=max(now,old_dt)+timedelta(days=30*int(months))
-            managed_ad_users_col.update_one({"bot_id":bid,"user_id":buyer},{"$set":{"ads_removed":True,"ads_until":until,"ads_removed_at":now,"last_ad_payment_stars":stars,"remove_ads_months":int(months)}},upsert=True)
-            managed_ad_pending_lock.acquire()
-            try:
-                for token,row in list(managed_ad_pending.items()):
-                    if str(row.get("bot_id") or "") == bid and str(row.get("uid") or "") == buyer:
-                        managed_ad_pending.pop(token,None)
-            finally:
-                managed_ad_pending_lock.release()
-            bot.send_message(message.chat.id,f"🎉 <b>Ads Removed</b>\n\n⭐ Paid: <b>{stars} Stars</b>\n⏱️ Duration: <b>{months} months</b>\n⏰ Until: <b>{html.escape(local_datetime_text(buyer,until))}</b>\n\nAds are disabled for this bot until the selected date.",parse_mode="HTML")
-            mb=managed_bot_objects.get(bid) or _managed_bot_start_instance(d)
-            if mb:
-                try:
-                    mb.send_message(int(buyer),f"🎉 <b>Remove Ads activated!</b>\n\n⭐ Paid: <b>{stars} Stars</b>\n⏱️ <b>{months} months</b>\n⏰ Until: <b>{html.escape(local_datetime_text(buyer,until))}</b>",parse_mode="HTML")
-                except Exception: pass
-        return
-
     if payload.startswith("managed_premium_stars:"):
         parts=payload.split(":")
         if len(parts)>=4:
@@ -9894,6 +9892,8 @@ def _download_request_job(chat_id, link, quality, uid):
                 kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
                 bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
                 return
+        if not has_priority and not _ad_enabled_for(uid,"main"):
+            if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"): return
         download_media(chat_id,link,None,quality)
     except Exception as e:
         print("Download request worker failed:",repr(e))
@@ -11072,28 +11072,15 @@ def localized_action_dispatch(m):
 
 # ================= ADMIN TEXT / TELEGRAM CUSTOM EMOJI =================
 def _message_entities_to_html(message):
-    """Convert Telegram text entities to safe HTML while preserving custom emoji.
-
-    This accepts both pyTelegramBotAPI Message objects and raw Telegram API
-    dictionaries (used by the Creator Bot polling loop).
-    """
-    if isinstance(message,dict):
-        text=str(message.get("text") or message.get("caption") or "")
-        entities=message.get("entities") or message.get("caption_entities") or []
-        def val(obj,key,default=None):
-            if isinstance(obj,dict): return obj.get(key,default)
-            return getattr(obj,key,default)
-    else:
-        text=str(getattr(message,"text",None) or getattr(message,"caption",None) or "")
-        entities=getattr(message,"entities",None) or getattr(message,"caption_entities",None) or []
-        def val(obj,key,default=None): return getattr(obj,key,default)
+    text=str(getattr(message,"text",None) or getattr(message,"caption",None) or "")
+    entities=getattr(message,"entities",None) or getattr(message,"caption_entities",None) or []
     if not text: return ""
     raw=text.encode("utf-16-le")
     def s16(a,b): return raw[a*2:b*2].decode("utf-16-le",errors="ignore")
     spans=[]
     for e in entities:
-        if str(val(e,"type","") or "")!="custom_emoji": continue
-        off=int(val(e,"offset",0) or 0); ln=int(val(e,"length",0) or 0); cid=str(val(e,"custom_emoji_id","") or "")
+        if str(getattr(e,"type","") or "")!="custom_emoji": continue
+        off=int(getattr(e,"offset",0) or 0); ln=int(getattr(e,"length",0) or 0); cid=str(getattr(e,"custom_emoji_id","") or "")
         if cid and ln>0: spans.append((off,off+ln,cid,s16(off,off+ln)))
     if not spans: return html.escape(text)
     spans.sort(); out=[]; pos=0; total=len(raw)//2
@@ -11185,12 +11172,6 @@ def _creator_admin_keyboard():
         [{"text":"👑 Broadcast Bot Admins"}],
         [{"text":"👤 Broadcast Bot Non-Admins"}],
         [{"text":"🏆 Top Songs"},{"text":"🏆 Top Song Searchers"}],
-        [{"text":"🟢 OPEN MANAGED ADS"},{"text":"🔴 CLOSE MANAGED ADS"}],
-        [{"text":"🔗 SET ADSTERRA SMARTLINK"}],
-        [{"text":"🌐 SET AD GATE URL"}],
-        [{"text":"⏱️ AD FREQUENCY"},{"text":"⭐ REMOVE ADS PLANS"}],
-        [{"text":"⭐ REMOVE ADS PRICE"}],
-        [{"text":"📊 AD STATS"}],
         [{"text":"📢 Broadcast Creator Users"}],
         [{"text":"💎 Premium Prices"}],
         [{"text":"🔙 USER MENU"}],
@@ -11580,28 +11561,6 @@ def _creator_admin_text(uid, chat_id, text):
         _creator_send(chat_id,_song_stats_text(),reply_markup=_creator_admin_keyboard()); return
     if text=="🏆 Top Song Searchers":
         _creator_send(chat_id,_top_song_searchers_text(100),reply_markup=_creator_admin_keyboard()); return
-    if text=="🟢 OPEN MANAGED ADS":
-        if not _managed_ads_smartlink():
-            _creator_send(chat_id,"❌ <b>Adsterra SmartLink is not configured.</b>\n\nSet <code>ADSTERRA_SMARTLINK_URL</code> in Railway first, then open Managed Ads.",reply_markup=_creator_admin_keyboard()); return
-        set_setting("managed_ads_enabled",True); _creator_send(chat_id,f"🟢 <b>MANAGED ADS OPEN</b>\n\nAdsterra SmartLink is active for non-Premium users. Gate interval: <b>{_managed_ads_interval()//60} minutes</b>.",reply_markup=_creator_admin_keyboard()); return
-    if text=="🔴 CLOSE MANAGED ADS":
-        set_setting("managed_ads_enabled",False); _creator_send(chat_id,"🔴 <b>MANAGED ADS CLOSED</b>\n\nManaged bots will no longer require the Adsterra gate. Existing Remove Ads purchases remain saved.",reply_markup=_creator_admin_keyboard()); return
-    if text=="🔗 SET ADSTERRA SMARTLINK":
-        _creator_set_session(uid,{"state":"admin_ad_smartlink"}); _creator_send(chat_id,"🔗 <b>SET ADSTERRA SMARTLINK</b>\n\nSend the full active SmartLink URL from your Adsterra Publisher account."); return
-    if text=="🌐 SET AD GATE URL":
-        _creator_set_session(uid,{"state":"admin_ad_gate_url"}); _creator_send(chat_id,"🌐 <b>SET AD GATE URL</b>\n\nSend the public HTTPS URL of this Railway service, for example <code>https://your-app.up.railway.app</code>.\n\nThis is used so the bot can detect when the user opens the SmartLink and immediately release the pending download/search."); return
-    if text=="⏱️ AD FREQUENCY":
-        _creator_set_session(uid,{"state":"admin_ad_frequency"}); _creator_send(chat_id,f"⏱️ <b>AD FREQUENCY</b>\n\nCurrent: <b>{_managed_ads_interval()//60} minutes</b>\n\nSend minutes, for example <code>10</code>."); return
-    if text=="⭐ REMOVE ADS PLANS":
-        p=_managed_remove_ads_plans()
-        _creator_set_session(uid,{"state":"admin_remove_ads_plans"})
-        _creator_send(chat_id, f"⭐ <b>REMOVE ADS PLANS</b>\n\n3 months: <b>{p['3']} Stars</b>\n6 months: <b>{p['6']} Stars</b>\n12 months: <b>{p['12']} Stars</b>\n\nSend three prices separated by spaces, for example: <code>50 90 150</code>", reply_markup=_creator_admin_keyboard()); return
-    if text=="⭐ REMOVE ADS PRICE":
-        _creator_set_session(uid,{"state":"admin_remove_ads_price"}); _creator_send(chat_id,f"⭐ <b>REMOVE ADS PRICE</b>\n\nLegacy/default price: <b>{_managed_remove_ads_stars()} Stars</b>\n\nSend the new Stars price, for example <code>50</code>."); return
-    if text=="📊 AD STATS":
-        clicks=managed_ad_clicks_col.count_documents({}); removed=managed_ad_users_col.count_documents({"ads_removed":True}); active=managed_ad_users_col.count_documents({"ads_removed":{"$ne":True},"ad_unlocked_until":{"$gt":time.time()}})
-        plans=_managed_remove_ads_plans()
-        _creator_send(chat_id,f"📊 <b>MANAGED ADS STATS</b>\n\n🖱 Ad opens: <b>{clicks}</b>\n⭐ Remove Ads purchases: <b>{removed}</b>\n🟢 Users currently unlocked: <b>{active}</b>\n📢 Ads: <b>{'OPEN' if _managed_ads_enabled() else 'CLOSED'}</b>\n⏱ Frequency: <b>{_managed_ads_interval()//60} min</b>\n⭐ Plans: <b>3m {plans['3']} • 6m {plans['6']} • 12m {plans['12']} Stars</b>\n🔗 SmartLink: <b>{'SET' if _managed_ads_smartlink() else 'NOT SET'}</b>\n🌐 Gate URL: <b>{'SET' if _managed_ad_base_url() else 'NOT SET'}</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="📢 Broadcast Creator Users":
         _creator_set_session(uid,{"state":"admin_broadcast_creator"}); _creator_send(chat_id,"📢 Send the message to broadcast to users who have interacted with the Creator Bot."); return
     if text=="💎 Premium Prices":
@@ -11609,44 +11568,6 @@ def _creator_admin_text(uid, chat_id, text):
     if text=="🔙 USER MENU":
         _creator_send(chat_id,"👤 <b>User Menu</b>",reply_markup=_creator_keyboard(uid)); return
     sess=_creator_session(uid); state=sess.get("state")
-    if state=="admin_ad_smartlink":
-        value=str(text or "").strip()
-        if not re.match(r"^https?://",value,re.I):
-            _creator_send(chat_id,"❌ Send a valid http(s) SmartLink URL."); return
-        set_setting("managed_ads_enabled",False)
-        # The environment value is preferred for secrets/configuration, so this setting
-        # stores the admin-supplied URL for runtime use without requiring a restart.
-        set_setting("managed_ads_smartlink_override",value)
-        _creator_clear_session(uid); _creator_send(chat_id,"✅ SmartLink saved. Restarting is not required. Press <b>🟢 OPEN MANAGED ADS</b> to enable it.",reply_markup=_creator_admin_keyboard()); return
-    if state=="admin_ad_gate_url":
-        value=str(text or "").strip().rstrip("/")
-        if not re.match(r"^https://",value,re.I):
-            _creator_send(chat_id,"❌ Use a public HTTPS URL."); return
-        set_setting("managed_ads_base_url",value); _creator_clear_session(uid)
-        _start_managed_ad_http_server()
-        _creator_send(chat_id,"✅ Ad gate URL saved. The click-tracking server is ready for the next ad gate.",reply_markup=_creator_admin_keyboard()); return
-    if state=="admin_ad_frequency":
-        try:
-            minutes=float(str(text).strip()); seconds=int(minutes*60)
-            if seconds<60 or seconds>86400: raise ValueError
-            set_setting("managed_ads_interval_seconds",seconds); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Ad frequency set to <b>{minutes:g} minutes</b>.",reply_markup=_creator_admin_keyboard()); return
-        except Exception:
-            _creator_send(chat_id,"❌ Invalid value. Send minutes between 1 and 1440."); return
-    if state=="admin_remove_ads_plans":
-        try:
-            vals=[int(x) for x in str(text).replace(","," ").split()]
-            if len(vals)!=3 or any(v<1 or v>100000 for v in vals): raise ValueError
-            plans={"3":vals[0],"6":vals[1],"12":vals[2]}
-            set_setting("managed_remove_ads_plans",plans); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Remove Ads plans saved.\n\n3 months: <b>{vals[0]} Stars</b>\n6 months: <b>{vals[1]} Stars</b>\n12 months: <b>{vals[2]} Stars</b>",reply_markup=_creator_admin_keyboard()); return
-        except Exception:
-            _creator_send(chat_id,"❌ Invalid plans. Send exactly three whole-number prices: <code>50 90 150</code>."); return
-    if state=="admin_remove_ads_price":
-        try:
-            stars=int(str(text).replace("Stars","").strip())
-            if stars<1 or stars>10000: raise ValueError
-            set_setting("managed_remove_ads_stars",stars); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Legacy/default Remove Ads price set to <b>{stars} Stars</b>.",reply_markup=_creator_admin_keyboard()); return
-        except Exception:
-            _creator_send(chat_id,"❌ Invalid Stars price. Send an integer between 1 and 10000."); return
     if state=="admin_caption":
         set_setting("create_bot_caption_text",text); set_setting("create_bot_caption_enabled",True); _creator_clear_session(uid); _creator_send(chat_id,"✅ Create caption saved and opened.",reply_markup=_creator_admin_keyboard()); return
     if state=="admin_send_create":
@@ -11827,254 +11748,6 @@ def _creator_callback(call):
 
 
 
-
-# ================= MANAGED-BOT ADS / REMOVE ADS =================
-def _managed_ad_base_url():
-    saved=str(get_setting("managed_ads_base_url", "") or "").strip().rstrip("/")
-    return saved or str(AD_GATE_BASE_URL or "").strip().rstrip("/")
-
-def _managed_ads_smartlink():
-    return str(get_setting("managed_ads_smartlink_override", ADSTERRA_SMARTLINK_URL) or ADSTERRA_SMARTLINK_URL or "").strip()
-
-def _managed_ads_enabled():
-    return bool(get_setting("managed_ads_enabled", False)) and bool(_managed_ads_smartlink())
-
-def _managed_ads_interval():
-    try:
-        return max(60, int(get_setting("managed_ads_interval_seconds", AD_SHOW_INTERVAL_SECONDS) or AD_SHOW_INTERVAL_SECONDS))
-    except Exception:
-        return AD_SHOW_INTERVAL_SECONDS
-
-def _managed_remove_ads_stars():
-    try:
-        return max(1, int(get_setting("managed_remove_ads_stars", REMOVE_ADS_STARS_DEFAULT) or REMOVE_ADS_STARS_DEFAULT))
-    except Exception:
-        return REMOVE_ADS_STARS_DEFAULT
-
-def _managed_remove_ads_plans():
-    raw=get_setting("managed_remove_ads_plans", REMOVE_ADS_PLAN_DEFAULTS)
-    out=dict(REMOVE_ADS_PLAN_DEFAULTS)
-    if isinstance(raw,dict):
-        for months in ("3","6","12"):
-            try:
-                v=int(raw.get(months,out[months]));
-                if 1 <= v <= 100000: out[months]=v
-            except Exception: pass
-    return out
-
-def _managed_remove_ads_active(bid, uid):
-    state=_managed_ad_state(bid,uid)
-    if not state: return False
-    try:
-        until=state.get("ads_until")
-        if until is None:
-            return bool(state.get("ads_removed",False))
-        dt=until if isinstance(until,datetime) else datetime.fromisoformat(str(until).replace("Z","+00:00"))
-        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
-        return dt > datetime.now(timezone.utc)
-    except Exception:
-        return bool(state.get("ads_removed",False))
-
-def _managed_ad_state(bid, uid):
-    return managed_ad_users_col.find_one({"bot_id":str(bid),"user_id":str(uid)}) or {}
-
-def _managed_ads_removed(bid, uid):
-    return _managed_remove_ads_active(bid,uid)
-
-def _managed_ad_required(bid, uid):
-    uid=str(uid); bid=str(bid)
-    if not _managed_ads_enabled():
-        return False
-    if is_admin(uid):
-        return False
-    d=_managed_bot_doc(bid) or {}
-    if _managed_premium_active_doc(d):
-        return False
-    if _managed_remove_ads_active(bid,uid):
-        return False
-    state=_managed_ad_state(bid,uid)
-    try:
-        until=float(state.get("ad_unlocked_until",0) or 0)
-    except Exception:
-        until=0
-    return until <= time.time()
-
-def _managed_ad_mark_opened(bid, uid, token=""):
-    now=time.time(); until=now+_managed_ads_interval()
-    managed_ad_users_col.update_one(
-        {"bot_id":str(bid),"user_id":str(uid)},
-        {"$set":{"ad_unlocked_until":until,"last_ad_opened_at":datetime.now(timezone.utc),"last_ad_token":str(token or "")}},
-        upsert=True,
-    )
-    managed_ad_clicks_col.insert_one({"bot_id":str(bid),"user_id":str(uid),"token":str(token or ""),"time":datetime.now(timezone.utc),"interval_seconds":_managed_ads_interval()})
-
-def _managed_ad_gate_url(token):
-    base=_managed_ad_base_url()
-    if base:
-        return f"{base}/ad/open/{urllib.parse.quote(str(token),safe='')}"
-    return _managed_ads_smartlink()
-
-def _managed_ad_create_pending(bid, uid, action, **payload):
-    token=secrets.token_urlsafe(18).replace("-","").replace("_","")[:28]
-    row={"bot_id":str(bid),"uid":str(uid),"action":str(action),"created":time.time(),"expires":time.time()+900}
-    row.update(payload)
-    with managed_ad_pending_lock:
-        managed_ad_pending[token]=row
-        if len(managed_ad_pending)>5000:
-            now=time.time()
-            for k,v in list(managed_ad_pending.items()):
-                if float(v.get("expires",0) or 0)<now:
-                    managed_ad_pending.pop(k,None)
-    return token
-
-def _managed_ad_message(mb, chat_id, bid, uid, token):
-    interval=_managed_ads_interval(); mins=max(1,int(round(interval/60)))
-    url=_managed_ad_gate_url(token)
-    rows=[]
-    if url:
-        if _managed_ad_base_url():
-            rows.append([InlineKeyboardButton("🔗 Open Ad",url=url),InlineKeyboardButton("⭐ Remove ads",callback_data="mremoveads")])
-        else:
-            rows.append([InlineKeyboardButton("🔗 Open Ad",url=url),InlineKeyboardButton("✅ Continue",callback_data=f"madcontinue:{token}")])
-            rows.append([InlineKeyboardButton("⭐ Remove ads",callback_data="mremoveads")])
-    else:
-        rows.append([InlineKeyboardButton("⭐ Remove ads",callback_data="mremoveads")])
-    text=("📢 <b>Sponsored message</b>\n\n"
-          f"Open the ad below to continue. Ads are shown about every <b>{mins} minutes</b>.\n\n"
-          "⚡ After the ad link is opened, your pending download/search starts automatically.\n"
-          "💎 Premium users and users who removed ads do not see this gate.")
-    mb.send_message(chat_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
-
-def _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
-    if not _managed_ad_required(bid,uid):
-        return False
-    token=_managed_ad_create_pending(bid,uid,action,chat_id=int(chat_id),**payload)
-    _managed_ad_message(mb,chat_id,bid,uid,token)
-    return True
-
-# Backward-compatible name used by managed-bot handlers.
-# Keep one canonical implementation so ad-gating cannot fail at runtime.
-def _managed_ad_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
-    return _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload)
-
-def _managed_execute_ad_pending(token):
-    with managed_ad_pending_lock:
-        row=managed_ad_pending.pop(str(token),None)
-    if not row or float(row.get("expires",0) or 0)<time.time():
-        return False
-    bid=str(row.get("bot_id") or ""); uid=str(row.get("uid") or ""); mb=managed_bot_objects.get(bid) or _managed_bot_start_instance(_managed_bot_doc(bid) or {})
-    if not mb:
-        return False
-    _managed_ad_mark_opened(bid,uid,token)
-    action=str(row.get("action") or "")
-    chat_id=int(row.get("chat_id") or uid)
-    if action=="download":
-        link=str(row.get("link") or "")
-        def job():
-            tok=_ACTIVE_BOT.set(mb); meta_doc=_managed_bot_doc(bid) or {}; meta=_ACTIVE_MANAGED_META.set({"bot_id":bid,"owner_id":str(meta_doc.get("owner_id") or ""),"username":str(meta_doc.get("username") or ""),"name":str(meta_doc.get("name") or "Downloader Bot"),"bot_type":str(meta_doc.get("bot_type") or "video")})
-            try:
-                download_media(chat_id,link,None,None)
-            finally:
-                try: _ACTIVE_MANAGED_META.reset(meta)
-                except Exception: pass
-                try: _ACTIVE_BOT.reset(tok)
-                except Exception: pass
-        download_executor_for(uid).submit(job)
-    elif action=="music_search":
-        q=_music_clean_text(row.get("query") or "")
-        def music_job():
-            try:
-                rows=_rapidapi_youtube_song_search(q,30) if RAPIDAPI_YT_KEY else _song_search_all(q,30)
-                rows=[x for x in rows if _parse_duration_value(x.get("duration"))>0][:30]
-                if not rows:
-                    mb.send_message(chat_id,"❌ No matching songs found. Try another title or artist.")
-                    return
-                token2=uuid.uuid4().hex[:12]
-                # Store into the same pending map used by the managed music handler.
-                pending=_MANAGED_MUSIC_PENDING.get(bid)
-                if pending is None:
-                    pending={}; _MANAGED_MUSIC_PENDING[bid]=pending
-                pending[token2]={"uid":uid,"rows":rows,"created":time.time()}
-                _managed_music_show(mb,chat_id,token2,0,pending)
-            except Exception as e:
-                print("Managed gated music search error:",repr(e)); mb.send_message(chat_id,"❌ Music search failed. Please try again.")
-        threading.Thread(target=music_job,daemon=True).start()
-    return True
-
-def _managed_create_remove_ads_invoice(mb, chat_id, bid, uid, months="3"):
-    plans=_managed_remove_ads_plans(); months=str(months)
-    if months not in plans: months="3"
-    stars=plans[months]
-    d=_managed_bot_doc(bid) or {}
-    payload=f"managed_remove_ads:{bid}:{uid}:{months}:{stars}"
-    try:
-        rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={
-            "title":f"Remove Ads — {months} Months",
-            "description":f"Remove ads on @{d.get('username','your bot')} for {months} months.",
-            "payload":payload,
-            "currency":"XTR",
-            "prices":[{"label":f"Remove Ads {months} months","amount":stars}],
-        },timeout=20)
-        body=rr.json()
-        if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
-        link=str(body.get("result") or "")
-        if not link: raise RuntimeError("empty invoice link")
-        mb.send_message(chat_id,
-            f"⭐ <b>REMOVE ADS</b>\n\nChoose how long you want ads removed from <b>@{html.escape(str(d.get('username') or 'your bot'))}</b>.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"3 Months — ⭐ {plans['3']}",url=link if months=="3" else _managed_invoice_url(bid,uid,"3")),InlineKeyboardButton(f"6 Months — ⭐ {plans['6']}",url=_managed_invoice_url(bid,uid,"6"))],[InlineKeyboardButton(f"12 Months — ⭐ {plans['12']}",url=_managed_invoice_url(bid,uid,"12"))]]))
-        return True
-    except Exception as e:
-        print("Managed Remove Ads invoice error:",repr(e)); mb.send_message(chat_id,"❌ Could not create the Telegram Stars payment link. Please try again."); return False
-
-def _managed_invoice_url(bid, uid, months):
-    plans=_managed_remove_ads_plans(); months=str(months)
-    if months not in plans: return ""
-    d=_managed_bot_doc(bid) or {}
-    payload=f"managed_remove_ads:{bid}:{uid}:{months}:{plans[months]}"
-    try:
-        rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={
-            "title":f"Remove Ads — {months} Months",
-            "description":f"Remove ads on @{d.get('username','your bot')} for {months} months.",
-            "payload":payload,"currency":"XTR",
-            "prices":[{"label":f"Remove Ads {months} months","amount":plans[months]}],
-        },timeout=20); body=rr.json()
-        return str(body.get("result") or "") if body.get("ok") else ""
-    except Exception as e:
-        print("Managed invoice link error:",repr(e)); return ""
-
-class _ManagedAdGateHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        path=urllib.parse.urlparse(self.path).path
-        prefix="/ad/open/"
-        if not path.startswith(prefix):
-            self.send_response(404); self.end_headers(); return
-        token=path[len(prefix):].strip()
-        if not token:
-            self.send_response(404); self.end_headers(); return
-        ok=_managed_execute_ad_pending(token)
-        if ok:
-            target=_managed_ads_smartlink()
-            self.send_response(302); self.send_header("Location",target or "/"); self.end_headers(); return
-        self.send_response(410); self.end_headers(); self.wfile.write(b"Ad link expired. Return to Telegram and send the request again.")
-    def log_message(self, fmt, *args):
-        return
-
-def _start_managed_ad_http_server():
-    global managed_ad_http_server
-    if managed_ad_http_server is not None:
-        return
-    if not _managed_ad_base_url():
-        print("⚠️ Managed ad click tracking is disabled: set AD_GATE_BASE_URL to your public Railway URL.")
-        return
-    try:
-        managed_ad_http_server=ThreadingHTTPServer(("0.0.0.0",AD_GATE_PORT),_ManagedAdGateHandler)
-        threading.Thread(target=managed_ad_http_server.serve_forever,daemon=True,name="managed-ad-gate").start()
-        print(f"📢 Managed Ad gate listening on 0.0.0.0:{AD_GATE_PORT} -> {_managed_ad_base_url()}")
-    except Exception as e:
-        print("Managed ad HTTP server failed:",repr(e))
-
-
 def _managed_bot_remove_from_system(bot_id):
     bid=str(bot_id); doc=managed_bots_col.find_one({"bot_id":bid}) or {}
     mb=managed_bot_objects.pop(bid,None)
@@ -12103,8 +11776,6 @@ def _managed_bot_is_owner(bot_id, uid):
     d=_managed_bot_doc(bot_id); return bool(d and str(d.get("owner_id"))==str(uid))
 
 
-_MANAGED_MUSIC_PENDING = {}
-
 def _managed_bot_start_instance(doc):
     token=_decrypt_managed_token(doc or {})
     if not token: return None
@@ -12117,8 +11788,7 @@ def _managed_bot_start_instance(doc):
             meta={"bot_id":bid,"owner_id":str(doc.get("owner_id") or ""),"username":username,"name":doc.get("name") or me.first_name or username,"bot_type":btype}
             managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username,"bot_type":btype,"active":True,"updated_at":datetime.now(timezone.utc)}},upsert=False); managed_bot_objects[bid]=mb
             def _ctx(): _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta)
-            def _menu(owner=False, uid=None):
-                uid=str(uid or "")
+            def _menu(owner=False):
                 kb=ReplyKeyboardMarkup(resize_keyboard=True)
                 if _creation_open(): kb.add("🤖 Create Your Own Bot")
                 if owner: kb.add("👑 ADMIN PANEL")
@@ -12129,15 +11799,7 @@ def _managed_bot_start_instance(doc):
                     text="🎵 <b>WELCOME TO MUSIC DOWNLOADER</b> 🎵\n\nSearch and download songs by title, part of title or artist.\n\n🎵 Full song download\n🎤 Artist + title metadata\n🖼 Cover artwork\n⚡ Fast search\n\n🚀 Send a song name now."
                 else:
                     text="🎬 <b>WELCOME TO VIDEO DOWNLOADER</b> 🎬\n\nDownload supported videos and photos quickly.\n\n📥 Copy a supported link and send it here.\n🌐 YouTube • TikTok • Instagram • Facebook • Pinterest • Snapchat • X/Twitter and other supported platforms.\n⚡ The download starts immediately.\n\n🚀 Send your link now."
-                inline=[]
-                if not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not _managed_ads_removed(bid,m.from_user.id):
-                    inline.append([InlineKeyboardButton("⭐ REMOVE ADS",callback_data="mremoveads")])
-                if _creation_open():
-                    inline.append([InlineKeyboardButton("🤖 Create Your Own Bot",url=_creator_bot_url())] if _creator_bot_url() else [])
-                if owner:
-                    inline.append([InlineKeyboardButton("👑 ADMIN PANEL",callback_data=f"mbotinfo:{bid}")])
-                inline=[row for row in inline if row]
-                mb.send_message(m.chat.id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline) if inline else None)
+                mb.send_message(m.chat.id,text,parse_mode="HTML",reply_markup=_menu(owner))
             def _help(m): _ctx(); _start(m)
             def _create(m):
                 _ctx(); url=_creator_bot_url()
@@ -12149,20 +11811,13 @@ def _managed_bot_start_instance(doc):
                 typ="🎵 Music Downloader" if btype=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(_managed_bot_doc(bid) or {}) else "🆓 Standard"
                 kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("📊 Bot Info",callback_data=f"mbotinfo:{bid}"))
                 mb.send_message(m.chat.id,f"👑 <b>BOT ADMIN PANEL</b>\n\nType: <b>{typ}</b>\nPremium: <b>{prem}</b>\n\nPremium and Wallet are managed only from the Creator Bot.",reply_markup=kb,parse_mode="HTML")
-            _MANAGED_MUSIC_PENDING.setdefault(bid,{})
-            managed_music_pending=_MANAGED_MUSIC_PENDING[bid]
+            managed_music_pending={}
             def _music_search(m):
                 _ctx(); uid=str(m.from_user.id); q=_music_clean_text(m.text)
                 if not q or len(q)<2: return
-                managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}})
-                if _managed_ads_gate_or_continue(mb,m.chat.id,bid,uid,"music_search",query=q):
-                    return
-                try:
-                    rows=_rapidapi_youtube_song_search(q,30) if RAPIDAPI_YT_KEY else _song_search_all(q,30)
-                    rows=[x for x in rows if _parse_duration_value(x.get("duration"))>0][:30]
-                    if not rows: mb.send_message(m.chat.id,"❌ No matching songs found. Try another title or artist."); return
-                    token2=uuid.uuid4().hex[:12]; managed_music_pending[token2]={"uid":uid,"rows":rows,"created":time.time()}; _managed_music_show(mb,m.chat.id,token2,0,managed_music_pending)
-                except Exception as e: print("Managed music search error:",repr(e)); mb.send_message(m.chat.id,"❌ Music search failed. Please try again.")
+                if not _ad_enabled_for(uid,bid):
+                    if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
+                _run_managed_music_search(mb,m.chat.id,q,uid,bid,managed_music_pending)
             def _music_page(call):
                 _ctx(); p=str(call.data).split(":"); token2=p[1] if len(p)>1 else ""; page=int(p[2]) if len(p)>2 else 0; data=managed_music_pending.get(token2)
                 if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"Search expired.",show_alert=True); return
@@ -12172,68 +11827,41 @@ def _managed_bot_start_instance(doc):
                 if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"Search expired.",show_alert=True); return
                 rows=data.get("rows") or []
                 if idx<0 or idx>=len(rows): mb.answer_callback_query(call.id,"Song unavailable.",show_alert=True); return
-                mb.answer_callback_query(call.id,"⬇️ Downloading..."); ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,rows[idx],str(call.from_user.id),bid)
+                song=rows[idx]
+                if not _ad_enabled_for(str(call.from_user.id),bid):
+                    if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",{"song":song},premium_url=_creator_bot_url()):
+                        mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
+                mb.answer_callback_query(call.id,"⬇️ Downloading..."); ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid)
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
-                if _managed_ad_gate_or_continue(mb,m.chat.id,bid,uid,"download",link=link):
-                    return
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>YOUTUBE_FREE_MAX_MINUTES*60 and not youtube_is_short(link):
                             kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("💎 OPEN PREMIUM",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot")); mb.send_message(m.chat.id,premium_gate_message(uid,"youtube",duration),parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
+                has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
+                if not has_priority and not _ad_enabled_for(uid,bid):
+                    if _send_ad_gate(mb,uid,m.chat.id,bid,"download",{"link":link,"quality":None},premium_url=_creator_bot_url()): return
                 ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,download_media,m.chat.id,link,None,None)
-            def _remove_ads(m):
-                _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}})
-                if _managed_premium_active_doc(_managed_bot_doc(bid) or {}):
-                    mb.send_message(m.chat.id,"💎 <b>Premium is active</b> — you already have ads disabled.",parse_mode="HTML"); return
-                if _managed_ads_removed(bid,uid):
-                    mb.send_message(m.chat.id,"✅ <b>Ads are already removed permanently for this bot.</b>",parse_mode="HTML"); return
-                _managed_create_remove_ads_invoice(mb,m.chat.id,bid,uid,"3")
-            def _remove_ads_callback(call):
-                _ctx(); uid=str(call.from_user.id); mb.answer_callback_query(call.id)
-                if _managed_premium_active_doc(_managed_bot_doc(bid) or {}):
-                    mb.send_message(call.message.chat.id,"💎 <b>Premium is active</b> — advertisements are already disabled.",parse_mode="HTML"); return
-                if _managed_ads_removed(bid,uid):
-                    mb.send_message(call.message.chat.id,"✅ <b>Ads are already removed permanently for this bot.</b>",parse_mode="HTML"); return
-                _managed_create_remove_ads_invoice(mb,call.message.chat.id,bid,uid,"3")
-            def _ad_continue(call):
-                _ctx(); token=str(call.data or "").split(":",1)[1] if ":" in str(call.data or "") else ""
-                with managed_ad_pending_lock:
-                    row=managed_ad_pending.get(token)
-                if not row or str(row.get("uid"))!=str(call.from_user.id) or str(row.get("bot_id"))!=bid:
-                    mb.answer_callback_query(call.id,"This ad request expired. Send the request again.",show_alert=True); return
-                mb.answer_callback_query(call.id,"⚡ Starting...")
-                _managed_execute_ad_pending(token)
-            def _managed_video_music_callback(call):
-                _ctx(); parts=str(call.data or "").split(":",2); token2=parts[2] if len(parts)==3 else ""
-                rows_for_bid=managed_video_music_pending.get(bid) or {}
-                now_ts=time.time()
-                for old_token,old_row in list(rows_for_bid.items()):
-                    if now_ts-float(old_row.get("created",now_ts) or now_ts)>MUSIC_PENDING_TTL:
-                        rows_for_bid.pop(old_token,None)
-                data=rows_for_bid.get(token2)
-                if not data or str(data.get("uid"))!=str(call.from_user.id):
-                    mb.answer_callback_query(call.id,"This MUSIC button has expired. Download the video again.",show_alert=True); return
-                mb.answer_callback_query(call.id,"🎵 Converting to MP3...")
-                ctx=contextvars.copy_context()
-                def job():
-                    _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set({"bot_id":bid,"owner_id":str(doc.get("owner_id") or ""),"username":username,"name":doc.get("name") or username,"bot_type":btype})
-                    try:
-                        status=mb.send_message(call.message.chat.id,"🎵 <b>Converting video to MP3...</b>",parse_mode="HTML")
-                        convert_link_to_mp3(call.message.chat.id,data.get("link") or "",status.message_id,data.get("local_source"),data.get("cache_dir"),data.get("source_title") or "",data.get("source_artist") or "")
-                    finally:
-                        managed_video_music_pending.get(bid,{}).pop(token2,None)
-                download_executor_for(call.from_user.id).submit(ctx.run,job)
-
+            def _music_convert(call):
+                _ctx(); token=call.data.split(":",1)[1]; data=music_pending.get(token)
+                if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This MUSIC button expired.",show_alert=True); return
+                if not _ad_enabled_for(str(call.from_user.id),bid):
+                    payload={"song":{"download":data.get("link"),"title":data.get("source_title"),"artist":data.get("source_artist"),"cover":""}}
+                    if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",payload,premium_url=_creator_bot_url()):
+                        mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
+                if data.get("in_progress"): mb.answer_callback_query(call.id,"🎵 Conversion is already running."); return
+                data["in_progress"]=True; mb.answer_callback_query(call.id,"🎵 Conversion started")
+                status=mb.send_message(call.message.chat.id,"🎵 Converting video to MP3...")
+                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,convert_link_to_mp3,call.message.chat.id,data.get("link") or "",status.message_id,data.get("local_source"),data.get("cache_dir"),data.get("source_title") or "",data.get("source_artist") or "",token)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
-            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="⭐ Remove ads")(_remove_ads); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
+            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("mmusic:"))(_managed_video_music_callback); mb.callback_query_handler(func=lambda c:c.data=="mremoveads")(_remove_ads_callback); mb.callback_query_handler(func=lambda c:c.data.startswith("madcontinue:"))(_ad_continue); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
@@ -12257,23 +11885,6 @@ def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
         except Exception: pass
     mb.send_message(chat_id,"\n".join(lines),parse_mode="HTML",reply_markup=kb)
 
-def _best_song_cover(song, title, artist, tmp, vid=""):
-    """Resolve genuine album artwork first, then safe provider artwork fallbacks."""
-    song=song or {}
-    cover_url=""
-    try:
-        if title and artist and artist.lower()!="unknown artist":
-            meta=_music_deezer_lookup(title,artist)
-            if meta.get("artwork"): cover_url=str(meta.get("artwork"))
-            if not cover_url:
-                meta=_music_itunes_lookup(title,artist)
-                if meta.get("artwork"): cover_url=str(meta.get("artwork"))
-    except Exception as e: print("Album cover lookup skipped:",repr(e))
-    if not cover_url:
-        cover_url=str(song.get("cover") or song.get("thumbnail") or "").strip()
-    if not cover_url and vid: cover_url=_youtube_artwork_url(vid)
-    return _music_download_image(cover_url,tmp,"cover.jpg") if cover_url else None
-
 def _managed_download_song(mb,chat_id,song,uid,bid):
     tmp=None
     try:
@@ -12282,12 +11893,20 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
         if not source_url: raise RuntimeError("No downloadable audio")
         tmp=os.path.join("downloads","managed_music_"+uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True); raw=os.path.join(tmp,"source"); _rapid_download_file(source_url,raw,max_bytes=0)
         title,artist=_song_audio_metadata(song)
-        catalog=_music_deezer_lookup(title,artist) or _music_itunes_lookup(title,artist)
-        if catalog.get("title"): title=_music_clean_text(catalog.get("title"))
-        if catalog.get("artist"): artist=_music_clean_text(catalog.get("artist"))
-        if catalog.get("album") and not song.get("album"): song={**song,"album":catalog.get("album")}
+        album=_music_clean_text(song.get("album") or "")
+        catalog={}
+        for fn in (_music_deezer_lookup,_music_itunes_lookup,_music_musicbrainz_lookup):
+            try:
+                catalog=fn(title,artist) or {}
+            except Exception: catalog={}
+            if catalog.get("title") and catalog.get("artist"): break
+        if catalog.get("title"): title=catalog.get("title")
+        if catalog.get("artist"): artist=catalog.get("artist")
+        album=album or _music_clean_text(catalog.get("album"))
         out=os.path.join(tmp,_music_safe_filename(title,artist)+".mp3"); _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=180)
-        cover=_best_song_cover(song,title,artist,tmp,vid); _embed_music_metadata(out,title,artist,cover_path=cover,album=song.get("album"))
+        cover_url=song.get("cover") or catalog.get("artwork") or _youtube_artwork_url(vid)
+        cover=_music_download_image(cover_url,tmp,"cover.jpg") if cover_url else None
+        _embed_music_metadata(out,title,artist,cover_path=cover,album=album)
         kwargs={"title":title,"performer":artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
         with open(out,"rb") as fh:
             if cover and os.path.isfile(cover): kwargs["thumb"]=cover
@@ -13143,10 +12762,10 @@ for _lang,_d in MAIN_LABELS.items():
 # ================= MAIN RUN LOOP =================
 
 if __name__ == "__main__":
+    try: _start_ad_http_server()
+    except Exception as e: print("Ad server startup warning:",repr(e))
     try: _creation_commands_refresh()
     except Exception as e: print("Creation command refresh warning:",repr(e))
-    try: _start_managed_ad_http_server()
-    except Exception as e: print("Managed ad gate startup warning:",repr(e))
     threading.Thread(target=_managed_bots_startup, daemon=True, name="managed-bot-startup").start()
     threading.Thread(target=_creator_poll_loop, daemon=True, name="creator-bot-poller").start()
     threading.Thread(target=premium_expiry_worker, daemon=True).start()
