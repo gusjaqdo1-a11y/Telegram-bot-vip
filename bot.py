@@ -22,7 +22,6 @@ import html
 import urllib.parse
 import contextvars
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     from cryptography.fernet import Fernet
 except Exception:
@@ -174,11 +173,11 @@ SAVEAPI_URL = (os.getenv("SAVEAPI_URL") or os.getenv("SAVE_API_URL") or "https:/
 SAVEAPI_TIMEOUT = int(os.getenv("SAVEAPI_TIMEOUT", "45"))
 
 # AD gate configuration
-AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://app.quickdl.site").strip().rstrip("/")
-AD_SKIP_URL=os.getenv("AD_SKIP_URL","https://go.quickdl.site").strip()
+AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").strip().rstrip("/")
 AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","https://www.profitableratecpmnetwork.com/zniv39az4q?key=e7ab3c91928f44615e99bf64ff2fe97c").strip()
 AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
 AD_GATE_SECONDS=max(1,int(os.getenv("AD_GATE_SECONDS","5")))
+ADSTERRA_AD_HTML=os.getenv("ADSTERRA_AD_HTML", "").strip()
 AD_HTTP_HOST=os.getenv("AD_HTTP_HOST","0.0.0.0")
 AD_HTTP_PORT=int(os.getenv("PORT",os.getenv("AD_HTTP_PORT","8080")))
 
@@ -1310,161 +1309,212 @@ def _ad_enabled_for(uid, bot_id=None):
 
 
 def _ad_gate_keyboard(token,premium_url=None):
-    """Three-choice ad gate: Watch Ad Mini App, Premium, and external Skip."""
     url=premium_url or (_creator_bot_url() if "_creator_bot_url" in globals() else "https://t.me/Downloadvedioytibot")
-    app_url=f"{AD_PUBLIC_BASE_URL}/?token={urllib.parse.quote(str(token), safe='')}"
     kb=InlineKeyboardMarkup(row_width=2)
-    try:
-        kb.add(InlineKeyboardButton("👉 Watch ad", web_app=WebAppInfo(url=app_url)))
-    except Exception as e:
-        print("Mini App button fallback:",repr(e))
-        kb.add(InlineKeyboardButton("👉 Watch ad", url=app_url))
-    kb.add(InlineKeyboardButton("💎 Premium",url=url),InlineKeyboardButton("⏭️ Skip",url=AD_SKIP_URL))
+    watch_url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"
+    skip_url=f"{AD_PUBLIC_BASE_URL}/ad/skip/{token}"
+    kb.add(InlineKeyboardButton("👉 Watch ad", web_app=WebAppInfo(url=watch_url)))
+    kb.add(InlineKeyboardButton("💎 Premium",url=url), InlineKeyboardButton("⏭️ Skip",url=skip_url))
     return kb
 
 
-def _telegram_webapp_user(init_data):
-    """Validate Telegram.WebApp.initData using Telegram's HMAC-SHA256 rules."""
-    if not init_data:
-        raise ValueError("missing initData")
-    parsed=urllib.parse.parse_qsl(str(init_data),keep_blank_values=True)
-    data=dict(parsed)
-    received_hash=data.pop("hash",None)
-    if not received_hash:
-        raise ValueError("missing hash")
-    check_string="\n".join(f"{k}={v}" for k,v in sorted(data.items()))
-    secret_key=hmac.new(b"WebAppData",str(TOKEN or "").encode(),hashlib.sha256).digest()
-    calculated=hmac.new(secret_key,check_string.encode(),hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(calculated,received_hash):
-        raise ValueError("invalid initData signature")
+def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
+    if _ad_enabled_for(uid,bot_id): return False
+    token=secrets.token_urlsafe(18).replace("-","").replace("_","")[:32]
+    now=datetime.now(timezone.utc)
+    ad_gates_col.insert_one({"token":token,"user_id":str(uid),"chat_id":int(chat_id),"bot_id":str(bot_id or "main"),"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","created_at":now})
     try:
-        auth_date=int(data.get("auth_date","0"))
-    except Exception:
-        auth_date=0
-    if not auth_date or abs(int(time.time())-auth_date)>86400:
-        raise ValueError("expired initData")
-    raw_user=data.get("user")
-    if not raw_user:
-        raise ValueError("Telegram user missing")
-    user=json.loads(raw_user)
-    if not user.get("id"):
-        raise ValueError("Telegram user id missing")
-    return user
+        msg=bot_obj.send_message(chat_id,"To continue, watch a short ad (5 sec) or buy /premium",reply_markup=_ad_gate_keyboard(token,premium_url))
+        ad_gates_col.update_one({"token":token},{"$set":{"message_id":int(msg.message_id)}})
+        return True
+    except Exception as e:
+        ad_gates_col.delete_one({"token":token}); print("Ad gate send failed:",repr(e)); return True
 
 
-def _ad_http_json(handler,status,payload):
-    body=json.dumps(payload,separators=(",",":"),ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type","application/json; charset=utf-8")
-    handler.send_header("Cache-Control","no-store, no-cache, must-revalidate")
-    handler.send_header("Pragma","no-cache")
-    handler.send_header("Content-Length",str(len(body)))
-    handler.end_headers(); handler.wfile.write(body)
-
-
-def _ad_http_read_json(handler):
+def _dispatch_ad_action(doc):
     try:
-        length=int(handler.headers.get("Content-Length","0") or 0)
-        raw=handler.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode("utf-8"))
-    except Exception:
-        return {}
+        uid=str(doc.get("user_id") or ""); chat_id=int(doc.get("chat_id")); bid=str(doc.get("bot_id") or "main"); action=str(doc.get("action") or ""); payload=doc.get("payload") or {}
+        if bid=="main":
+            if action=="download":
+                link=str(payload.get("link") or ""); quality=payload.get("quality")
+                if link: download_executor_for(uid).submit(_download_request_job,chat_id,link,quality,uid)
+            elif action=="song_search":
+                q=_music_clean_text(payload.get("query")); rows=_song_search_all(q,30) if q else []
+                _cleanup_song_search(); token=uuid.uuid4().hex[:16]; song_search_pending[token]={"uid":uid,"query":q,"results":rows,"created":time.time()}
+                if rows: _send_song_results(chat_id,token,0)
+                else: bot.send_message(chat_id,"❌ No matching songs found. Try the song title, artist, or a small part of the name.")
+            elif action=="song_download":
+                song=payload.get("song") or {}; url=str(song.get("download") or "")
+                if url:
+                    status=bot.send_message(chat_id,"⏳ Downloading the full track...")
+                    download_executor_for(uid).submit(convert_link_to_mp3,chat_id,url,status.message_id,None,None,str(song.get("title") or ""),str(song.get("artist") or ""))
+            return
+        d=managed_bots_col.find_one({"bot_id":bid}); mb=managed_bot_objects.get(bid) or (_managed_bot_start_instance(d) if d else None)
+        if not mb: return
+        if action=="download":
+            link=str(payload.get("link") or "")
+            if link:
+                ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,download_media,chat_id,link,None,None)
+        elif action=="music_search":
+            q=_music_clean_text(payload.get("query"))
+            if q: _run_managed_music_search(mb,chat_id,q,uid,bid)
+        elif action=="music_download":
+            ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,_managed_download_song,mb,chat_id,payload.get("song") or {},uid,bid)
+    except Exception as e: print("Ad action dispatch failed:",repr(e))
 
 
-def _ad_tma_html(token=""):
-    visual_html=os.getenv("AD_VISUAL_HTML","").strip()
-    if not visual_html:
-        visual_html=(
-            '<div class="ad-card">'
-            '<div class="ad-label">ads by Adsterra</div>'
-            '<div class="ad-title">🎁 Click to get the reward!</div>'
-            '<a id="reward" class="reward" href="'+html.escape(AD_SMARTLINK_URL,quote=True)+'" target="_blank" rel="noopener">Click to get the reward!</a>'
-            '<div class="ad-note">A short ad will open in a new tab.</div>'
-            '</div>'
-        )
-    token_js=json.dumps(str(token))
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>QuickDL</title><script src="https://telegram.org/js/telegram-web-app.js?63"></script>
-<style>
-*{{box-sizing:border-box}}html,body{{margin:0;width:100%;height:100%;font-family:Arial,sans-serif;background:var(--tg-theme-bg-color,#eef3f5);color:var(--tg-theme-text-color,#111)}}
-body{{display:flex;justify-content:center}}.wrap{{width:100%;max-width:520px;min-height:100%;display:flex;flex-direction:column;justify-content:flex-end;padding:16px 16px 18px}}
-.ad-card{{flex:1;min-height:360px;border-radius:22px;background:linear-gradient(135deg,#d9efb8,#bfe39d);color:#17231a;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.12)}}
-.ad-label{{font-size:15px;opacity:.7;margin-bottom:18px}}.ad-title{{font-size:27px;font-weight:800;margin-bottom:26px}}.reward{{display:inline-flex;align-items:center;justify-content:center;min-height:56px;padding:0 24px;border-radius:16px;background:#234f34;color:#fff;text-decoration:none;font-weight:800;font-size:18px}}.ad-note{{font-size:13px;opacity:.72;margin-top:16px}}
-.bottom{{padding-top:14px}}.timer{{text-align:center;font-size:15px;opacity:.7;margin:8px 0 10px}}button{{width:100%;border:0;border-radius:16px;padding:16px;font-size:20px;font-weight:800;background:#1683ff;color:#fff}}button:disabled{{opacity:.45}}.error{{color:#c62828;background:rgba(198,40,40,.1);padding:12px;border-radius:12px;margin-top:10px;display:none}}
-</style></head><body><div class="wrap">{visual_html}<div class="bottom"><div id="timer" class="timer">Connecting…</div><button id="continue" disabled>Continue</button><div id="error" class="error"></div></div></div>
-<script>
-const tg=window.Telegram&&window.Telegram.WebApp;const token={token_js};const initData=tg?tg.initData:"";const timerEl=document.getElementById("timer");const btn=document.getElementById("continue");const err=document.getElementById("error");let duration={int(AD_GATE_SECONDS)};
-function showError(x){{err.textContent=x;err.style.display="block";timerEl.textContent="Error";}}
-async function post(path,payload){{const r=await fetch(path,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(payload)}});let j={{}};try{{j=await r.json()}}catch(_e){{}}if(!r.ok)throw new Error(j.error||"Request failed");return j;}}
-async function init(){{if(!tg){{showError("Please open this page from Telegram.");return}}tg.ready();tg.expand();try{{const data=await post("/ad/session",{{token:token,initData:initData}});duration=Math.max(1,Number(data.duration||{int(AD_GATE_SECONDS)}));timerEl.textContent="Ad gate: "+duration+"s";let left=duration;const t=setInterval(()=>{{left--;timerEl.textContent=left>0?("Ad gate: "+left+"s"):"✓ Ready to continue";if(left<=0){{clearInterval(t);btn.disabled=false;}}}},1000);}}catch(e){{showError(e.message||"Unable to load ad session")}}}}
-btn.addEventListener("click",async()=>{{btn.disabled=true;btn.textContent="Continuing…";try{{const data=await post("/ad/complete",{{token:token,initData:initData}});if(data.ok){{timerEl.textContent="✓ Download started";btn.textContent="Done";setTimeout(()=>{{try{{tg.close()}}catch(_e){{}}}},350);}}}}catch(e){{btn.disabled=false;btn.textContent="Continue";showError(e.message||"Could not continue")}}}});init();
-</script></body></html>""".encode("utf-8")
-
-
-def _ad_complete_from_request(token,init_data):
+def _validate_tma_init_data(init_data, expected_user_id):
+    """Validate Telegram Mini App initData and bind it to the pending gate user."""
+    if not init_data or not TOKEN:
+        return False
     try:
-        user=_telegram_webapp_user(init_data); uid=str(user.get("id"))
-    except Exception as e: return 401,{"ok":False,"error":str(e)}
-    row=ad_gates_col.find_one({"token":str(token)})
-    if not row: return 404,{"ok":False,"error":"Ad session not found"}
-    if str(row.get("user_id"))!=uid: return 403,{"ok":False,"error":"This ad session belongs to another Telegram user"}
-    status=str(row.get("status") or "pending")
-    if status=="completed": return 200,{"ok":True,"already_completed":True}
-    now=datetime.now(timezone.utc); opened=row.get("opened_at")
-    if not opened: return 409,{"ok":False,"error":"Ad session has not started"}
-    if opened.tzinfo is None: opened=opened.replace(tzinfo=timezone.utc)
-    elapsed=(now-opened).total_seconds()
-    if elapsed < AD_GATE_SECONDS: return 429,{"ok":False,"error":f"Please wait {max(1,int(AD_GATE_SECONDS-elapsed))} more second(s)."}
-    until=now+timedelta(seconds=AD_COOLDOWN_SECONDS)
-    from pymongo import ReturnDocument
-    result=ad_gates_col.find_one_and_update({"_id":row["_id"],"user_id":uid,"status":"opened"},{"$set":{"status":"completed","completed_at":now,"cooldown_until":until}},return_document=ReturnDocument.AFTER)
-    if not result: return 200,{"ok":True,"already_completed":True}
-    mid=result.get("message_id"); bid=str(result.get("bot_id") or "main")
-    try:
-        if mid:
-            obj=bot if bid=="main" else managed_bot_objects.get(bid)
-            if obj: obj.delete_message(int(result.get("chat_id")),int(mid))
-    except Exception as e: print("Ad gate delete failed:",repr(e))
-    threading.Thread(target=_dispatch_ad_action,args=(result,),daemon=True,name="ad-dispatch").start()
-    return 200,{"ok":True,"rewarded":True}
-
+        pairs=urllib.parse.parse_qsl(init_data,keep_blank_values=True)
+        data=dict(pairs)
+        received=str(data.pop("hash","") or "")
+        if not received:
+            return False
+        check="\n".join(f"{k}={v}" for k,v in sorted(data.items()))
+        secret=hmac.new(b"WebAppData", str(TOKEN).encode(), hashlib.sha256).digest()
+        calc=hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc,received):
+            return False
+        auth_date=int(data.get("auth_date","0") or 0)
+        if not auth_date or int(time.time())-auth_date>86400:
+            return False
+        raw_user=data.get("user")
+        if not raw_user:
+            return False
+        tg_user=json.loads(raw_user)
+        return int(tg_user.get("id"))==int(expected_user_id)
+    except Exception as e:
+        print("TMA initData validation failed:",repr(e))
+        return False
 
 class _AdGateHandler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): return
-    def _send_html(self,body,status=200):
-        self.send_response(status);self.send_header("Content-Type","text/html; charset=utf-8");self.send_header("Cache-Control","no-store, no-cache, must-revalidate");self.send_header("Pragma","no-cache");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
+
+    def _send_html(self, body, status=200, content_type="text/html; charset=utf-8"):
+        body = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, location, status=302):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_GET(self):
-        parsed=urllib.parse.urlparse(self.path);path=parsed.path
-        if path=="/health": self._send_html(b"ok",200);return
-        if path=="/":
-            token=(urllib.parse.parse_qs(parsed.query).get("token") or [""])[0]
-            if not token: self._send_html(b"<h3>QuickDL Mini App</h3><p>Open this page from the Watch ad button in Telegram.</p>",200);return
-            if not ad_gates_col.find_one({"token":token}): self._send_html(b"<h3>Ad session expired.</h3>",410);return
-            self._send_html(_ad_tma_html(token),200);return
-        m=re.fullmatch(r"/ad/open/([A-Za-z0-9]{8,64})",path)
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/health":
+            self._send_html("ok", 200, "text/plain; charset=utf-8")
+            return
+        if path == "/":
+            self._send_html("<h3>QuickDL</h3><p>Ad service is online.</p>", 200)
+            return
+
+        m = re.fullmatch(r"/ad/open/([A-Za-z0-9]{8,64})", path)
         if m:
-            token=m.group(1)
-            if not ad_gates_col.find_one({"token":token}): self._send_html(b"<h3>Ad session expired.</h3>",410);return
-            self._send_html(_ad_tma_html(token),200);return
-        self._send_html(b"Not found",404)
+            token = m.group(1)
+            row = ad_gates_col.find_one({"token": token, "status": "pending"})
+            if not row:
+                self._send_html("<h3>Ad session expired or already used.</h3>", 410)
+                return
+            now = datetime.now(timezone.utc)
+            until = now + timedelta(seconds=AD_COOLDOWN_SECONDS)
+            ad_gates_col.update_one(
+                {"_id": row["_id"], "status": "pending"},
+                {"$set": {"status": "opened", "opened_at": now, "cooldown_until": until}}
+            )
+            row["status"] = "opened"
+            mid = row.get("message_id")
+            bid = str(row.get("bot_id") or "main")
+            try:
+                if mid:
+                    obj = bot if bid == "main" else managed_bot_objects.get(bid)
+                    if obj:
+                        obj.delete_message(int(row.get("chat_id")), int(mid))
+            except Exception as e:
+                print("Ad gate delete failed:", repr(e))
+
+            ad_html = ADSTERRA_AD_HTML or ('<div class="ad-placeholder">Adsterra placement<br><small>Set ADSTERRA_AD_HTML with the code supplied by Adsterra.</small></div>')
+            html_body = f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>QuickDL</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>:root{{color-scheme:light dark}}*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;font-family:Arial,sans-serif;background:var(--tg-theme-bg-color,#eef0f2);color:var(--tg-theme-text-color,#111);display:flex;justify-content:center}}.wrap{{width:100%;max-width:520px;min-height:100vh;display:flex;flex-direction:column;padding:18px 14px calc(24px + env(safe-area-inset-bottom));gap:12px}}.card{{background:var(--tg-theme-secondary-bg-color,#fff);border-radius:20px;padding:16px;box-shadow:0 2px 14px rgba(0,0,0,.08)}}.adbox{{min-height:330px;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:16px;background:rgba(127,127,127,.08)}}.timer{{font-size:22px;font-weight:700;text-align:center}}button{{width:100%;border:0;border-radius:14px;padding:16px;font-size:18px;font-weight:700;background:#2481cc;color:#fff}}button:disabled{{opacity:.45}}.small{{font-size:12px;opacity:.65;text-align:center}}.ad-placeholder{{text-align:center;padding:30px;opacity:.75}}</style></head><body><div class="wrap"><div class="card"><div class="adbox">{ad_html}</div></div><div id="timer" class="timer">{AD_GATE_SECONDS}</div><button id="continue" disabled>Continue</button><div class="small">After Continue, your pending download/search will resume automatically.</div></div><script>const tg=window.Telegram.WebApp;tg.ready();tg.expand();const token={json.dumps(token)};const initData=tg.initData||"";const timer=document.getElementById("timer");const btn=document.getElementById("continue");let left={int(AD_GATE_SECONDS)},finished=false;const tick=setInterval(()=>{{left--;timer.textContent=left;if(left<=0){{clearInterval(tick);finished=true;timer.textContent="✓ Ready";btn.disabled=false;}}}},1000);btn.addEventListener("click",async()=>{{if(!finished)return;btn.disabled=true;btn.textContent="Processing...";try{{const r=await fetch("/ad/complete",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{token,initData}})}});const d=await r.json();if(!r.ok)throw new Error(d.detail||"Unable to continue");btn.textContent="✓ Continue";setTimeout(()=>tg.close(),250);}}catch(e){{console.error(e);btn.disabled=false;btn.textContent="Try Again";timer.textContent="Error";}}}});</script></body></html>'''
+            self._send_html(html_body, 200)
+            return
+
+        m = re.fullmatch(r"/ad/skip/([A-Za-z0-9]{8,64})", path)
+        if m:
+            token = m.group(1)
+            row = ad_gates_col.find_one({"token": token, "status": {"$in": ["pending", "opened"]}})
+            if not row:
+                self._send_html("<h3>Skip session expired or already used.</h3>", 410)
+                return
+            now = datetime.now(timezone.utc)
+            ad_gates_col.update_one({"_id": row["_id"]},{"$set": {"status":"completed","opened_at":now,"completed_at":now,"cooldown_until":now+timedelta(seconds=AD_COOLDOWN_SECONDS)}})
+            mid=row.get("message_id"); bid=str(row.get("bot_id") or "main")
+            try:
+                if mid:
+                    obj=bot if bid=="main" else managed_bot_objects.get(bid)
+                    if obj: obj.delete_message(int(row.get("chat_id")),int(mid))
+            except Exception as e: print("Skip gate delete failed:",repr(e))
+            threading.Thread(target=_dispatch_ad_action,args=(row,),daemon=True).start()
+            self._redirect(AD_SMARTLINK_URL,302)
+            return
+
+        self._send_html("<h3>Not found</h3>", 404)
+
     def do_POST(self):
-        path=urllib.parse.urlparse(self.path).path;data=_ad_http_read_json(self)
-        if path=="/ad/session":
-            token=str(data.get("token") or "")
-            try: user=_telegram_webapp_user(data.get("initData") or "");uid=str(user.get("id"))
-            except Exception as e: _ad_http_json(self,401,{"ok":False,"error":str(e)});return
+        parsed=urllib.parse.urlparse(self.path)
+        if parsed.path != "/ad/complete":
+            self._send_html("Not found",404)
+            return
+        try:
+            length=int(self.headers.get("Content-Length","0"))
+            raw=self.rfile.read(length)
+            data=json.loads(raw.decode("utf-8") or "{}")
+            token=str(data.get("token") or "").strip()
+            if not token or not re.fullmatch(r"[A-Za-z0-9]{8,64}",token):
+                self._send_html(json.dumps({"detail":"Invalid token"}),400,"application/json")
+                return
             row=ad_gates_col.find_one({"token":token})
-            if not row: _ad_http_json(self,404,{"ok":False,"error":"Ad session not found"});return
-            if str(row.get("user_id"))!=uid: _ad_http_json(self,403,{"ok":False,"error":"Wrong Telegram user"});return
-            if str(row.get("status"))=="completed": _ad_http_json(self,200,{"ok":True,"duration":0,"completed":True});return
+            if not row:
+                self._send_html(json.dumps({"detail":"Ad session not found"}),404,"application/json")
+                return
+            if row.get("status")=="completed":
+                self._send_html(json.dumps({"ok":True,"already_completed":True}),200,"application/json")
+                return
+            if row.get("status")!="opened":
+                self._send_html(json.dumps({"detail":"Open the Mini App first"}),409,"application/json")
+                return
+            if not _validate_tma_init_data(str(data.get("initData") or ""), row.get("user_id")):
+                self._send_html(json.dumps({"detail":"Telegram Mini App authorization failed"}),401,"application/json")
+                return
             now=datetime.now(timezone.utc)
-            if not row.get("opened_at"): ad_gates_col.update_one({"_id":row["_id"],"status":"pending"},{"$set":{"status":"opened","opened_at":now}})
-            _ad_http_json(self,200,{"ok":True,"duration":AD_GATE_SECONDS,"completed":False});return
-        if path=="/ad/complete":
-            token=str(data.get("token") or "");status,payload=_ad_complete_from_request(token,data.get("initData") or "");_ad_http_json(self,status,payload);return
-        _ad_http_json(self,404,{"ok":False,"error":"Not found"})
+            if row.get("created_at") and now-row["created_at"]>timedelta(minutes=10):
+                self._send_html(json.dumps({"detail":"Ad session expired"}),410,"application/json")
+                return
+            ad_gates_col.update_one({"_id":row["_id"],"status":"opened"},{"$set":{"status":"completed","completed_at":now}})
+            _dispatch_ad_action(row)
+            self._send_html(json.dumps({"ok":True,"rewarded":True}),200,"application/json")
+        except Exception as e:
+            print("Ad complete failed:",repr(e))
+            self._send_html(json.dumps({"detail":"Unable to continue"}),500,"application/json")
+
+
+def _start_ad_http_server():
+    try:
+        server=ThreadingHTTPServer((AD_HTTP_HOST,AD_HTTP_PORT),_AdGateHandler)
+        threading.Thread(target=server.serve_forever,daemon=True,name="ad-gate-http").start()
+        print(f"Ad gate server listening on {AD_HTTP_HOST}:{AD_HTTP_PORT}")
+    except Exception as e: print("Ad gate HTTP server failed:",repr(e))
+
 
 def touch_user(uid, save=True):
     uid=str(uid)
