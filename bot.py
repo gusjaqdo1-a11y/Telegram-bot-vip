@@ -1324,6 +1324,9 @@ def _remove_ads_active(uid, bot_id=None):
 
 
 def _ad_enabled_for(uid, bot_id=None):
+    # Ads/Remove Ads belong only to Creator-managed small bots. The main
+    # @Downloadvedioytibot downloader is never gated by this system.
+    if _ad_bot_key(bot_id) == "main": return True
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -1340,7 +1343,6 @@ def _ad_gate_keyboard(token,premium_url=None):
     kb=InlineKeyboardMarkup(row_width=2)
     kb.add(InlineKeyboardButton("▶️ Watch Ad",url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"),
            InlineKeyboardButton("🚫 Remove Ads",callback_data=f"adremove:{token}"))
-    kb.row(InlineKeyboardButton("⏭️ Skip",callback_data=f"adskip:{token}"))
     return kb
 
 
@@ -6334,6 +6336,11 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
     action_stop=threading.Event()
     start_action_heartbeat(chat_id,"upload_audio",action_stop)
     try:
+        if _ACTIVE_MANAGED_META.get():
+            powered=_active_powered_text()
+            if powered:
+                try: _current_bot().send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                except Exception as e: print("Managed music powered-by send failed:",repr(e))
         if status_message_id:
             try: _current_bot().delete_message(chat_id, status_message_id)
             except Exception: pass
@@ -11998,6 +12005,13 @@ def _managed_bot_start_instance(doc):
                 if not _ad_enabled_for(uid,bid):
                     if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
                 _run_managed_music_search(mb,m.chat.id,q,uid,bid,managed_music_pending)
+            def _music_cancel(call):
+                _ctx(); p=str(call.data).split(":"); token2=p[1] if len(p)>1 else ""; data=managed_music_pending.get(token2)
+                if data and str(data.get("uid"))!=str(call.from_user.id):
+                    mb.answer_callback_query(call.id,"This search belongs to another user.",show_alert=True); return
+                managed_music_pending.pop(token2,None); mb.answer_callback_query(call.id,"Search closed")
+                try: mb.delete_message(call.message.chat.id,call.message.message_id)
+                except Exception: pass
             def _music_page(call):
                 _ctx(); p=str(call.data).split(":"); token2=p[1] if len(p)>1 else ""; page=int(p[2]) if len(p)>2 else 0; data=managed_music_pending.get(token2)
                 if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"Search expired.",show_alert=True); return
@@ -12060,9 +12074,9 @@ def _managed_bot_start_instance(doc):
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
-            if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
+            if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adskip:"))(_ad_skip_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
@@ -12071,26 +12085,37 @@ def _managed_bot_start_instance(doc):
             print("Managed bot start failed:",repr(e)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500]}}); return None
 
 def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
-    """Run the same YouTube-first song engine used by the main bot for managed Music bots."""
+    """Managed Music Downloader uses the exact same YouTube-first engine as the main bot.
+
+    The managed bot has its own pending-session store/callbacks, but the search
+    provider/ranking/metadata rules are shared with Search Song in the main bot.
+    """
     pending=pending if pending is not None else {}
     q=_music_clean_text(q)
     if not q: return
     try:
         rows=_song_search_all(q,30)
-        # Ensure every visible result has usable duration/artist/cover/download data.
+        # If a provider returned nothing, use the same lower-level fallback used
+        # by the main song engine before reporting failure.
+        if not rows:
+            rows=_youtube_song_search(q,30)
         clean=[]
-        for x in rows:
+        for x in rows or []:
             if not isinstance(x,dict): continue
-            if not x.get("download"): continue
+            url=str(x.get("download") or x.get("webpage_url") or "")
+            if not url: continue
             dur=_parse_duration_value(x.get("duration"))
-            if dur<=0: continue
             title=_music_clean_text(x.get("title"))
             artist=_music_clean_text(x.get("artist"))
-            if not title: continue
+            if not title or dur<=0: continue
             if not artist:
                 artist=_song_parse_artists(title,"") or "Unknown artist"
-            x=dict(x); x["title"]=title; x["artist"]=artist; x["duration"]=dur; x["cover"]=x.get("cover") or _youtube_artwork_url(str(x.get("id") or ""))
-            clean.append(x)
+            item=dict(x)
+            item.update({"download":url,"webpage_url":item.get("webpage_url") or url,
+                         "title":title,"artist":artist,"duration":dur,
+                         "cover":item.get("cover") or _youtube_artwork_url(str(item.get("id") or "")),
+                         "source":item.get("source") or "youtube","download_allowed":True})
+            clean.append(item)
         token=uuid.uuid4().hex[:16]
         pending[token]={"uid":str(uid),"query":q,"rows":clean,"created":time.time()}
         if not clean:
@@ -12098,26 +12123,52 @@ def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
             return
         _managed_music_show(mb,chat_id,token,0,pending)
     except Exception as e:
+        import traceback
         print("Managed music search error:",repr(e))
-        try: mb.send_message(chat_id,"❌ Music search failed. Please try again.")
+        traceback.print_exc()
+        # One final isolated fallback keeps managed Music bots usable even if
+        # the merged main search path encounters a provider-specific exception.
+        try:
+            rows=_youtube_song_search(q,20) or []
+            if rows:
+                token=uuid.uuid4().hex[:16]
+                pending[token]={"uid":str(uid),"query":q,"rows":rows,"created":time.time()}
+                _managed_music_show(mb,chat_id,token,0,pending)
+                return
+        except Exception as e2:
+            print("Managed music emergency fallback failed:",repr(e2))
+        try: mb.send_message(chat_id,"❌ No matching songs found. Try the song title or artist name.")
         except Exception: pass
-
 
 def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
-    data=pending.get(token2) or {}; rows=data.get("rows") or []; start=page*10; end=min(start+10,len(rows)); lines=["🔍 <b>Music Search</b>",""]
-    for i in range(start,end):
-        x=rows[i]; dur=_parse_duration_value(x.get("duration")); title=_music_clean_text(x.get("title"))
-        if dur>0 and title: lines.append(f"<b>{i+1}.</b> {html.escape(title)} {_song_duration(dur)}")
+    data=pending.get(token2) or {}; rows=data.get("rows") or []
+    total=len(rows); page=max(0,int(page)); start_i=page*10; end_i=min(start_i+10,total)
+    query=html.escape(str(data.get("query") or ""))
+    lines=[f"🔍 <b>{query}</b>",""]
+    visible=0
+    for i in range(start_i,end_i):
+        x=rows[i]; title=_music_clean_text(x.get("title")); dur=_parse_duration_value(x.get("duration"))
+        if not title or dur<=0: continue
+        lines.append(f"<b>{i+1}.</b> {html.escape(title)} {_song_duration(dur)}")
+        visible+=1
+    if not visible:
+        lines.append("❌ No complete music results were found. Try another title or artist.")
     kb=InlineKeyboardMarkup(row_width=5)
-    for i in range(start,end): kb.insert(InlineKeyboardButton(str(i+1),callback_data=f"msong:{token2}:{i}"))
+    buttons=[InlineKeyboardButton(str(i+1),callback_data=f"msong:{token2}:{i}") for i in range(start_i,end_i) if i < total]
+    for j in range(0,len(buttons),5): kb.row(*buttons[j:j+5])
+    last_page=max(0,(total-1)//10)
     nav=[]
     if page>0: nav.append(InlineKeyboardButton("⬅️",callback_data=f"mspage:{token2}:{page-1}"))
-    if end<len(rows): nav.append(InlineKeyboardButton("➡️",callback_data=f"mspage:{token2}:{page+1}"))
-    if nav: kb.row(*nav)
+    nav.append(InlineKeyboardButton("❌",callback_data=f"msongcancel:{token2}"))
+    if page<last_page: nav.append(InlineKeyboardButton("➡️",callback_data=f"mspage:{token2}:{page+1}"))
+    kb.row(*nav)
+    text="\n".join(lines)
     if edit_message:
-        try: mb.edit_message_text("\n".join(lines),edit_message.chat.id,edit_message.message_id,parse_mode="HTML",reply_markup=kb); return
-        except Exception: pass
-    mb.send_message(chat_id,"\n".join(lines),parse_mode="HTML",reply_markup=kb)
+        try:
+            mb.edit_message_text(text,edit_message.chat.id,edit_message.message_id,parse_mode="HTML",reply_markup=kb)
+            return
+        except Exception as e: print("Managed music results edit failed:",repr(e))
+    mb.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
 
 def _managed_download_song(mb,chat_id,song,uid,bid):
     tmp=None
@@ -12155,6 +12206,10 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                         try: mb.send_audio(chat_id,fh,**kwargs)
                         except Exception: kwargs.pop("thumb",None); fh.seek(0); mb.send_audio(chat_id,fh,**kwargs)
                     _record_song_download(uid,{**song,"title":title,"artist":artist,"album":album})
+                    powered=_active_powered_text()
+                    if powered:
+                        try: mb.send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                        except Exception as e: print("Managed music powered-by send failed:",repr(e))
                     return
             except Exception as e:
                 print("Managed RapidAPI music failed; falling back to yt-dlp:",repr(e))
