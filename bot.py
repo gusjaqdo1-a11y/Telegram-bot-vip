@@ -4815,15 +4815,17 @@ def _song_query_variants(query, max_variants=1):
     return [query] if query else []
 
 def _youtube_song_is_music(title, artist, duration=0, item=None):
-    """Strictly keep music-like YouTube Music results and reject news/talk content.
+    """Keep actual music tracks and reject ordinary YouTube videos.
 
-    The search itself is sent to YouTube Music's dedicated *Songs* section, so
-    normal YouTube news/videos should not enter the result set. This second
-    filter is deliberately conservative because YouTube Music metadata can be
-    incomplete for older tracks.
+    YouTube's normal video search is much broader than YouTube Music.  Therefore
+    clean-looking titles alone are no longer enough: a result must either come
+    from the dedicated YouTube Music Songs shelf, expose music/category metadata,
+    or contain a strong music/track signal.
     """
-    title=_song_norm(title)
-    artist=_song_norm(artist)
+    raw_title=_music_clean_text(title)
+    raw_artist=_music_clean_text(artist)
+    title=_song_norm(raw_title)
+    artist=_song_norm(raw_artist)
     if not title:
         return False
     try:
@@ -4832,28 +4834,62 @@ def _youtube_song_is_music(title, artist, duration=0, item=None):
         dur=0
     if dur and dur > 25*60:
         return False
-    bad=(
-        "news", "live", "breaking", "press conference", "full speech", "speech",
-        "interview", "debate", "podcast", "documentary", "newshour", "cnn",
-        "wion", "bbc", "fox news", "al jazeera", "reuters", "n18", "drm news",
-        "walkout", "general assembly", "iran war", "ukraine war", "seven day",
-    )
     combined=f"{title} {artist}"
+    bad=(
+        "news", "breaking news", "press conference", "full speech", "speech",
+        "interview", "debate", "podcast", "documentary", "newshour", "cnn",
+        "wion", "bbc", "fox news", "al jazeera", "reuters", "n18",
+        "general assembly", "iran war", "ukraine war", "seven day",
+    )
     if any(term in combined for term in bad):
         return False
-    # Music-oriented metadata is a useful positive signal, but is not required:
-    # older/independent tracks often have only a clean title + artist.
+
+    # Dedicated YouTube Music result/renderers are authoritative.
+    if isinstance(item, dict):
+        blob=" ".join(str(v) for k,v in item.items() if str(k).lower() in {
+            "category","categorylabel","genre","type","musictracktype","resulttype","contenttype","shelf"
+        }).lower()
+        if "song" in blob or "music" in blob or "track" in blob:
+            return True
+        # Music Music responsive renderers carry music-specific keys.
+        if any(k in item for k in ("musicResponsiveListItemFlexColumnRenderer","musicResponsiveListItemFixedColumnRenderer","musicTwoRowItemRenderer")):
+            return True
+        if "music" in str(item.get("url") or "").lower() or "music.youtube" in str(item.get("webpage_url") or "").lower():
+            return True
+        # RapidAPI often exposes a category/type field nested deeper.
+        def walk_music(v, depth=0):
+            if depth > 4: return False
+            if isinstance(v, dict):
+                for k,val in v.items():
+                    kl=str(k).lower()
+                    if kl in {"category","genre","type","resulttype","contenttype","musictracktype"}:
+                        sv=str(val).lower()
+                        if "music" in sv or "song" in sv or "track" in sv: return True
+                    if walk_music(val, depth+1): return True
+            elif isinstance(v, list):
+                return any(walk_music(x,depth+1) for x in v)
+            return False
+        if walk_music(item):
+            return True
+
     positive=(
-        "official music", "official audio", "music video", "lyrics", "lyric video",
-        "audio", "song", "remix", "acoustic", "instrumental", "cover", "soundtrack",
-        "topic", "records", "music", "ost", "original soundtrack",
+        "official music", "official audio", "music video", "lyric video",
+        "lyrics", "audio", "song", "remix", "acoustic", "instrumental",
+        "soundtrack", "ost", "original soundtrack", "topic", "records",
+        "visualizer", "performance", "prod.", "ft.", "feat.", "featuring",
     )
     if any(term in title for term in positive) or artist.endswith(" topic"):
         return True
-    # A result coming from the dedicated YouTube Music Songs section is already
-    # a song candidate. Keep ordinary-length clean results unless they look like
-    # an obvious news/talk result above.
-    return True
+
+    # Artist-title forms such as "Central Cee - Let Go" are strong music
+    # candidates, while arbitrary sentence/video titles are not.
+    if raw_artist and raw_artist.lower() not in {"youtube","unknown","unknown artist"}:
+        if _song_norm(raw_artist) in title or title.startswith(_song_norm(raw_artist)+" "):
+            return True
+    separators=(" - "," – "," — "," | ")
+    if any(sep in raw_title for sep in separators) and len(raw_title.split()) <= 18:
+        return True
+    return False
 
 def _song_parse_artists(title, channel=""):
     raw_title=_music_clean_text(title); raw_channel=_music_clean_text(channel); artists=[]
@@ -5303,47 +5339,47 @@ def _rapidapi_youtube_song_search(query, limit=30):
 
 
 def _song_search_all(query, limit=30):
-    """Fast, high-recall YouTube music search. No Jamendo and no normal-video-only search."""
+    """YouTube Music-first song search; normal YouTube video search is fallback-only."""
     want=max(10,min(30,int(limit)))
-    # RapidAPI is primary. Its response is merged with the dedicated YouTube Music
-    # Songs shelf so short/partial API pages do not produce only 2-7 choices.
-    try: primary=_rapidapi_youtube_song_search(query,want)
-    except Exception as e:
-        print("RapidAPI primary search failed:",repr(e)); primary=[]
-    try: fallback=_youtube_music_http_search(query,want)
-    except Exception as e:
-        print("YouTube Music HTTP fallback failed:",repr(e)); fallback=[]
     merged=[]; seen=set()
-    for x in primary+fallback:
-        key=str(x.get("id") or x.get("download") or "")
-        if not key or key in seen: continue
-        if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
-        if str(x.get("source") or "youtube").lower()=="youtube" and not _youtube_song_is_music(x.get("title"), x.get("artist"), x.get("duration"), x):
-            continue
-        if not _song_is_relevant(query, x.get("title",""), x.get("artist",""), x.get("album","")):
-            continue
-        seen.add(key); merged.append(x)
-    # Native ytmsearch is only used when the first two fast paths still have too
-    # few results. This keeps normal searches fast while preserving recall.
-    if len(merged)<want:
-        try: extra=_youtube_music_ytmsearch(query,want)
-        except Exception as e:
-            print("YouTube Music ytmsearch fallback failed:",repr(e)); extra=[]
-        for x in extra:
+
+    # 1) Dedicated YouTube Music Songs shelf first.
+    try: first=_youtube_music_http_search(query,want) or []
+    except Exception as e:
+        print("YouTube Music HTTP search failed:",repr(e)); first=[]
+    # 2) Native ytmsearch is still a Music section search, not ordinary videos.
+    if len(first)<want:
+        try: first += _youtube_music_ytmsearch(query,want) or []
+        except Exception as e: print("YouTube Music native search failed:",repr(e))
+
+    def add_rows(rows):
+        for x in rows or []:
+            if not isinstance(x,dict): continue
             key=str(x.get("id") or x.get("download") or "")
             if not key or key in seen: continue
-            if str(x.get("source") or "youtube").lower()=="youtube" and not _youtube_song_is_music(x.get("title"), x.get("artist"), x.get("duration"), x):
-                continue
-            if not _song_is_relevant(query, x.get("title",""), x.get("artist",""), x.get("album","")):
-                continue
-            seen.add(key); merged.append(x)
-            if len(merged)>=want: break
-    # Re-rank the merged set so exact artist/title matches come first.
+            if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
+            if not _youtube_song_is_music(x.get("title"),x.get("artist"),x.get("duration"),x): continue
+            if not _song_is_relevant(query,x.get("title",""),x.get("artist",""),x.get("album","")): continue
+            seen.add(key); merged.append(dict(x))
+
+    add_rows(first)
+
+    # 3) RapidAPI normal-video search is used only to fill missing songs, and is
+    # subjected to the stricter music classifier above.
+    if len(merged)<want:
+        try: add_rows(_rapidapi_youtube_song_search(query,want) or [])
+        except Exception as e: print("RapidAPI song fallback failed:",repr(e))
+
     for x in merged:
         x["_score"]=_song_similarity(query,x.get("title",""),x.get("artist",""),x.get("album",""))
+        qn=_song_norm(query); an=_song_norm(x.get("artist","")); tn=_song_norm(x.get("title",""))
+        if qn and qn==an: x["_score"]+=20000
+        elif qn and qn in an: x["_score"]+=10000
+        if qn and qn==tn: x["_score"]+=8000
     merged.sort(key=lambda x:x.get("_score",0),reverse=True)
     for x in merged: x.pop("_score",None)
     return merged[:want]
+
 
 def _main_bot_username():
     global _MAIN_BOT_USERNAME_CACHE
@@ -6411,11 +6447,6 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
     action_stop=threading.Event()
     start_action_heartbeat(chat_id,"upload_audio",action_stop)
     try:
-        if _ACTIVE_MANAGED_META.get():
-            powered=_active_powered_text()
-            if powered:
-                try: _current_bot().send_message(chat_id,powered)
-                except Exception as e: print("Managed music powered-by send failed:",repr(e))
         if status_message_id:
             try: _current_bot().delete_message(chat_id, status_message_id)
             except Exception: pass
@@ -6601,6 +6632,13 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
             _send_mp3_file(chat_id,path,title,artist,cover_path=cover_path,caption=caption,reply_markup=music_markup)
         finally:
             upload_stop.set()
+        # Powered by is strictly a post-download message. Never send it before
+        # the actual song/audio has been uploaded successfully.
+        if _ACTIVE_MANAGED_META.get():
+            powered=_active_powered_text()
+            if powered:
+                try: _current_bot().send_message(chat_id,powered)
+                except Exception as e: print("Managed music powered-by send failed:",repr(e))
         if status_message_id:
             try: _current_bot().delete_message(chat_id, status_message_id)
             except Exception: pass
