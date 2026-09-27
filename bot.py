@@ -7155,7 +7155,7 @@ def check_membership(user_id):
     touch_user(user_id)
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        if member.status in ["member", "administrator", "creator"] or (member.status == "restricted" and getattr(member, "is_member", False)):
             bot.send_message(
                 user_id,
                 render_start_message(str(user_id)),
@@ -7195,7 +7195,7 @@ def confirm_join(call):
     user_id = call.from_user.id
     try:
         member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"]:
+        if member.status in ["member", "administrator", "creator"] or (member.status == "restricted" and getattr(member, "is_member", False)):
             bot.answer_callback_query(call.id, "✅ Join verified")
             try:
                 bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
