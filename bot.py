@@ -599,6 +599,12 @@ def _active_managed_caption():
     return f"Downloaded Via: @{username}" if username else DOWNLOAD_CAPTION
 
 def _active_powered_text():
+    # Powered by belongs ONLY to managed/small bots. Never allow the main
+    # @Downloadvedioytibot to inherit this text from a leaked/stale context.
+    meta = _ACTIVE_MANAGED_META.get() or {}
+    bid = str(meta.get("bot_id") or "").strip()
+    if not bid or bid == "main":
+        return ""
     if not _managed_powered_by_open(): return ""
     if _active_managed_premium(): return ""
     return MANAGED_POWERED_BY
@@ -5609,7 +5615,7 @@ def _youtube_music_http_search(query, limit=30):
         # Songs shelf filter used by YouTube Music. The HTML contains duration in
         # fixedColumns and artist links in the responsive list renderer.
         url=f"https://music.youtube.com/search?q={q}&sp=EgWKAQIIAWoKEAoQAxAEEAkQBQ=="
-        r=http_session.get(url,timeout=4,headers={
+        r=requests.get(url,timeout=4,headers={
             "User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Mobile Safari/537.36",
             "Accept-Language":"en-US,en;q=0.9",
         })
@@ -6372,7 +6378,14 @@ def song_pick_callback(call):
                 except Exception: pass
             finally:
                 if tmp: shutil.rmtree(tmp,ignore_errors=True)
-        download_executor_for(call.from_user.id).submit(_download_youtube_song_job,call.message.chat.id,status.message_id,x,str(call.from_user.id))
+        fut=download_executor_for(call.from_user.id).submit(_download_youtube_song_job,call.message.chat.id,status.message_id,x,str(call.from_user.id))
+        def _song_future_done(f):
+            try: f.result()
+            except Exception as e:
+                print("Main Search Song worker crashed:",repr(e))
+                try: bot.edit_message_text("❌ Music download failed. Please try again.",call.message.chat.id,status.message_id)
+                except Exception: pass
+        fut.add_done_callback(_song_future_done)
     else:
         # Kept only for backward-compatible saved sessions. New searches are YouTube-first.
         download_executor_for(call.from_user.id).submit(_download_jamendo_song,call.message.chat.id,status.message_id,x,str(call.from_user.id))
@@ -7038,8 +7051,12 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
     action_stop=threading.Event()
     start_action_heartbeat(chat_id,"upload_audio",action_stop)
     try:
+        # Keep the status message alive while the conversion is running. The
+        # previous code deleted it before starting the actual download, so any
+        # later exception was effectively invisible to the user.
         if status_message_id:
-            try: _current_bot().delete_message(chat_id, status_message_id)
+            try:
+                _current_bot().edit_message_text("⏳ <b>Downloading the full track...</b>", chat_id, status_message_id, parse_mode="HTML")
             except Exception: pass
         rapid_mp3=None
         direct_source=None
@@ -12923,7 +12940,16 @@ def _managed_bot_start_instance(doc):
                     status_id=status.message_id
                 except Exception:
                     status_id=None
-                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid,status_id)
+                ctx=contextvars.copy_context(); fut=download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid,status_id)
+                def _managed_song_future_done(f):
+                    try: f.result()
+                    except Exception as e:
+                        print("Managed Search Song worker crashed:",repr(e))
+                        try:
+                            if status_id: mb.edit_message_text("❌ Music download failed. Please try again.",call.message.chat.id,status_id)
+                            else: mb.send_message(call.message.chat.id,"❌ Music download failed. Please try again.")
+                        except Exception: pass
+                fut.add_done_callback(_managed_song_future_done)
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
