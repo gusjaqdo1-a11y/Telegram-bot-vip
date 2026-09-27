@@ -21,6 +21,7 @@ import html
 import urllib.parse
 import contextvars
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
     from cryptography.fernet import Fernet
 except Exception:
