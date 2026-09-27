@@ -4257,7 +4257,10 @@ def download_media(chat_id, link, message_id, quality=None):
                 if _is_video_file(path):
                     powered=_active_powered_text()
                     if powered:
-                        try: bot.send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                        try:
+                            # Keep this as plain text: Telegram HTML does not support <br>,
+                            # and custom-entity parsing here previously caused 400 errors.
+                            bot.send_message(chat_id, powered)
                         except Exception as e: print("Managed powered-by send failed:",repr(e))
             finally:
                 upload_stop.set()
@@ -4804,7 +4807,7 @@ def _youtube_music_http_search(query, limit=30):
             if qn==_song_norm(artist): score+=12000
             elif qn and qn in _song_norm(artist): score+=6000
             if qn==_song_norm(title): score+=5000
-            rows.append({"id":video_id,"title":title,"artist":artist,"duration":duration,
+            rows.append({"id":video_id,"title":title,"artist":artist,"channel":artist,"duration":duration,
                          "album":album,"cover":"","download":webpage,"download_allowed":True,
                          "license":"","source":"youtube","webpage_url":webpage,"_score":score})
             seen.add(video_id)
@@ -5035,7 +5038,7 @@ def _rapidapi_youtube_song_search(query, limit=30):
                     if any(x in low for x in ("official music","official audio","music video","audio")): score+=500
                     webpage=f"https://www.youtube.com/watch?v={vid}"
                     cover=text_value(obj,("thumbnail","thumbnailUrl","thumbnailUrlHigh","thumbnailUrlMedium")) or _youtube_artwork_url(vid)
-                    rows.append({"id":vid,"title":title,"artist":artist,"duration":duration,
+                    rows.append({"id":vid,"title":title,"artist":artist,"channel":channel,"duration":duration,
                                  "album":"","cover":cover,
                                  "download":webpage,"download_allowed":True,"license":"",
                                  "source":"youtube","webpage_url":webpage,"_score":score})
@@ -5128,9 +5131,12 @@ def _main_bot_username():
     return "bot"
 
 def _song_audio_metadata(song):
-    """Return clean Telegram audio metadata: title only in title, real artist in performer."""
+    """Return clean Telegram audio metadata: title only in title, artist in performer."""
+    song=song or {}
     raw_title=_music_clean_text(song.get("audio_title") or song.get("title") or "")
-    raw_artist=_music_clean_text(song.get("audio_artist") or song.get("artist") or "")
+    raw_artist=_music_clean_text(song.get("audio_artist") or song.get("artist") or song.get("artist_name") or "")
+    if not raw_artist or _song_norm(raw_artist) in {"unknown","unknown artist","youtube","youtube music"}:
+        raw_artist=_music_clean_text(song.get("channel") or song.get("channel_name") or song.get("uploader") or song.get("creator") or "")
     # Common YouTube music format: ARTIST - TITLE (Music Video).
     m=re.match(r"^(.{1,140}?)\s+[-–—]\s+(.+)$",raw_title)
     if m:
@@ -5152,6 +5158,9 @@ def _song_audio_metadata(song):
             existing=[x.strip() for x in re.split(r"\s*&\s*",raw_artist) if x.strip()]
             if _song_norm(featured) not in {_song_norm(x) for x in existing}: raw_artist=(raw_artist+" & " if raw_artist else "")+featured
     if _song_norm(raw_artist) in {"unknown","unknown artist","youtube","youtube music"}: raw_artist=""
+    if not raw_artist:
+        parsed=_song_parse_artists(raw_title, "")
+        if parsed: raw_artist=parsed
     return raw_title or _music_clean_text(song.get("title")) or "Unknown title", raw_artist or "Unknown artist"
 
 def _default_song_caption(song):
@@ -5475,8 +5484,12 @@ def song_pick_callback(call):
                             _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=300)
                             if os.path.isfile(out):
                                 audio_title,audio_artist=_song_audio_metadata(song)
+                                catalog=_music_deezer_lookup(audio_title,audio_artist) or _music_itunes_lookup(audio_title,audio_artist)
+                                if catalog.get("title"): audio_title=_music_clean_text(catalog.get("title"))
+                                if catalog.get("artist"): audio_artist=_music_clean_text(catalog.get("artist"))
+                                if catalog.get("album") and not song.get("album"): song={**song,"album":catalog.get("album")}
                                 cover_path=_best_song_cover(song,audio_title,audio_artist,tmp,vid)
-                                _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path)
+                                _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path,album=song.get("album"))
                                 bot.edit_message_text("🎵 <b>Sending music...</b>",chat_id,status_id,parse_mode="HTML")
                                 with open(out,"rb") as fh:
                                     kwargs={"title":audio_title,"performer":audio_artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
@@ -11059,15 +11072,28 @@ def localized_action_dispatch(m):
 
 # ================= ADMIN TEXT / TELEGRAM CUSTOM EMOJI =================
 def _message_entities_to_html(message):
-    text=str(getattr(message,"text",None) or getattr(message,"caption",None) or "")
-    entities=getattr(message,"entities",None) or getattr(message,"caption_entities",None) or []
+    """Convert Telegram text entities to safe HTML while preserving custom emoji.
+
+    This accepts both pyTelegramBotAPI Message objects and raw Telegram API
+    dictionaries (used by the Creator Bot polling loop).
+    """
+    if isinstance(message,dict):
+        text=str(message.get("text") or message.get("caption") or "")
+        entities=message.get("entities") or message.get("caption_entities") or []
+        def val(obj,key,default=None):
+            if isinstance(obj,dict): return obj.get(key,default)
+            return getattr(obj,key,default)
+    else:
+        text=str(getattr(message,"text",None) or getattr(message,"caption",None) or "")
+        entities=getattr(message,"entities",None) or getattr(message,"caption_entities",None) or []
+        def val(obj,key,default=None): return getattr(obj,key,default)
     if not text: return ""
     raw=text.encode("utf-16-le")
     def s16(a,b): return raw[a*2:b*2].decode("utf-16-le",errors="ignore")
     spans=[]
     for e in entities:
-        if str(getattr(e,"type","") or "")!="custom_emoji": continue
-        off=int(getattr(e,"offset",0) or 0); ln=int(getattr(e,"length",0) or 0); cid=str(getattr(e,"custom_emoji_id","") or "")
+        if str(val(e,"type","") or "")!="custom_emoji": continue
+        off=int(val(e,"offset",0) or 0); ln=int(val(e,"length",0) or 0); cid=str(val(e,"custom_emoji_id","") or "")
         if cid and ln>0: spans.append((off,off+ln,cid,s16(off,off+ln)))
     if not spans: return html.escape(text)
     spans.sort(); out=[]; pos=0; total=len(raw)//2
@@ -11926,6 +11952,11 @@ def _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
     _managed_ad_message(mb,chat_id,bid,uid,token)
     return True
 
+# Backward-compatible name used by managed-bot handlers.
+# Keep one canonical implementation so ad-gating cannot fail at runtime.
+def _managed_ad_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
+    return _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload)
+
 def _managed_execute_ad_pending(token):
     with managed_ad_pending_lock:
         row=managed_ad_pending.pop(str(token),None)
@@ -12227,13 +12258,19 @@ def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
     mb.send_message(chat_id,"\n".join(lines),parse_mode="HTML",reply_markup=kb)
 
 def _best_song_cover(song, title, artist, tmp, vid=""):
-    """Prefer catalog album art; fall back to the search provider artwork."""
-    cover_url=str(song.get("cover") or "").strip()
+    """Resolve genuine album artwork first, then safe provider artwork fallbacks."""
+    song=song or {}
+    cover_url=""
     try:
         if title and artist and artist.lower()!="unknown artist":
             meta=_music_deezer_lookup(title,artist)
             if meta.get("artwork"): cover_url=str(meta.get("artwork"))
+            if not cover_url:
+                meta=_music_itunes_lookup(title,artist)
+                if meta.get("artwork"): cover_url=str(meta.get("artwork"))
     except Exception as e: print("Album cover lookup skipped:",repr(e))
+    if not cover_url:
+        cover_url=str(song.get("cover") or song.get("thumbnail") or "").strip()
     if not cover_url and vid: cover_url=_youtube_artwork_url(vid)
     return _music_download_image(cover_url,tmp,"cover.jpg") if cover_url else None
 
@@ -12244,7 +12281,12 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
         audios=[z for z in formats if z.get("audio") and not z.get("video")]; videos=[z for z in formats if z.get("video")]; source_url=(audios[0].get("url") if audios else (videos[0].get("url") if videos else None))
         if not source_url: raise RuntimeError("No downloadable audio")
         tmp=os.path.join("downloads","managed_music_"+uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True); raw=os.path.join(tmp,"source"); _rapid_download_file(source_url,raw,max_bytes=0)
-        title,artist=_song_audio_metadata(song); out=os.path.join(tmp,_music_safe_filename(title,artist)+".mp3"); _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=180)
+        title,artist=_song_audio_metadata(song)
+        catalog=_music_deezer_lookup(title,artist) or _music_itunes_lookup(title,artist)
+        if catalog.get("title"): title=_music_clean_text(catalog.get("title"))
+        if catalog.get("artist"): artist=_music_clean_text(catalog.get("artist"))
+        if catalog.get("album") and not song.get("album"): song={**song,"album":catalog.get("album")}
+        out=os.path.join(tmp,_music_safe_filename(title,artist)+".mp3"); _ffmpeg_convert_to_mp3(raw,out,bitrate="192k",timeout=180)
         cover=_best_song_cover(song,title,artist,tmp,vid); _embed_music_metadata(out,title,artist,cover_path=cover,album=song.get("album"))
         kwargs={"title":title,"performer":artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
         with open(out,"rb") as fh:
