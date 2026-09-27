@@ -1181,21 +1181,531 @@ def language_kb(prefix="lang"):
 
 
 START_MESSAGES_DEFAULT = {
-"en": """🎉 <b>WELCOME TO DOWNLOAD BOT</b> 🎉\n\n👋 Hello <b>{name}</b>, Welcome!\n\n🚀 Download your favorite content quickly and easily.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIC</b>\nConvert Video → MP3\n🎼 Correct Song Name • 👤 Correct Artist • 💿 Album & Cover\n\n💎 <b>PREMIUM</b>\nHigher quality • Faster downloads • More features\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Send your link now!\n\n⚡ Fast • Easy • Powerful\n❤️ Thanks for using us!""",
-"so": """🎉 <b>KUSOO DHAWOOW DOWNLOAD BOT</b> 🎉\n\n👋 Salaan <b>{name}</b>, kusoo dhawoow!\n\n🚀 Si degdeg ah oo fudud u soo dejiso waxyaabaha aad jeceshahay.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIC</b>\nVideo → MP3\n🎼 Magaca heesta • 👤 Fanaanka • 💿 Album & Cover\n\n💎 <b>PREMIUM</b>\nQuality sare • Download degdeg ah • Features badan\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Hadda soo dir link-gaaga!\n\n⚡ Degdeg • Fudud • Awood badan\n❤️ Mahadsanid isticmaalka bot-ka!""",
-"ar": """🎉 <b>مرحباً بك في Download Bot</b> 🎉\n\n👋 أهلاً <b>{name}</b>!\n\n🚀 حمّل المحتوى الذي تريده بسرعة وسهولة.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>فيديو</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>موسيقى</b>\nتحويل الفيديو إلى MP3\n🎼 اسم الأغنية • 👤 الفنان • 💿 الألبوم والغلاف\n\n💎 <b>بريميوم</b>\nجودة أعلى • تنزيل أسرع • مزايا إضافية\n\n━━━━━━━━━━━━━━━━━━\n\n📥 أرسل الرابط الآن!\n\n⚡ سريع • سهل • قوي\n❤️ شكراً لاستخدامك البوت!""",
-"fr": """🎉 <b>BIENVENUE SUR DOWNLOAD BOT</b> 🎉\n\n👋 Bonjour <b>{name}</b> !\n\n🚀 Téléchargez votre contenu rapidement et facilement.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIDÉO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIQUE</b>\nConvertir une vidéo en MP3\n🎼 Titre • 👤 Artiste • 💿 Album et couverture\n\n💎 <b>PREMIUM</b>\nMeilleure qualité • Téléchargements plus rapides • Plus de fonctions\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Envoyez votre lien maintenant !\n\n⚡ Rapide • Simple • Puissant\n❤️ Merci d'utiliser le bot !""",
-"es": """🎉 <b>BIENVENIDO A DOWNLOAD BOT</b> 🎉\n\n👋 ¡Hola <b>{name}</b>!\n\n🚀 Descarga tu contenido de forma rápida y sencilla.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VÍDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MÚSICA</b>\nConvertir vídeo a MP3\n🎼 Título • 👤 Artista • 💿 Álbum y portada\n\n💎 <b>PREMIUM</b>\nMayor calidad • Descargas más rápidas • Más funciones\n\n━━━━━━━━━━━━━━━━━━\n\n📥 ¡Envía tu enlace ahora!\n\n⚡ Rápido • Fácil • Potente\n❤️ ¡Gracias por usar el bot!""",
-"am": """🎉 <b>እንኳን ወደ DOWNLOAD BOT በደህና መጡ</b> 🎉\n\n👋 ሰላም <b>{name}</b>!\n\n🚀 የሚፈልጉትን ይዘት በፍጥነት እና በቀላሉ ያውርዱ።\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>ቪዲዮ</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>ሙዚቃ</b>\nቪዲዮ → MP3\n🎼 የዘፈን ስም • 👤 አርቲስት • 💿 አልበም እና ሽፋን\n\n💎 <b>ፕሪሚየም</b>\nከፍተኛ ጥራት • ፈጣን ማውረድ • ተጨማሪ ባህሪያት\n\n━━━━━━━━━━━━━━━━━━\n\n📥 አገናኝዎን አሁን ይላኩ!\n\n⚡ ፈጣን • ቀላል • ኃይለኛ\n❤️ ስለተጠቀሙን እናመሰግናለን!""",
-"om": """🎉 <b>BAGA GARA DOWNLOAD BOT NAGAA DHUFTAN</b> 🎉\n\n👋 Akkam <b>{name}</b>!\n\n🚀 Qabiyyee barbaaddan saffisaan fi salphaatti buufadhaa.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIIDIOO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIIQAA</b>\nViidiyoo → MP3\n🎼 Maqaa sirbaa • 👤 Artistii • 💿 Album fi cover\n\n💎 <b>PREMIUM</b>\nQulqullina ol’aanaa • Buufata saffisaa • Amaloota dabalataa\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Link kee amma ergi!\n\n⚡ Saffisaa • Salphaa • Humna-qabeessa\n❤️ Nu fayyadamuu keetiif galatoomi!""",
-"de": """🎉 <b>WILLKOMMEN BEI DOWNLOAD BOT</b> 🎉\n\n👋 Hallo <b>{name}</b>!\n\n🚀 Lade deine Inhalte schnell und einfach herunter.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIK</b>\nVideo → MP3\n🎼 Titel • 👤 Künstler • 💿 Album und Cover\n\n💎 <b>PREMIUM</b>\nHöhere Qualität • Schnellere Downloads • Mehr Funktionen\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Sende jetzt deinen Link!\n\n⚡ Schnell • Einfach • Leistungsstark\n❤️ Danke, dass du den Bot nutzt!""",
-"pt": """🎉 <b>BEM-VINDO AO DOWNLOAD BOT</b> 🎉\n\n👋 Olá <b>{name}</b>!\n\n🚀 Baixe seu conteúdo de forma rápida e fácil.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VÍDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MÚSICA</b>\nVídeo → MP3\n🎼 Título • 👤 Artista • 💿 Álbum e capa\n\n💎 <b>PREMIUM</b>\nMaior qualidade • Downloads mais rápidos • Mais recursos\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Envie seu link agora!\n\n⚡ Rápido • Fácil • Poderoso\n❤️ Obrigado por usar o bot!""",
-"tr": """🎉 <b>DOWNLOAD BOT'A HOŞ GELDİNİZ</b> 🎉\n\n👋 Merhaba <b>{name}</b>!\n\n🚀 İçeriğinizi hızlı ve kolay şekilde indirin.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VİDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MÜZİK</b>\nVideo → MP3\n🎼 Şarkı adı • 👤 Sanatçı • 💿 Albüm ve kapak\n\n💎 <b>PREMIUM</b>\nDaha yüksek kalite • Daha hızlı indirme • Daha fazla özellik\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Linkinizi şimdi gönderin!\n\n⚡ Hızlı • Kolay • Güçlü\n❤️ Bizi kullandığınız için teşekkürler!""",
-"hi": """🎉 <b>DOWNLOAD BOT में आपका स्वागत है</b> 🎉\n\n👋 नमस्ते <b>{name}</b>!\n\n🚀 अपनी पसंद की सामग्री जल्दी और आसानी से डाउनलोड करें।\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>वीडियो</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>म्यूज़िक</b>\nवीडियो → MP3\n🎼 गाने का नाम • 👤 कलाकार • 💿 एल्बम और कवर\n\n💎 <b>प्रीमियम</b>\nबेहतर गुणवत्ता • तेज डाउनलोड • अधिक सुविधाएँ\n\n━━━━━━━━━━━━━━━━━━\n\n📥 अपना लिंक अभी भेजें!\n\n⚡ तेज • आसान • शक्तिशाली\n❤️ बॉट इस्तेमाल करने के लिए धन्यवाद!""",
-"id": """🎉 <b>SELAMAT DATANG DI DOWNLOAD BOT</b> 🎉\n\n👋 Halo <b>{name}</b>!\n\n🚀 Unduh konten favorit Anda dengan cepat dan mudah.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>VIDEO</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>MUSIK</b>\nVideo → MP3\n🎼 Judul lagu • 👤 Artis • 💿 Album dan sampul\n\n💎 <b>PREMIUM</b>\nKualitas lebih tinggi • Unduhan lebih cepat • Fitur lebih banyak\n\n━━━━━━━━━━━━━━━━━━\n\n📥 Kirim tautan Anda sekarang!\n\n⚡ Cepat • Mudah • Kuat\n❤️ Terima kasih telah menggunakan bot!""",
-"ja": """🎉 <b>DOWNLOAD BOTへようこそ</b> 🎉\n\n👋 こんにちは <b>{name}</b>！\n\n🚀 お気に入りのコンテンツをすばやく簡単にダウンロードできます。\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>動画</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>音楽</b>\n動画 → MP3\n🎼 曲名 • 👤 アーティスト • 💿 アルバムとカバー\n\n💎 <b>プレミアム</b>\n高品質 • 高速ダウンロード • 追加機能\n\n━━━━━━━━━━━━━━━━━━\n\n📥 今すぐリンクを送ってください！\n\n⚡ 速い • 簡単 • パワフル\n❤️ ご利用ありがとうございます！""",
-"ko": """🎉 <b>DOWNLOAD BOT에 오신 것을 환영합니다</b> 🎉\n\n👋 안녕하세요 <b>{name}</b>님!\n\n🚀 원하는 콘텐츠를 빠르고 쉽게 다운로드하세요.\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>비디오</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>음악</b>\n비디오 → MP3\n🎼 곡명 • 👤 아티스트 • 💿 앨범 및 커버\n\n💎 <b>프리미엄</b>\n더 높은 품질 • 빠른 다운로드 • 더 많은 기능\n\n━━━━━━━━━━━━━━━━━━\n\n📥 지금 링크를 보내주세요!\n\n⚡ 빠름 • 간편함 • 강력함\n❤️ 이용해 주셔서 감사합니다!""",
-"zh": """🎉 <b>欢迎使用 DOWNLOAD BOT</b> 🎉\n\n👋 你好 <b>{name}</b>！\n\n🚀 快速、轻松地下载你喜欢的内容。\n\n━━━━━━━━━━━━━━━━━━\n\n🎬 <b>视频</b>\nTikTok • Instagram • Facebook • Pinterest • Snapchat • X\nYouTube • Reddit • Threads • Likee • Vimeo • Dailymotion\n\n🎵 <b>音乐</b>\n视频 → MP3\n🎼 歌曲名称 • 👤 艺术家 • 💿 专辑和封面\n\n💎 <b>高级版</b>\n更高画质 • 更快下载 • 更多功能\n\n━━━━━━━━━━━━━━━━━━\n\n📥 现在发送链接！\n\n⚡ 快速 • 简单 • 强大\n❤️ 感谢使用本机器人！""",
+"en": """🎬 WELCOME TO DOWNLOAD VIDEO BOT 💠
+
+👋 Hello! {name}, Welcome!
+
+Download your favorite Videos, Photos & Music from popular platforms — fast, simple and hassle-free. ⚡
+
+📥 Supported Platforms:
+🎵 TikTok — Videos & Photos
+
+📹 YouTube — Videos & Shorts
+
+📱 Instagram — Videos & Photos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ How It Works:
+1️⃣ Copy the video link
+
+2️⃣ Send it here 🔗
+
+3️⃣ Wait a few seconds ⚡
+
+4️⃣ Get your file instantly 🔸
+🎧 Want the music?
+
+Use the 🎵 MUSIC button to get the audio as an MP3.
+⚡ Fast • Simple • Powerful
+🔗 Just send me a link and let me do the rest.
+🚀 Ready? Send your link now! ❤️""",
+"so": """🎬 KU SOO DHAWOOW DOWNLOAD VIDEO BOT 💠
+
+👋 Salaan! {name}, kusoo dhawoow!
+
+Ka soo dejiso Videos, Photos & Music-ka aad jeceshahay baraha caanka ah — si degdeg ah, fudud oo dhib la'aan ah. ⚡
+
+📥 Baraha la taageero:
+🎵 TikTok — Videos & Photos
+
+📹 YouTube — Videos & Shorts
+
+📱 Instagram — Videos & Photos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ Sida ay u shaqeyso:
+1️⃣ Copy garee video link-ga
+
+2️⃣ Halkan ku soo dir 🔗
+
+3️⃣ Sug dhowr ilbiriqsi ⚡
+
+4️⃣ File-kaaga isla markiiba hel 🔸
+🎧 Muusig ma rabtaa?
+
+Isticmaal 🎵 MUSIC si aad audio-ga MP3 uga hesho.
+⚡ Degdeg • Fudud • Awood badan
+🔗 Kaliya ii soo dir link-ga, aniguna inta kale waan qabanayaa.
+🚀 Diyaar? Link-gaaga hadda soo dir! ❤️""",
+"am": """🎬 እንኳን ወደ DOWNLOAD VIDEO BOT በደህና መጡ 💠
+
+👋 ሰላም! {name}፣ እንኳን ደህና መጡ!
+
+የሚወዱትን Videos, Photos & Music ከታዋቂ መድረኮች በፍጥነት፣ በቀላሉ እና ያለ ችግር ያውርዱ። ⚡
+
+📥 የሚደገፉ መድረኮች:
+🎵 TikTok — Videos & Photos
+
+📹 YouTube — Videos & Shorts
+
+📱 Instagram — Videos & Photos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ እንዴት ይሰራል:
+1️⃣ የvideo link ቅዳ
+
+2️⃣ እዚህ ላክ 🔗
+
+3️⃣ ጥቂት ሰከንዶች ጠብቅ ⚡
+
+4️⃣ File-kaaga ወዲያውኑ ያግኙ 🔸
+🎧 ሙዚቃ ትፈልጋለህ?
+
+🎵 MUSIC የሚለውን ተጠቅመህ audio-ga MP3 አግኝ።
+⚡ ፈጣን • ቀላል • ኃይለኛ
+🔗 Link-gaaga ብቻ ላክልኝ፣ ቀሪውን እኔ እሰራዋለሁ።
+🚀 ዝግጁ? Link-gaaga አሁን ላክ! ❤️""",
+"om": """🎬 BAGA GARA DOWNLOAD VIDEO BOT NAGAA DHUFTAN 💠
+
+👋 Akkam! {name}, baga nagaan dhuftan!
+
+Videos, Photos & Music isin jaallattan marsariitiiwwan beekamoo irraa saffisaan, salphaatti fi rakkoo malee buufadhaa. ⚡
+
+📥 Marsariitiiwwan deeggaraman:
+🎵 TikTok — Videos & Photos
+
+📹 YouTube — Videos & Shorts
+
+📱 Instagram — Videos & Photos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ Akkamitti hojjeta:
+1️⃣ Video link sana copy godhi
+
+2️⃣ Asitti ergi 🔗
+
+3️⃣ Sekondii muraasa eegi ⚡
+
+4️⃣ File kee battalum argadhu 🔸
+🎧 Muuziqaa barbaaddaa?
+
+🎵 MUSIC fayyadamuun audio MP3 argadhu.
+⚡ Saffisaa • Salphaa • Humna-qabeessa
+🔗 Link kee qofa naaf ergi, kan hafe ani nan hojjadha.
+🚀 Qophoofteettaa? Link kee amma ergi! ❤️""",
+"ar": """🎬 مرحباً بك في DOWNLOAD VIDEO BOT 💠
+
+👋 أهلاً! {name}، مرحباً بك!
+
+حمّل مقاطع الفيديو والصور والموسيقى المفضلة لديك من المنصات الشهيرة — بسرعة وسهولة وبدون تعقيد. ⚡
+
+📥 المنصات المدعومة:
+🎵 TikTok — فيديوهات وصور
+
+📹 YouTube — فيديوهات وShorts
+
+📱 Instagram — فيديوهات وصور
+
+🧩 Pinterest — فيديوهات
+
+🌐 Facebook — فيديوهات
+
+📱 Snapchat — فيديوهات
+
+🚀 Twitter/X ✅ — فيديوهات
+
+✨ طريقة الاستخدام:
+1️⃣ انسخ رابط الفيديو
+
+2️⃣ أرسله هنا 🔗
+
+3️⃣ انتظر بضع ثوانٍ ⚡
+
+4️⃣ احصل على ملفك فوراً 🔸
+🎧 تريد الموسيقى؟
+
+استخدم زر 🎵 MUSIC للحصول على الصوت بصيغة MP3.
+⚡ سريع • بسيط • قوي
+🔗 أرسل الرابط فقط وسأتولى الباقي.
+🚀 جاهز؟ أرسل الرابط الآن! ❤️""",
+"fr": """🎬 BIENVENUE SUR DOWNLOAD VIDEO BOT 💠
+
+👋 Bonjour ! {name}, bienvenue !
+
+Téléchargez vos vidéos, photos et musiques préférées depuis les plateformes populaires — rapidement, simplement et sans difficulté. ⚡
+
+📥 Plateformes prises en charge :
+🎵 TikTok — Vidéos & Photos
+
+📹 YouTube — Vidéos & Shorts
+
+📱 Instagram — Vidéos & Photos
+
+🧩 Pinterest — Vidéos
+
+🌐 Facebook — Vidéos
+
+📱 Snapchat — Vidéos
+
+🚀 Twitter/X ✅ — Vidéos
+
+✨ Comment ça marche :
+1️⃣ Copiez le lien de la vidéo
+
+2️⃣ Envoyez-le ici 🔗
+
+3️⃣ Attendez quelques secondes ⚡
+
+4️⃣ Recevez votre fichier instantanément 🔸
+🎧 Vous voulez la musique ?
+
+Utilisez le bouton 🎵 MUSIC pour obtenir l’audio en MP3.
+⚡ Rapide • Simple • Puissant
+🔗 Envoyez simplement le lien et je m’occupe du reste.
+🚀 Prêt ? Envoyez votre lien maintenant ! ❤️""",
+"es": """🎬 BIENVENIDO A DOWNLOAD VIDEO BOT 💠
+
+👋 ¡Hola! {name}, ¡bienvenido!
+
+Descarga tus Videos, Fotos y Música favoritos de las plataformas populares — rápido, sencillo y sin complicaciones. ⚡
+
+📥 Plataformas compatibles:
+🎵 TikTok — Videos y Fotos
+
+📹 YouTube — Videos y Shorts
+
+📱 Instagram — Videos y Fotos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ Cómo funciona:
+1️⃣ Copia el enlace del video
+
+2️⃣ Envíalo aquí 🔗
+
+3️⃣ Espera unos segundos ⚡
+
+4️⃣ Recibe tu archivo al instante 🔸
+🎧 ¿Quieres la música?
+
+Usa el botón 🎵 MUSIC para obtener el audio en MP3.
+⚡ Rápido • Simple • Potente
+🔗 Solo envíame el enlace y yo hago el resto.
+🚀 ¿Listo? ¡Envía tu enlace ahora! ❤️""",
+"de": """🎬 WILLKOMMEN BEI DOWNLOAD VIDEO BOT 💠
+
+👋 Hallo! {name}, willkommen!
+
+Lade deine Lieblingsvideos, Fotos und Musik von beliebten Plattformen herunter — schnell, einfach und unkompliziert. ⚡
+
+📥 Unterstützte Plattformen:
+🎵 TikTok — Videos & Fotos
+
+📹 YouTube — Videos & Shorts
+
+📱 Instagram — Videos & Fotos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ So funktioniert es:
+1️⃣ Kopiere den Videolink
+
+2️⃣ Sende ihn hier 🔗
+
+3️⃣ Warte ein paar Sekunden ⚡
+
+4️⃣ Erhalte deine Datei sofort 🔸
+🎧 Du möchtest die Musik?
+
+Nutze den 🎵 MUSIC Button, um das Audio als MP3 zu erhalten.
+⚡ Schnell • Einfach • Leistungsstark
+🔗 Sende einfach den Link und ich erledige den Rest.
+🚀 Bereit? Sende deinen Link jetzt! ❤️""",
+"pt": """🎬 BEM-VINDO AO DOWNLOAD VIDEO BOT 💠
+
+👋 Olá! {name}, seja bem-vindo!
+
+Baixe seus Vídeos, Fotos e Músicas favoritos de plataformas populares — rápido, simples e sem complicações. ⚡
+
+📥 Plataformas suportadas:
+🎵 TikTok — Vídeos e Fotos
+
+📹 YouTube — Vídeos e Shorts
+
+📱 Instagram — Vídeos e Fotos
+
+🧩 Pinterest — Vídeos
+
+🌐 Facebook — Vídeos
+
+📱 Snapchat — Vídeos
+
+🚀 Twitter/X ✅ — Vídeos
+
+✨ Como funciona:
+1️⃣ Copie o link do vídeo
+
+2️⃣ Envie aqui 🔗
+
+3️⃣ Aguarde alguns segundos ⚡
+
+4️⃣ Receba seu arquivo instantaneamente 🔸
+🎧 Quer a música?
+
+Use o botão 🎵 MUSIC para obter o áudio em MP3.
+⚡ Rápido • Simples • Poderoso
+🔗 Basta enviar o link e eu faço o resto.
+🚀 Pronto? Envie seu link agora! ❤️""",
+"tr": """🎬 DOWNLOAD VIDEO BOT'A HOŞ GELDİNİZ 💠
+
+👋 Merhaba! {name}, hoş geldiniz!
+
+Favori Video, Fotoğraf ve Müziklerinizi popüler platformlardan hızlı, kolay ve sorunsuz şekilde indirin. ⚡
+
+📥 Desteklenen platformlar:
+🎵 TikTok — Videolar ve Fotoğraflar
+
+📹 YouTube — Videolar ve Shorts
+
+📱 Instagram — Videolar ve Fotoğraflar
+
+🧩 Pinterest — Videolar
+
+🌐 Facebook — Videolar
+
+📱 Snapchat — Videolar
+
+🚀 Twitter/X ✅ — Videolar
+
+✨ Nasıl çalışır:
+1️⃣ Video bağlantısını kopyalayın
+
+2️⃣ Buraya gönderin 🔗
+
+3️⃣ Birkaç saniye bekleyin ⚡
+
+4️⃣ Dosyanızı hemen alın 🔸
+🎧 Müzik mi istiyorsunuz?
+
+Sesi MP3 olarak almak için 🎵 MUSIC düğmesini kullanın.
+⚡ Hızlı • Basit • Güçlü
+🔗 Sadece bağlantıyı gönderin, gerisini ben hallederim.
+🚀 Hazır mısınız? Linkinizi şimdi gönderin! ❤️""",
+"hi": """🎬 DOWNLOAD VIDEO BOT में आपका स्वागत है 💠
+
+👋 नमस्ते! {name}, आपका स्वागत है!
+
+लोकप्रिय प्लेटफ़ॉर्म से अपने पसंदीदा Videos, Photos और Music तेज़, आसान और बिना परेशानी के डाउनलोड करें। ⚡
+
+📥 समर्थित प्लेटफ़ॉर्म:
+🎵 TikTok — Videos और Photos
+
+📹 YouTube — Videos और Shorts
+
+📱 Instagram — Videos और Photos
+
+🧩 Pinterest — Videos
+
+🌐 Facebook — Videos
+
+📱 Snapchat — Videos
+
+🚀 Twitter/X ✅ — Videos
+
+✨ यह कैसे काम करता है:
+1️⃣ Video link कॉपी करें
+
+2️⃣ इसे यहाँ भेजें 🔗
+
+3️⃣ कुछ सेकंड प्रतीक्षा करें ⚡
+
+4️⃣ अपनी file तुरंत प्राप्त करें 🔸
+🎧 Music चाहिए?
+
+MP3 audio पाने के लिए 🎵 MUSIC बटन का उपयोग करें।
+⚡ तेज़ • आसान • शक्तिशाली
+🔗 बस link भेजें और बाकी मैं कर दूँगा।
+🚀 तैयार हैं? अपना link अभी भेजें! ❤️""",
+"id": """🎬 SELAMAT DATANG DI DOWNLOAD VIDEO BOT 💠
+
+👋 Halo! {name}, selamat datang!
+
+Unduh Video, Foto & Musik favorit Anda dari platform populer — cepat, sederhana, dan tanpa ribet. ⚡
+
+📥 Platform yang didukung:
+🎵 TikTok — Video & Foto
+
+📹 YouTube — Video & Shorts
+
+📱 Instagram — Video & Foto
+
+🧩 Pinterest — Video
+
+🌐 Facebook — Video
+
+📱 Snapchat — Video
+
+🚀 Twitter/X ✅ — Video
+
+✨ Cara kerja:
+1️⃣ Salin tautan video
+
+2️⃣ Kirim ke sini 🔗
+
+3️⃣ Tunggu beberapa detik ⚡
+
+4️⃣ Dapatkan file Anda secara instan 🔸
+🎧 Ingin musik?
+
+Gunakan tombol 🎵 MUSIC untuk mendapatkan audio dalam MP3.
+⚡ Cepat • Sederhana • Kuat
+🔗 Cukup kirim tautannya dan saya akan mengurus sisanya.
+🚀 Siap? Kirim tautan Anda sekarang! ❤️""",
+"ja": """🎬 DOWNLOAD VIDEO BOTへようこそ 💠
+
+👋 こんにちは！{name}さん、ようこそ！
+
+人気のプラットフォームから、お気に入りの動画・写真・音楽を高速、簡単、スムーズにダウンロードできます。 ⚡
+
+📥 対応プラットフォーム:
+🎵 TikTok — 動画・写真
+
+📹 YouTube — 動画・Shorts
+
+📱 Instagram — 動画・写真
+
+🧩 Pinterest — 動画
+
+🌐 Facebook — 動画
+
+📱 Snapchat — 動画
+
+🚀 Twitter/X ✅ — 動画
+
+✨ 使い方:
+1️⃣ 動画リンクをコピー
+
+2️⃣ ここに送信 🔗
+
+3️⃣ 数秒待つ ⚡
+
+4️⃣ ファイルをすぐに受け取る 🔸
+🎧 音楽が欲しい？
+
+🎵 MUSIC ボタンでMP3音声を取得できます。
+⚡ 高速 • シンプル • パワフル
+🔗 リンクを送るだけで、あとはお任せください。
+🚀 準備OK？ 今すぐリンクを送ってください！ ❤️""",
+"ko": """🎬 DOWNLOAD VIDEO BOT에 오신 것을 환영합니다 💠
+
+👋 안녕하세요! {name}님, 환영합니다!
+
+인기 플랫폼에서 좋아하는 동영상, 사진 및 음악을 빠르고 간편하게 다운로드하세요. ⚡
+
+📥 지원 플랫폼:
+🎵 TikTok — 동영상 및 사진
+
+📹 YouTube — 동영상 및 Shorts
+
+📱 Instagram — 동영상 및 사진
+
+🧩 Pinterest — 동영상
+
+🌐 Facebook — 동영상
+
+📱 Snapchat — 동영상
+
+🚀 Twitter/X ✅ — 동영상
+
+✨ 사용 방법:
+1️⃣ 동영상 링크를 복사하세요
+
+2️⃣ 여기에 보내세요 🔗
+
+3️⃣ 몇 초만 기다리세요 ⚡
+
+4️⃣ 파일을 바로 받으세요 🔸
+🎧 음악이 필요하신가요?
+
+🎵 MUSIC 버튼을 사용하면 MP3 오디오를 받을 수 있습니다.
+⚡ 빠름 • 간단함 • 강력함
+🔗 링크만 보내주시면 나머지는 제가 처리합니다.
+🚀 준비되셨나요? 지금 링크를 보내세요! ❤️""",
+"zh": """🎬 欢迎使用 DOWNLOAD VIDEO BOT 💠
+
+👋 你好！{name}，欢迎你！
+
+从热门平台快速、简单、轻松地下载你喜欢的视频、照片和音乐。⚡
+
+📥 支持的平台：
+🎵 TikTok — 视频和照片
+
+📹 YouTube — 视频和 Shorts
+
+📱 Instagram — 视频和照片
+
+🧩 Pinterest — 视频
+
+🌐 Facebook — 视频
+
+📱 Snapchat — 视频
+
+🚀 Twitter/X ✅ — 视频
+
+✨ 使用方法：
+1️⃣ 复制视频链接
+
+2️⃣ 发送到这里 🔗
+
+3️⃣ 等待几秒钟 ⚡
+
+4️⃣ 立即获得文件 🔸
+🎧 想要音乐吗？
+
+使用 🎵 MUSIC 按钮获取 MP3 音频。
+⚡ 快速 • 简单 • 强大
+🔗 只需发送链接，剩下的交给我。
+🚀 准备好了吗？现在发送链接吧！❤️""",
 }
 # Other supported languages fall back to English until an admin customizes that language.
 START_MESSAGE_DEFAULT = START_MESSAGES_DEFAULT["en"]
@@ -1277,6 +1787,108 @@ def get_setting(key, default):
 
 def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
+
+
+# ================= 10-MINUTE SONG FILE CACHE =================
+# The cache stores Telegram file_id values, not temporary MP3 files. This makes
+# repeat delivery very fast and avoids re-searching/re-downloading the same song.
+# It is scoped per bot because Telegram file_id values are bot-scoped.
+SONG_CACHE_TTL_SECONDS = 600
+song_cache_col = db2["song_cache"]
+song_cache_lock = threading.RLock()
+
+def _song_store_enabled():
+    return bool(get_setting("song_store_enabled", True))
+
+def _song_cache_scope(bot_id=None):
+    if bot_id:
+        return str(bot_id)
+    meta=_ACTIVE_MANAGED_META.get() or {}
+    return str(meta.get("bot_id") or "main")
+
+def _song_cache_key(song):
+    song=song or {}
+    vid=str(song.get("id") or _extract_youtube_video_id(song.get("download") or song.get("webpage_url") or "") or "").strip()
+    if vid:
+        return "yt:"+vid
+    title=_song_norm(song.get("title") or song.get("audio_title") or "")
+    artist=_song_norm(song.get("artist") or song.get("audio_artist") or "")
+    return "meta:"+(title+"|"+artist).strip("|")
+
+def _song_cache_cleanup():
+    try:
+        song_cache_col.delete_many({"expires_at":{"$lte":datetime.now(timezone.utc)}})
+    except Exception as e:
+        print("Song cache cleanup error:",repr(e))
+
+def _song_cache_get(scope, song):
+    if not _song_store_enabled():
+        return None
+    key=_song_cache_key(song)
+    if not key or key=="meta:":
+        return None
+    now=datetime.now(timezone.utc)
+    try:
+        doc=song_cache_col.find_one({"scope":str(scope),"key":key,"expires_at":{"$gt":now}})
+        if doc and doc.get("file_id"):
+            return doc
+        if doc:
+            song_cache_col.delete_one({"_id":doc.get("_id")})
+    except Exception as e:
+        print("Song cache read error:",repr(e))
+    return None
+
+def _song_cache_store(scope, song, sent_message, query=None):
+    if not _song_store_enabled() or not sent_message:
+        return False
+    audio=getattr(sent_message,"audio",None)
+    file_id=str(getattr(audio,"file_id","") or "")
+    if not file_id:
+        return False
+    now=datetime.now(timezone.utc)
+    key=_song_cache_key(song)
+    if not key or key=="meta:":
+        return False
+    doc={
+        "scope":str(scope),"key":key,"file_id":file_id,
+        "title":str(song.get("title") or ""),
+        "artist":str(song.get("artist") or ""),
+        "album":str(song.get("album") or ""),
+        "duration":int(_parse_duration_value(song.get("duration")) or 0),
+        "query_norm":_song_norm(query or song.get("title") or ""),
+        "updated_at":now,"expires_at":now+timedelta(seconds=SONG_CACHE_TTL_SECONDS)
+    }
+    try:
+        song_cache_col.update_one({"scope":str(scope),"key":key},{"$set":doc},upsert=True)
+        return True
+    except Exception as e:
+        print("Song cache store error:",repr(e)); return False
+
+def _song_cache_send(send_bot, chat_id, doc, caption=None):
+    if not doc or not doc.get("file_id"):
+        return None
+    try:
+        kwargs={}
+        if doc.get("title"): kwargs["title"]=doc.get("title")
+        if doc.get("artist"): kwargs["performer"]=doc.get("artist")
+        if int(doc.get("duration") or 0)>0: kwargs["duration"]=int(doc.get("duration"))
+        kwargs["caption"]=caption or _active_managed_caption() if _ACTIVE_MANAGED_META.get() else (caption or DOWNLOAD_CAPTION)
+        kwargs["parse_mode"]="HTML"
+        sent=send_bot.send_audio(chat_id,doc.get("file_id"),**kwargs)
+        return sent
+    except Exception as e:
+        print("Cached song send failed:",repr(e))
+        try:
+            song_cache_col.delete_one({"_id":doc.get("_id")})
+        except Exception: pass
+        return None
+
+def _song_cache_clear(scope=None):
+    try:
+        result=song_cache_col.delete_many({"scope":str(scope)} if scope else {})
+        return int(result.deleted_count or 0)
+    except Exception as e:
+        print("Song cache clear error:",repr(e)); return 0
 
 
 def _ad_bot_key(bot_id=None):
@@ -2119,6 +2731,8 @@ def admin_menu():
     kb.add("🟢 Open Creation", "🔴 Close Creation")
     kb.add("🤖 See All Bots", "📊 Bot Stats")
     kb.add("✏️ SONG CLOSED MESSAGE")
+    kb.add("🟢 Open Store songs", "🔴 Close Store songs")
+    kb.add("🗑️ Clear Songs")
     kb.add("⚡ AUTO SONG SEARCH ON", "⛔ AUTO SONG SEARCH OFF")
     # Keep the legacy song admin controls from the previous bot version.
     kb.add("➕ ADD CAPTION", "📝 DEFAULT CAPTION")
@@ -5604,7 +6218,7 @@ def search_song_query_step(m):
             rows=_song_search_all(query,30)
             _cleanup_song_search()
             token=uuid.uuid4().hex[:16]
-            song_search_pending[token]={"uid":uid,"query":query,"results":rows,"created":time.time()}
+            song_search_pending[token]={"uid":uid,"query":query,"results":(rows or [])[:30],"created":time.time()}
             if not rows:
                 bot.send_message(m.chat.id,"❌ No songs found. Try another title or artist.",reply_markup=localized_user_menu(uid)); return
             try:
@@ -5704,7 +6318,16 @@ def song_pick_callback(call):
         if _send_ad_gate(bot,str(call.from_user.id),call.message.chat.id,"main","song_download",{"song":x},premium_url="https://t.me/Downloadvedioytibot"):
             bot.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
     bot.answer_callback_query(call.id,"⬇️ Downloading full song...")
-    status=bot.send_message(call.message.chat.id,"⏳ Downloading the full track...")
+    # Never replace the 10-song result list with a Downloading message. The status
+    # is a separate message and is removed after delivery.
+    scope="main"
+    cached=_song_cache_get(scope,x)
+    if cached:
+        sent=_song_cache_send(bot,call.message.chat.id,cached,caption=_song_caption(x))
+        if sent:
+            _record_song_download(str(call.from_user.id),x)
+            return
+    status=bot.send_message(call.message.chat.id,"⏳ <b>Downloading the full track...</b>",parse_mode="HTML")
     if str(x.get("source")) == "youtube":
         def _download_youtube_song_job(chat_id,status_id,song,uid):
             tmp=None
@@ -5728,19 +6351,21 @@ def song_pick_callback(call):
                                 audio_title,audio_artist=_song_audio_metadata(song)
                                 cover_path=_music_download_image(song.get("cover") or _youtube_artwork_url(vid),tmp,"cover.jpg")
                                 _embed_music_metadata(out,audio_title,audio_artist,cover_path=cover_path)
-                                bot.edit_message_text("🎵 <b>Sending music...</b>",chat_id,status_id,parse_mode="HTML")
                                 with open(out,"rb") as fh:
                                     kwargs={"title":audio_title,"performer":audio_artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
                                     if cover_path and os.path.isfile(cover_path): kwargs["thumb"]=cover_path
                                     try:
-                                        bot.send_audio(chat_id,fh,**kwargs)
+                                        sent=bot.send_audio(chat_id,fh,**kwargs)
                                     except Exception:
-                                        kwargs.pop("thumb",None); fh.seek(0); bot.send_audio(chat_id,fh,**kwargs)
+                                        kwargs.pop("thumb",None); fh.seek(0); sent=bot.send_audio(chat_id,fh,**kwargs)
+                                _song_cache_store("main",{**song,"audio_title":audio_title,"audio_artist":audio_artist},sent,query=song.get("title"))
                                 _record_song_download(uid,{**song,"audio_title":audio_title,"audio_artist":audio_artist})
+                                try: bot.delete_message(chat_id,status_id)
+                                except Exception: pass
                                 return
                     except Exception as e:
                         print("RapidAPI song audio failed; falling back to yt-dlp:",repr(e))
-                convert_link_to_mp3(chat_id,song.get("download"),status_id,source_title=str(song.get("title") or ""),source_artist=str(song.get("artist") or ""))
+                convert_link_to_mp3(chat_id,song.get("download"),status_id,source_title=str(song.get("title") or ""),source_artist=str(song.get("artist") or ""),song_cache_context={"scope":"main","song":song,"query":song.get("title")})
             except Exception as e:
                 print("YouTube song job failed:",repr(e))
                 try: bot.edit_message_text("❌ Music download failed. Please try again.",chat_id,status_id)
@@ -6363,27 +6988,25 @@ def _music_is_provider_placeholder(value):
 
 
 def _send_mp3_file(chat_id, path, title, artist, cover_path=None, caption=None, reply_markup=None):
-    """Send a genuine MP3 with safe artwork fallback. Never fail only because a thumb is bad."""
+    """Send a genuine MP3 with safe artwork fallback. Return the Telegram message when possible."""
     send_bot=_current_bot()
     kwargs={"caption":caption or (_active_managed_caption() if _ACTIVE_MANAGED_META.get() else DOWNLOAD_CAPTION),"title":title,"performer":artist,"reply_markup":reply_markup,"parse_mode":"HTML"}
     with open(path,"rb") as audio:
         if cover_path and os.path.isfile(cover_path):
             try:
                 with open(cover_path,"rb") as thumb:
-                    send_bot.send_audio(chat_id,audio,thumb=thumb,**kwargs)
-                    return
+                    return send_bot.send_audio(chat_id,audio,thumb=thumb,**kwargs)
             except Exception as thumb_error:
                 print("MP3 thumb send failed; retrying without thumb:",repr(thumb_error))
                 audio.seek(0)
         try:
-            send_bot.send_audio(chat_id,audio,**kwargs)
-            return
+            return send_bot.send_audio(chat_id,audio,**kwargs)
         except Exception as audio_error:
             print("send_audio failed:",repr(audio_error))
             audio.seek(0)
-            send_bot.send_document(chat_id,audio,caption=kwargs["caption"],reply_markup=reply_markup,parse_mode="HTML")
+            return send_bot.send_document(chat_id,audio,caption=kwargs["caption"],reply_markup=reply_markup,parse_mode="HTML")
 
-def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, local_cache_dir=None, source_title="", source_artist="", pending_token=None):
+def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, local_cache_dir=None, source_title="", source_artist="", pending_token=None, song_cache_context=None):
     uid=str(chat_id)
     music_platform=detect_platform(link)
     music_priority=is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
@@ -6597,7 +7220,14 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         upload_stop=threading.Event()
         start_action_heartbeat(chat_id,"upload_audio",upload_stop)
         try:
-            _send_mp3_file(chat_id,path,title,artist,cover_path=cover_path,caption=caption,reply_markup=music_markup)
+            sent_message=_send_mp3_file(chat_id,path,title,artist,cover_path=cover_path,caption=caption,reply_markup=music_markup)
+            if song_cache_context and isinstance(song_cache_context,dict):
+                try:
+                    _song_cache_store(song_cache_context.get("scope") or _song_cache_scope(),
+                                      song_cache_context.get("song") or {"title":title,"artist":artist,"download":link},
+                                      sent_message,query=song_cache_context.get("query"))
+                except Exception as cache_error:
+                    print("Song cache after MP3 conversion failed:",repr(cache_error))
         finally:
             upload_stop.set()
         # Powered by is strictly a post-download message. Never send it before
@@ -7362,6 +7992,24 @@ def admin_close_song(m):
     set_setting("song_auto_search_enabled",False)
     _refresh_all_user_menus("🔄 Song search has been closed by admin.")
     bot.send_message(m.chat.id,"🔴 <b>SONG SEARCH CLOSED IN BOT</b>\n\nThe Search Song button is removed from user menus and automatic song search is OFF.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🟢 Open Store songs")
+def admin_open_store_songs(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("song_store_enabled",True)
+    bot.send_message(m.chat.id,"🟢 <b>STORE SONGS OPEN</b>\n\nDownloaded songs will be cached for 10 minutes and repeat requests will use Telegram's cached file immediately.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔴 Close Store songs")
+def admin_close_store_songs(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("song_store_enabled",False)
+    bot.send_message(m.chat.id,"🔴 <b>STORE SONGS CLOSED</b>\n\nNew song downloads will not be stored for repeat delivery. Existing cache entries are left untouched until they expire or you clear them.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑️ Clear Songs")
+def admin_clear_songs_cache(m):
+    if not is_admin(m.from_user.id): return
+    n=_song_cache_clear()
+    bot.send_message(m.chat.id,f"🗑️ <b>CLEAR SONGS</b>\n\nRemoved cached song entries: <b>{n}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "✏️ SONG CLOSED MESSAGE")
 def admin_song_closed_message(m):
@@ -12269,10 +12917,13 @@ def _managed_bot_start_instance(doc):
                     if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",{"song":song},premium_url=_creator_bot_url()):
                         mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
                 mb.answer_callback_query(call.id,"⬇️ Downloading...")
+                # Keep the result list untouched. Download status is a separate message.
                 try:
-                    mb.edit_message_text(f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",call.message.chat.id,call.message.message_id,parse_mode="HTML")
-                except Exception: pass
-                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid)
+                    status=mb.send_message(call.message.chat.id,f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",parse_mode="HTML")
+                    status_id=status.message_id
+                except Exception:
+                    status_id=None
+                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid,status_id)
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
@@ -12434,7 +13085,7 @@ def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
                          "source":item.get("source") or "youtube","download_allowed":True})
             clean.append(item)
         token=uuid.uuid4().hex[:16]
-        pending[token]={"uid":str(uid),"query":q,"rows":clean,"created":time.time()}
+        pending[token]={"uid":str(uid),"query":q,"rows":clean[:30],"created":time.time()}
         if not clean:
             mb.send_message(chat_id,"❌ No matching songs found. Try the song title or artist name.")
             return
@@ -12449,7 +13100,7 @@ def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
             rows=_youtube_song_search(q,20) or []
             if rows:
                 token=uuid.uuid4().hex[:16]
-                pending[token]={"uid":str(uid),"query":q,"rows":rows,"created":time.time()}
+                pending[token]={"uid":str(uid),"query":q,"rows":(rows or [])[:30],"created":time.time()}
                 _managed_music_show(mb,chat_id,token,0,pending)
                 return
         except Exception as e2:
@@ -12487,11 +13138,26 @@ def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
         except Exception as e: print("Managed music results edit failed:",repr(e))
     mb.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
 
-def _managed_download_song(mb,chat_id,song,uid,bid):
+def _managed_download_song(mb,chat_id,song,uid,bid,status_id=None):
     tmp=None
-    status_id=None
     action_stop=threading.Event(); start_action_heartbeat(chat_id,"typing",action_stop)
     try:
+        # Cached Telegram file_id delivery is intentionally before any network lookup.
+        cached=_song_cache_get(str(bid),song)
+        if cached:
+            sent=_song_cache_send(mb,chat_id,cached)
+            if sent:
+                _record_song_download(uid,song)
+                try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.songs":1,"stats.downloads":1}})
+                except Exception: pass
+                if status_id:
+                    try: mb.delete_message(chat_id,status_id)
+                    except Exception: pass
+                powered=_active_powered_text()
+                if powered:
+                    try: mb.send_message(chat_id,powered)
+                    except Exception as e: print("Managed cached music powered-by send failed:",repr(e))
+                return
         vid=str(song.get("id") or _extract_youtube_video_id(song.get("download") or ""))
         title,artist=_song_audio_metadata(song)
         album=_music_clean_text(song.get("album") or "")
@@ -12523,13 +13189,17 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                     try:
                         with open(out,"rb") as fh:
                             if cover and os.path.isfile(cover): kwargs["thumb"]=cover
-                            try: mb.send_audio(chat_id,fh,**kwargs)
-                            except Exception: kwargs.pop("thumb",None); fh.seek(0); mb.send_audio(chat_id,fh,**kwargs)
+                            try: sent=mb.send_audio(chat_id,fh,**kwargs)
+                            except Exception: kwargs.pop("thumb",None); fh.seek(0); sent=mb.send_audio(chat_id,fh,**kwargs)
                     finally:
                         upload_stop.set()
+                    _song_cache_store(str(bid),{**song,"title":title,"artist":artist,"album":album},sent,query=song.get("title"))
                     _record_song_download(uid,{**song,"title":title,"artist":artist,"album":album})
                     try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.songs":1,"stats.downloads":1}})
                     except Exception: pass
+                    if status_id:
+                        try: mb.delete_message(chat_id,status_id)
+                        except Exception: pass
                     powered=_active_powered_text()
                     if powered:
                         try: mb.send_message(chat_id,powered)
@@ -12540,7 +13210,7 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
         # Fallback uses the exact managed-bot context, so convert_link_to_mp3 sends
         # the MP3 through the small bot rather than the main bot.
         ctx=contextvars.copy_context()
-        ctx.run(convert_link_to_mp3,chat_id,str(song.get("download") or ""),None,None,None,title,artist)
+        ctx.run(convert_link_to_mp3,chat_id,str(song.get("download") or ""),status_id,None,None,title,artist,None,{"scope":str(bid),"song":song,"query":song.get("title")})
     except Exception as e:
         print("Managed music download error:",repr(e))
         try: mb.send_message(chat_id,"❌ Music download failed. Please try another song.")
