@@ -958,6 +958,13 @@ def youtube_full_free_enabled():
 
 YOUTUBE_FREE_MAX_MINUTES = int(os.getenv("YOUTUBE_FREE_MAX_MINUTES", "15"))
 
+def youtube_free_limit_minutes():
+    try:
+        v=int(get_setting("youtube_free_max_minutes",YOUTUBE_FREE_MAX_MINUTES) or YOUTUBE_FREE_MAX_MINUTES)
+        return max(1,min(1440,v))
+    except Exception:
+        return max(1,min(1440,YOUTUBE_FREE_MAX_MINUTES))
+
 def _youtube_duration_seconds(link):
     d,_=_youtube_duration_fast(link)
     return d
@@ -1026,7 +1033,7 @@ def premium_required_for_platform(platform, uid, link=None):
         duration=_youtube_duration_seconds(link) if link else None
         # Unknown duration is allowed to reach the downloader; RapidAPI/yt-dlp
         # metadata probing inside the worker is the final safety check.
-        return bool(duration and duration > YOUTUBE_FREE_MAX_MINUTES*60)
+        return bool(duration and duration > youtube_free_limit_minutes()*60)
     if platform in premium_platform_keys():
         return True
     return False
@@ -1035,14 +1042,14 @@ def premium_gate_message(uid, platform, duration_seconds=None):
     name=html.escape(platform_display_name(platform))
     count=len(premium_platform_names())
     lang=str(users.get(str(uid),{}).get("language") or users.get(str(uid),{}).get("customer_ai_language") or "en")
-    if platform == "youtube" and duration_seconds and duration_seconds > YOUTUBE_FREE_MAX_MINUTES*60:
+    if platform == "youtube" and duration_seconds and duration_seconds > youtube_free_limit_minutes()*60:
         mins=max(13, int(round(duration_seconds/60.0)))
         if lang=="so":
             return ("💎 <b>Premium ayaa loo baahan yahay</b>\n\n"
-                    f"YouTube video-kan waa qiyaastii <b>{mins} daqiiqo</b>. Free users waxaa loo oggol yahay YouTube ilaa <b>{YOUTUBE_FREE_MAX_MINUTES} daqiiqo</b>.\n\n"
+                    f"YouTube video-kan waa qiyaastii <b>{mins} daqiiqo</b>. Free users waxaa loo oggol yahay YouTube ilaa <b>{youtube_free_limit_minutes()} daqiiqo</b>.\n\n"
                     "Si aad u dajiso video-kan, fur Premium/Trial.\n⚡ Download degdeg ah • 🎥 Quality sare • ▶️ YouTube access")
         return ("💎 <b>Premium Required</b>\n\n"
-                f"This YouTube video is about <b>{mins} minutes</b>. Free users can download YouTube videos up to <b>{YOUTUBE_FREE_MAX_MINUTES} minutes</b>.\n\n"
+                f"This YouTube video is about <b>{mins} minutes</b>. Free users can download YouTube videos up to <b>{youtube_free_limit_minutes()} minutes</b>.\n\n"
                 "Open Premium/Trial to download this video.\n⚡ Faster downloads • 🎥 Higher quality • ▶️ YouTube access")
     if lang=="so":
         return (f"💎 <b>Premium ayaa loo baahan yahay</b>\n\n"
@@ -2159,7 +2166,7 @@ def admin_menu():
     kb.add("⏱️ FREE MAX MIN", "⏱️ PREMIUM MAX MIN")
     kb.add("📦 FREE MAX MB", "📦 TRIAL MAX MB")
     kb.add("📦 PREMIUM MAX MB", "⚙️ DOWNLOAD LIMITS")
-    kb.add("▶️ YOUTUBE FREE ACCESS", "📺 FREE YOUTUBE MB")
+    kb.add("⏱️ SET YOUTUBE LIMIT", "📺 FREE YOUTUBE MB")
     kb.add("📺 PREMIUM YOUTUBE MB", "📋 YOUTUBE LIMITS")
     kb.add("📸 INSTAGRAM API", "📸 INSTAGRAM STATUS")
     kb.add("🛰️ COBALT STATUS")
@@ -4023,12 +4030,13 @@ def send_action(chat_id, action):
         except Exception: pass
 
 def start_action_heartbeat(chat_id, action, stop_event):
-    """Telegram chat actions expire quickly; refresh them while work is running."""
+    """Refresh Telegram chat actions using the bot context that owns the chat."""
+    ctx=contextvars.copy_context()
     def worker():
         while not stop_event.is_set():
             send_action(chat_id, action)
             stop_event.wait(4)
-    t=threading.Thread(target=worker,daemon=True); t.start(); return t
+    t=threading.Thread(target=lambda: ctx.run(worker),daemon=True); t.start(); return t
 
 def _current_bot():
     return _ACTIVE_BOT.get() or bot
@@ -4326,15 +4334,20 @@ def download_media(chat_id, link, message_id, quality=None):
         # here and show Premium instead of allowing the generic downloader
         # failure message to appear. RapidAPI is preferred for this probe.
         duration_check,rapid_data_prefetched=_youtube_duration_fast(link)
-        if duration_check and duration_check > YOUTUBE_FREE_MAX_MINUTES*60:
-            msg=premium_gate_message(uid,"youtube",duration_check)
-            kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+        if duration_check and duration_check > youtube_free_limit_minutes()*60:
+            msg=premium_gate_message(uid,"youtube",duration_check)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
+            kb=InlineKeyboardMarkup(row_width=2)
+            plans=get_premium_prices()
+            for months in ("1","3","9","12"):
+                if months in plans:
+                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
+            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             try:
                 if message_id: bot.edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
                 else: bot.send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
             except Exception as e: print("Premium duration gate send failed:",repr(e))
             return
-        max_seconds=YOUTUBE_FREE_MAX_MINUTES*60
+        max_seconds=youtube_free_limit_minutes()*60
     quality=quality or (users.get(uid,{}).get("premium_quality") if priority else "720") or ("1080" if quick else "720")
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     # Do not send/edit a visible "Preparing..." message. Telegram's native
@@ -4505,7 +4518,7 @@ def download_media(chat_id, link, message_id, quality=None):
         print(f"Download error [{platform}] {link}: {e!r}")
         err_text=str(e)
         if platform=="youtube" and not priority and "too long" in err_text.lower():
-            msg=premium_gate_message(uid,"youtube",YOUTUBE_FREE_MAX_MINUTES*60+1)
+            msg=premium_gate_message(uid,"youtube",youtube_free_limit_minutes()*60+1)
             kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             try:
                 if message_id: bot.edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
@@ -8976,6 +8989,31 @@ def admin_youtube_free_access_step(m):
     set_setting("youtube_full_free", v=='on')
     bot.send_message(m.chat.id, f"✅ Full YouTube for Free users: <b>{'OPEN' if v=='on' else 'CLOSED'}</b>\nYouTube Shorts remain Free.")
 
+@bot.message_handler(func=lambda m: m.text == "⏱️ SET YOUTUBE LIMIT")
+def admin_set_youtube_limit(m):
+    if not is_admin(m.from_user.id): return
+    cur=youtube_free_limit_minutes()
+    msg=bot.send_message(m.chat.id, f"⏱️ <b>SET YOUTUBE FREE LIMIT</b>\n\nCurrent: <b>{cur} minutes</b>\n\nSend <code>1min</code>, <code>15min</code>, <code>1hour</code>, <code>2hour</code>, <code>90m</code>, or a plain number such as <code>60</code> (minutes).", parse_mode="HTML")
+    bot.register_next_step_handler(msg,admin_set_youtube_limit_step)
+
+def _parse_duration_minutes_input(raw):
+    raw=str(raw or "").strip().lower().replace(" ","")
+    if raw.isdigit(): return max(1,min(1440,int(raw)))
+    m=re.fullmatch(r"(\d+)(?:m|min|mins|minute|minutes)",raw)
+    if m: return max(1,min(1440,int(m.group(1))))
+    h=re.fullmatch(r"(\d+)(?:h|hr|hrs|hour|hours)",raw)
+    if h: return max(1,min(1440,int(h.group(1))*60))
+    raise ValueError
+
+def admin_set_youtube_limit_step(m):
+    if not is_admin(m.from_user.id): return
+    try:
+        minutes=_parse_duration_minutes_input(m.text)
+        set_setting("youtube_free_max_minutes",minutes)
+        bot.send_message(m.chat.id,f"✅ <b>YouTube FREE limit:</b> {minutes} minutes",parse_mode="HTML")
+    except Exception:
+        bot.send_message(m.chat.id,"❌ Invalid duration. Example: <code>1min</code>, <code>15min</code>, <code>1hour</code>, <code>2hour</code>.",parse_mode="HTML")
+
 @bot.message_handler(func=lambda m: m.text == "📺 FREE YOUTUBE MB")
 def admin_free_youtube_mb(m):
     if not is_admin(m.from_user.id): return
@@ -9022,7 +9060,7 @@ def admin_youtube_limits(m):
     prem=int(get_setting("premium_youtube_max_mb",PREMIUM_YOUTUBE_MAX_MB_DEFAULT) or 0)
     trial=int(get_setting("trial_youtube_max_mb",TRIAL_YOUTUBE_MAX_MB_DEFAULT) or 0)
     p='Unlimited' if prem==0 else f'{prem} MB'; t='Unlimited' if trial==0 else f'{trial} MB'
-    bot.send_message(m.chat.id,f"📋 <b>YOUTUBE LIMITS</b>\n\n🆓 Free YouTube: <b>{free} MB</b>\n🎁 Trial YouTube: <b>{t}</b>\n💎 Premium YouTube: <b>{p}</b>\n▶️ Full YouTube for Free: <b>{'OPEN' if youtube_full_free_enabled() else 'CLOSED'}</b>\n\nShorts are Free. Full videos require Premium when access is CLOSED.")
+    bot.send_message(m.chat.id,f"📋 <b>YOUTUBE LIMITS</b>\n\n⏱️ Free YouTube duration: <b>{youtube_free_limit_minutes()} minutes</b>\n🆓 Free YouTube: <b>{free} MB</b>\n🎁 Trial YouTube: <b>{t}</b>\n💎 Premium YouTube: <b>{p}</b>\n▶️ Full YouTube for Free: <b>{'OPEN' if youtube_full_free_enabled() else 'CLOSED'}</b>\n\nShorts are Free. Full videos above the configured duration require Premium when access is CLOSED.")
 
 @bot.message_handler(func=lambda m: m.text == "📸 INSTAGRAM API")
 def admin_instagram_api_setup(m):
@@ -9696,8 +9734,9 @@ def successful_payment_handler(message):
     if payload.startswith("managed_premium_stars:"):
         parts=payload.split(":")
         if len(parts)>=4:
-            bid=str(parts[1]); months=str(parts[2]); expected_stars=int(parts[3] or 0); d=managed_bots_col.find_one({"bot_id":bid})
-            if not d or str(d.get("owner_id"))!=uid or stars < expected_stars:
+            bid=str(parts[1]); months=str(parts[2]); expected_stars=int(parts[3] or 0); buyer=str(parts[4] or "") if len(parts)>=5 else ""; d=managed_bots_col.find_one({"bot_id":bid})
+            allowed_buyer=(buyer==uid) if buyer else bool(d and str(d.get("owner_id"))==uid)
+            if not d or not allowed_buyer or stars < expected_stars:
                 bot.send_message(message.chat.id,"❌ This Premium payment could not be validated."); return
             price=get_premium_prices().get(months)
             if price is None: bot.send_message(message.chat.id,"❌ Premium plan is no longer available."); return
@@ -11549,7 +11588,7 @@ def _creator_my_bots_edit(uid, chat_id, mid=None):
             typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
             status="🟢 Active" if d.get("active",True) and not d.get("suspended") else "🔴 Suspended"
             lines += [f"<b>{i}. {typ}</b>",f"   @{html.escape(str(d.get('username') or 'unknown'))} • {status}",""]
-            buttons.append([{"text":f"⚙️ @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},{"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}])
+            buttons.append([{"text":f"⚙️ @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"}])
         text="\n".join(lines); markup={"inline_keyboard":buttons}
     if mid is not None: _creator_edit(chat_id,mid,text,reply_markup=markup)
     else: _creator_send(chat_id,text,reply_markup=markup)
@@ -12009,7 +12048,11 @@ def _managed_bot_start_instance(doc):
                 if not q or len(q)<2: return
                 if not _ad_enabled_for(uid,bid):
                     if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
-                _run_managed_music_search(mb,m.chat.id,q,uid,bid,managed_music_pending)
+                action_stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",action_stop)
+                try:
+                    _run_managed_music_search(mb,m.chat.id,q,uid,bid,managed_music_pending)
+                finally:
+                    action_stop.set()
             def _music_cancel(call):
                 _ctx(); p=str(call.data).split(":"); token2=p[1] if len(p)>1 else ""; data=managed_music_pending.get(token2)
                 if data and str(data.get("uid"))!=str(call.from_user.id):
@@ -12030,15 +12073,25 @@ def _managed_bot_start_instance(doc):
                 if not _ad_enabled_for(str(call.from_user.id),bid):
                     if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",{"song":song},premium_url=_creator_bot_url()):
                         mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
-                mb.answer_callback_query(call.id,"⬇️ Downloading..."); ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid)
+                mb.answer_callback_query(call.id,"⬇️ Downloading...")
+                try:
+                    mb.edit_message_text(f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+                except Exception: pass
+                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid)
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
-                        if duration and duration>YOUTUBE_FREE_MAX_MINUTES*60 and not youtube_is_short(link):
-                            kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("💎 OPEN PREMIUM",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot")); mb.send_message(m.chat.id,premium_gate_message(uid,"youtube",duration),parse_mode="HTML",reply_markup=kb); return
+                        if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
+                            plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
+                            for months in ("1","3","9","12"):
+                                if months in plans:
+                                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
+                            kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
+                            msg=premium_gate_message(uid,"youtube",duration)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
+                            mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
                 has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
                 if not has_priority and not _ad_enabled_for(uid,bid):
@@ -12055,6 +12108,25 @@ def _managed_bot_start_instance(doc):
                 data["in_progress"]=True; mb.answer_callback_query(call.id,"🎵 Conversion started")
                 status=mb.send_message(call.message.chat.id,"🎵 Converting video to MP3...")
                 ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,convert_link_to_mp3,call.message.chat.id,data.get("link") or "",status.message_id,data.get("local_source"),data.get("cache_dir"),data.get("source_title") or "",data.get("source_artist") or "",token)
+            def _managed_youtube_premium_cb(call):
+                _ctx()
+                parts=str(call.data).split(":"); months=parts[2] if len(parts)>2 else ""
+                plans=get_premium_prices(); price=plans.get(months)
+                if price is None:
+                    mb.answer_callback_query(call.id,"Invalid Premium plan.",show_alert=True); return
+                try:
+                    rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
+                    payload=f"managed_premium_stars:{bid}:{months}:{stars}:{str(call.from_user.id)}"
+                    body={"title":f"Downloader Premium — {months} month(s)","description":f"Unlimited YouTube for @{username or 'DownloaderBot'} for {months} month(s).","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
+                    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
+                    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
+                    link=str(data.get("result") or "")
+                    if not link: raise RuntimeError("Telegram returned an empty invoice link")
+                    mb.answer_callback_query(call.id,"⭐ Invoice link ready")
+                    mb.send_message(call.message.chat.id,f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nAfter payment, Premium is activated for this Downloader Bot. You will not need to open Premium again during the active period. YouTube downloads are unlimited while Premium is active.\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]]))
+                except Exception as e:
+                    print("Managed YouTube Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
+
             def _remove_ads_cb(call):
                 _ctx(); parts=str(call.data).split(":"); months=parts[2] if len(parts)>2 else ""
                 try:
@@ -12100,7 +12172,7 @@ def _managed_bot_start_instance(doc):
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
@@ -12199,6 +12271,7 @@ def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
 def _managed_download_song(mb,chat_id,song,uid,bid):
     tmp=None
     status_id=None
+    action_stop=threading.Event(); start_action_heartbeat(chat_id,"typing",action_stop)
     try:
         vid=str(song.get("id") or _extract_youtube_video_id(song.get("download") or ""))
         title,artist=_song_audio_metadata(song)
@@ -12227,10 +12300,14 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                     cover=_music_download_image(cover_url,tmp,"cover.jpg") if cover_url else None
                     _embed_music_metadata(out,title,artist,cover_path=cover,album=album)
                     kwargs={"title":title,"performer":artist,"duration":int(song.get("duration") or 0),"caption":_active_managed_caption(),"parse_mode":"HTML"}
-                    with open(out,"rb") as fh:
-                        if cover and os.path.isfile(cover): kwargs["thumb"]=cover
-                        try: mb.send_audio(chat_id,fh,**kwargs)
-                        except Exception: kwargs.pop("thumb",None); fh.seek(0); mb.send_audio(chat_id,fh,**kwargs)
+                    action_stop.set(); upload_stop=threading.Event(); start_action_heartbeat(chat_id,"upload_audio",upload_stop)
+                    try:
+                        with open(out,"rb") as fh:
+                            if cover and os.path.isfile(cover): kwargs["thumb"]=cover
+                            try: mb.send_audio(chat_id,fh,**kwargs)
+                            except Exception: kwargs.pop("thumb",None); fh.seek(0); mb.send_audio(chat_id,fh,**kwargs)
+                    finally:
+                        upload_stop.set()
                     _record_song_download(uid,{**song,"title":title,"artist":artist,"album":album})
                     try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.songs":1,"stats.downloads":1}})
                     except Exception: pass
@@ -12250,6 +12327,7 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
         try: mb.send_message(chat_id,"❌ Music download failed. Please try another song.")
         except Exception: pass
     finally:
+        action_stop.set()
         if tmp: shutil.rmtree(tmp,ignore_errors=True)
 
 
