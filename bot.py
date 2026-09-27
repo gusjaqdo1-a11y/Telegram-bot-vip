@@ -555,6 +555,12 @@ def _refresh_all_user_menus(message=None):
 def _creation_open():
     return bool(get_setting("bot_creation_enabled", True))
 
+def _main_ads_open():
+    return bool(get_setting("main_ads_enabled", False))
+
+def _managed_powered_by_open():
+    return bool(get_setting("managed_powered_by_enabled", True))
+
 def _creation_verify_required():
     return bool(get_setting("create_bot_verify_required", True))
 
@@ -593,6 +599,7 @@ def _active_managed_caption():
     return f"Downloaded Via: @{username}" if username else DOWNLOAD_CAPTION
 
 def _active_powered_text():
+    if not _managed_powered_by_open(): return ""
     if _active_managed_premium(): return ""
     return MANAGED_POWERED_BY
 
@@ -1324,9 +1331,9 @@ def _remove_ads_active(uid, bot_id=None):
 
 
 def _ad_enabled_for(uid, bot_id=None):
-    # Ads/Remove Ads belong only to Creator-managed small bots. The main
-    # @Downloadvedioytibot downloader is never gated by this system.
-    if _ad_bot_key(bot_id) == "main": return True
+    # Main downloader ads are globally controlled by Admin. Managed bots use
+    # the same per-user/per-bot cooldown system.
+    if _ad_bot_key(bot_id) == "main" and not _main_ads_open(): return True
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -1450,11 +1457,24 @@ def _complete_ad_gate(token):
     _dispatch_ad_action(row)
 
 
-def _ad_skip_message(obj,chat_id):
-    kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("▶️ Open Ad Link",url=AD_SMARTLINK_URL))
-    try: obj.send_message(chat_id,"⏭️ <b>Skip</b>\n\nOpen this ad link to continue:",parse_mode="HTML",reply_markup=kb)
-    except Exception as e: print("Ad skip send failed:",repr(e))
-
+@bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("creatorwallet:"))
+def creator_wallet_main_callback(call):
+    parts=str(call.data).split(":"); action=parts[1] if len(parts)>1 else ""; uid=str(call.from_user.id)
+    if action not in {"confirm","reject"}:
+        bot.answer_callback_query(call.id,"Invalid wallet request.",show_alert=True); return
+    target=parts[2] if len(parts)>2 else uid
+    if target!=uid:
+        bot.answer_callback_query(call.id,"This wallet request is not yours.",show_alert=True); return
+    if action=="reject":
+        users.setdefault(uid,{})["creator_wallet_linked"]=False; save_user(uid); bot.answer_callback_query(call.id,"Wallet rejected")
+        try: bot.edit_message_text("❌ <b>Creator Wallet connection rejected.</b>\n\nNo balance was shared with the Creator Bot.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+        except Exception: pass
+        _creator_send(uid,"❌ <b>Wallet connection rejected.</b>\n\nYour Creator Bot is not connected to @Downloadvedioytibot.")
+        return
+    users.setdefault(uid,{})["creator_wallet_linked"]=True; users[uid]["creator_wallet_linked_at"]=datetime.now(timezone.utc).isoformat(); save_user(uid); bot.answer_callback_query(call.id,"Wallet connected")
+    try: bot.edit_message_text("✅ <b>Creator Wallet connected.</b>\n\nYour Creator Bot account and @Downloadvedioytibot now share the same balance.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+    except Exception: pass
+    _creator_send(uid,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot and @Downloadvedioytibot now use the same balance. Wallet can now be used for Premium on any of your created bots.")
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adremove:"))
 def _main_ad_remove_callback(call):
@@ -1462,12 +1482,6 @@ def _main_ad_remove_callback(call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     bot.answer_callback_query(call.id); _send_remove_ads_plans(bot,str(call.from_user.id),call.message.chat.id,str(row.get("bot_id") or "main"))
 
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("adskip:"))
-def _main_ad_skip_callback(call):
-    token=call.data.split(":",1)[1]; row=ad_gates_col.find_one({"token":token})
-    if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
-    bot.answer_callback_query(call.id); _ad_skip_message(bot,call.message.chat.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adplan:"))
@@ -1491,6 +1505,14 @@ class _AdGateHandler(BaseHTTPRequestHandler):
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}:
             body=b"ok"; self.send_response(200); self.send_header("Content-Type","text/plain"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body); return
+        done=re.fullmatch(r"/ad/complete/([A-Za-z0-9]{8,64})",path)
+        if done:
+            try:
+                _complete_ad_gate(done.group(1))
+                body=b"ok"; self.send_response(200); self.send_header("Content-Type","text/plain"); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(body)
+            except Exception as e:
+                print("Ad complete endpoint failed:",repr(e)); self.send_response(500); self.end_headers()
+            return
         m=re.fullmatch(r"/ad/open/([A-Za-z0-9]{8,64})",path)
         if not m:
             self.send_response(404); self.end_headers(); return
@@ -1503,7 +1525,8 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             self.send_response(410); self.end_headers(); return
         threading.Timer(AD_GATE_SECONDS,lambda:_complete_ad_gate(m.group(1))).start()
         ad_url=json.dumps(AD_SMARTLINK_URL)
-        html_body=("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>QuickDL</title><style>body{font-family:Arial;background:#0b1220;color:#fff;text-align:center;padding:50px 18px}.box{max-width:460px;margin:auto;background:#111b2e;border-radius:20px;padding:28px}#n{font-size:46px;font-weight:800}</style></head><body><div class=\"box\"><h2>QuickDL</h2><p>Short ad gate</p><div id=\"n\">"+str(AD_GATE_SECONDS)+"</div><p>Your download/search will continue automatically.</p></div><script>let n="+str(AD_GATE_SECONDS)+",e=document.getElementById('n');let t=setInterval(()=>{n--;e.textContent=n;if(n<=0){clearInterval(t);location.href="+ad_url+";}},1000);</script></body></html>").encode()
+        complete_url=json.dumps("/ad/complete/"+m.group(1))
+        html_body=("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>QuickDL</title><style>body{font-family:Arial;background:#0b1220;color:#fff;text-align:center;padding:50px 18px}.box{max-width:460px;margin:auto;background:#111b2e;border-radius:20px;padding:28px}#n{font-size:46px;font-weight:800}</style></head><body><div class=\"box\"><h2>QuickDL</h2><p>Short ad gate</p><div id=\"n\">"+str(AD_GATE_SECONDS)+"</div><p>Your download/search will continue automatically.</p></div><script>let n="+str(AD_GATE_SECONDS)+",e=document.getElementById('n');let t=setInterval(()=>{n--;e.textContent=n;if(n<=0){clearInterval(t);fetch("+complete_url+",{cache:'no-store'}).finally(()=>location.href="+ad_url+");}},1000);</script></body></html>").encode()
         self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(html_body))); self.end_headers(); self.wfile.write(html_body)
 
 
@@ -2113,6 +2136,8 @@ def admin_menu():
     kb.add("➕ ADD NEW ADMIN")
     kb.add("🟢 Open add channel", "🔴 Close add channel")
     kb.add("🟢 Open mp3 Cover", "🔴 Close mp3 Cover")
+    kb.add("🟢 Open Ads", "🔴 Close Ads")
+    kb.add("🟢 Open Powered by", "🔴 Close Powered by")
     kb.add("📢 REFERRAL BROADCAST")
     kb.add("📣 Send all G/CH")
     kb.add("🟢 Open song in bot", "🔴 Close Song in bot")
@@ -3992,9 +4017,10 @@ def broadcast_users(send_one, user_ids=None):
 
 def send_action(chat_id, action):
     try:
-        bot.send_chat_action(chat_id, action)
+        _current_bot().send_chat_action(chat_id, action)
     except Exception:
-        pass
+        try: bot.send_chat_action(chat_id, action)
+        except Exception: pass
 
 def start_action_heartbeat(chat_id, action, stop_event):
     """Telegram chat actions expire quickly; refresh them while work is running."""
@@ -4471,6 +4497,10 @@ def download_media(chat_id, link, message_id, quality=None):
             try: _current_bot().delete_message(chat_id,message_id)
             except Exception: pass
         videos_data["total"]=videos_data.get("total",0)+sent; videos_data.setdefault("platforms",{}).setdefault(platform,0); videos_data["platforms"][platform]+=sent; videos_data.setdefault("users",{}).setdefault(uid,0); videos_data["users"][uid]+=sent; save_videos(); log_activity(uid,"download",{"platform":platform,"count":sent,"provider":provider})
+        _mmeta=_ACTIVE_MANAGED_META.get() or {}; _mbid=str(_mmeta.get("bot_id") or "")
+        if _mbid and sent:
+            try: managed_bots_col.update_one({"bot_id":_mbid},{"$inc":{"stats.downloads":int(sent)}})
+            except Exception: pass
     except Exception as e:
         print(f"Download error [{platform}] {link}: {e!r}")
         err_text=str(e)
@@ -11272,7 +11302,7 @@ CREATOR_API_BASE = f"https://api.telegram.org/bot{CREATOR_BOT_TOKEN}" if CREATOR
 
 def _creator_set_commands():
     if not CREATOR_BOT_TOKEN: return
-    cmds=[{"command":"start","description":"Open Creator Bot"},{"command":"help","description":"Creator help"},{"command":"mybots","description":"My created bots"},{"command":"premium","description":"Downloader Premium"},{"command":"wallet","description":"Shared wallet card"}]
+    cmds=[{"command":"start","description":"Open Creator Bot"},{"command":"help","description":"Creator help"},{"command":"mybots","description":"My created bots"},{"command":"premium","description":"Downloader Premium"}]
     if _creation_open(): cmds.insert(2,{"command":"create","description":"Create a new downloader bot"})
     _creator_api("setMyCommands",{"commands":cmds})
 
@@ -11316,7 +11346,6 @@ def _creator_keyboard(uid):
     rows += [
         [{"text":"🤖 My Bots"},{"text":"🗑 Delete Bot"}],
         [{"text":"💎 Premium"},{"text":"💰 Balance"}],
-        [{"text":"💳 Wallet"}],
         [{"text":"🆘 Help"}],
     ]
     if _creator_admin(uid):
@@ -11341,6 +11370,7 @@ def _creator_admin_keyboard():
         [{"text":"📢 Broadcast Creator Users"}],
         [{"text":"💎 Premium Prices"}],
         [{"text":"🚫 Remove Ads Prices"},{"text":"♻️ Reset Ads"}],
+        [{"text":"🟢 Open Powered by"},{"text":"🔴 Close Powered by"}],
         [{"text":"🔙 USER MENU"}],
     ],"resize_keyboard":True,"is_persistent":True}
 
@@ -11371,7 +11401,7 @@ def _creator_ensure_user(uid):
             "referred_by":None,"joined_date":datetime.now().strftime("%Y-%m-%d"),
             "last_seen_at":datetime.now(timezone.utc).isoformat(),"month":now_month(),
             "language":None,"customer_ai_language":None,"currency":"USD","balance_asset":"USD",
-            "gender":None,"city":None,
+            "gender":None,"city":None,"creator_wallet_linked":False,"creator_wallet_linked_at":None,
         }
         save_user(uid)
     users[uid]["last_seen_at"]=datetime.now(timezone.utc).isoformat()
@@ -11471,12 +11501,13 @@ def _creator_handle_text(uid, chat_id, text):
         return
     if text in ("💎 Premium","/premium"):
         _creator_premium(uid,chat_id); return
-    if text in ("💳 Wallet","💳 Wallet Card","/wallet"):
-        rows=list(managed_bots_col.find({"owner_id":uid}).sort("created_at",-1))
-        if not rows:
-            _creator_send(chat_id,"🤖 <b>No bots yet.</b> Create a bot first.",reply_markup=_creator_keyboard(uid)); return
-        kb={"inline_keyboard":[[{"text":f"🔗 @{str(d.get('username') or 'unknown')[:30]}","callback_data":f"cwallet:{d.get('bot_id')}"}] for d in rows[:50]]}
-        _creator_send(chat_id,"💳 <b>WALLET CONNECTION</b>\n\nChoose the bot you want to connect to your main @Downloadvedioytibot balance.\n\nThe main bot will send a Confirm/Reject request. No 16-digit code is required.",reply_markup=kb); return
+    if text in ("/wallet",):
+        linked=bool(users.get(uid,{}).get("creator_wallet_linked"))
+        if linked:
+            _creator_send(chat_id,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot account and @Downloadvedioytibot use the same balance.",reply_markup=_creator_keyboard(uid))
+        else:
+            _creator_send(chat_id,"💳 <b>CONNECT CREATOR WALLET</b>\n\nConnect your Creator Bot account to @Downloadvedioytibot. The main bot will send a Confirm/Reject request.",reply_markup={"inline_keyboard":[[{"text":"🔗 Connect Wallet","callback_data":"creatorwallet:request"}]]})
+        return
     if text in ("🆘 Help","/help"):
         _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
     if text=="👑 ADMIN PANEL" and _creator_admin(uid):
@@ -11508,19 +11539,23 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"Use the buttons below.",reply_markup=_creator_keyboard(uid))
 
 
-def _creator_my_bots(uid, chat_id):
+def _creator_my_bots_edit(uid, chat_id, mid=None):
     rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
     if not rows:
-        _creator_send(chat_id,"🤖 <b>MY BOTS</b>\n\nYou have no bots yet.",reply_markup=_creator_keyboard(uid)); return
-    lines=["🤖 <b>MY BOTS</b>","",f"You have <b>{len(rows)}</b> managed bot(s).","" ]
-    buttons=[]
-    for i,d in enumerate(rows[:50],1):
-        status="🟢" if d.get("active",True) and not d.get("suspended") else "🔴"
-        lines.append(f"<b>{i}.</b> {status} <b>{html.escape(str(d.get('name') or 'Downloader Bot'))}</b> — @{html.escape(str(d.get('username') or 'unknown'))}")
-        lines.append(f"   🆔 <code>{html.escape(str(d.get('bot_id') or ''))}</code>")
-        buttons.append([{"text":f"📊 {i}. @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},
-                        {"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}])
-    _creator_send(chat_id,"\n".join(lines),reply_markup={"inline_keyboard":buttons})
+        text="🤖 <b>MY BOTS</b>\n\nYou have no bots yet."; markup={"inline_keyboard":[]}
+    else:
+        lines=["🤖 <b>MY BOTS</b>",""]; buttons=[]
+        for i,d in enumerate(rows[:50],1):
+            typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
+            status="🟢 Active" if d.get("active",True) and not d.get("suspended") else "🔴 Suspended"
+            lines += [f"<b>{i}. {typ}</b>",f"   @{html.escape(str(d.get('username') or 'unknown'))} • {status}",""]
+            buttons.append([{"text":f"⚙️ @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},{"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}])
+        text="\n".join(lines); markup={"inline_keyboard":buttons}
+    if mid is not None: _creator_edit(chat_id,mid,text,reply_markup=markup)
+    else: _creator_send(chat_id,text,reply_markup=markup)
+
+def _creator_my_bots(uid, chat_id):
+    _creator_my_bots_edit(uid,chat_id,None)
 
 def _creator_delete_menu(uid, chat_id):
     rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
@@ -11528,49 +11563,6 @@ def _creator_delete_menu(uid, chat_id):
         _creator_send(chat_id,"🗑 <b>Delete Bot</b>\n\nNo created bots found."); return
     kb={"inline_keyboard":[[{"text":f"🗑 @{str(d.get('username') or 'unknown')[:30]}","callback_data":f"cbotdel:{d.get('bot_id')}"}] for d in rows[:20]]}
     _creator_send(chat_id,"🗑 <b>Remove a Bot</b>\n\nThis removes the downloader bot from this system and stops its worker. Telegram's bot account itself remains owned by you.",reply_markup=kb)
-
-
-def _managed_wallet_start(m, bid, user_id=None):
-    uid=str(user_id or m.from_user.id); d=_managed_bot_doc(bid)
-    if not d or str(d.get("owner_id"))!=uid:
-        bot.send_message(m.chat.id,"🔐 <b>Wallet linking is owner-only.</b>"); return
-    if d.get("wallet_linked"):
-        bot.send_message(m.chat.id,f"✅ <b>Wallet already linked.</b>\n\n💰 Shared balance: <b>{html.escape(money_text(uid,balance_usd_value(uid)))}</b>")
-        return
-    # The main downloader bot sends the consent request. No wallet/card number is
-    # copied by the user anymore.
-    kb=InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("✅ Confirm",callback_data=f"mwconfirm:{bid}"),InlineKeyboardButton("❌ Reject",callback_data=f"mwreject:{bid}"))
-    _main_bot.send_message(
-        int(uid),
-        "💳 <b>SHARED WALLET CONNECTION</b>\n\n"
-        f"You are connecting your Downloader Bot <b>@{html.escape(str(d.get('username') or 'unknown'))}</b> to your main <b>@Downloadvedioytibot</b> account.\n\n"
-        "After you confirm, both bots will use the <b>same balance</b>. No 16-digit code is required.\n\n"
-        "<b>Confirm</b> only if you own this Downloader Bot and want it to use your main balance.",
-        parse_mode="HTML",reply_markup=kb
-    )
-    try: bot.send_message(m.chat.id,"📨 <b>Confirmation sent to your main @Downloadvedioytibot account.</b>\n\nOpen the main bot and press <b>Confirm</b> to finish linking.",parse_mode="HTML")
-    except Exception: pass
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith(("mwconfirm:","mwreject:")))
-def managed_wallet_consent_callback(call):
-    uid=str(call.from_user.id); data=str(call.data or ""); action,bid=data.split(":",1)
-    d=_managed_bot_doc(bid)
-    if not d or str(d.get("owner_id"))!=uid:
-        bot.answer_callback_query(call.id,"❌ This wallet request is not yours.",show_alert=True); return
-    if action=="mwreject":
-        bot.answer_callback_query(call.id,"Wallet connection rejected.")
-        try: bot.edit_message_text("❌ <b>Wallet connection rejected.</b>\n\nNo balance was shared.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
-        except Exception: pass
-        return
-    managed_bots_col.update_one({"bot_id":str(bid)},{"$set":{"wallet_linked":True,"wallet_owner_id":uid,"wallet_linked_at":datetime.now(timezone.utc)}})
-    bot.answer_callback_query(call.id,"✅ Wallet linked!")
-    try: bot.edit_message_text("✅ <b>Wallet connection confirmed.</b>\n\nYour Downloader Bot and @Downloadvedioytibot now share the same balance.",call.message.chat.id,call.message.message_id,parse_mode="HTML")
-    except Exception: pass
-    mb=managed_bot_objects.get(str(bid)) or _managed_bot_start_instance(d)
-    if mb:
-        try: mb.send_message(int(uid),f"✅ <b>Wallet linked successfully.</b>\n\n💰 Shared balance: <b>{html.escape(money_text(uid,balance_usd_value(uid)))}</b>\n\nYour Downloader Bot now uses the same balance as @Downloadvedioytibot.",parse_mode="HTML")
-        except Exception: pass
 
 
 def _premium_balance_help(uid):
@@ -11685,7 +11677,7 @@ def _creator_wallet_card(uid, chat_id, regenerate=False):
         "This is an internal virtual wallet card for linking your managed Downloader Bot. "
         "It is <b>not a bank card</b> and has no banking/withdrawal function. The balance always stays synced with @Downloadvedioytibot.")
 
-def _creator_premium(uid, chat_id):
+def _creator_premium(uid, chat_id, edit=None):
     uid=str(uid); rows=list(managed_bots_col.find({"owner_id":uid}).sort("created_at",-1))
     if not rows: _creator_send(chat_id,"🤖 <b>No bots yet</b>\n\nCreate a Video Downloader or Music Downloader first.",reply_markup=_creator_keyboard(uid)); return
     if premium_verification_required() and not user_is_verified(uid): _creator_send(chat_id,"🔐 <b>Verification Required</b>\n\nVerify your account before purchasing Premium."); return
@@ -11693,7 +11685,10 @@ def _creator_premium(uid, chat_id):
     for d in rows[:50]:
         typ="🎵" if str(d.get("bot_type"))=="music" else "🎬"; status="💎" if _managed_premium_active_doc(d) else "🆓"
         buttons.append([{"text":f"{typ} {status} @{str(d.get('username') or 'unknown')[:30]}","callback_data":f"cpickbot:{d.get('bot_id')}"}])
-    _creator_send(chat_id,"💎 <b>PREMIUM</b>\n\nFirst choose the bot you want to upgrade.\nThen choose <b>Wallet</b> or <b>Telegram Stars</b>.",reply_markup={"inline_keyboard":buttons})
+    text="💎 <b>PREMIUM</b>\n\nFirst choose the bot you want to upgrade.\nThen choose <b>Wallet</b> or <b>Telegram Stars</b>."
+    markup={"inline_keyboard":buttons+[[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}
+    if edit: _creator_edit(edit[0],edit[1],text,reply_markup=markup)
+    else: _creator_send(chat_id,text,reply_markup=markup)
 
 
 def _creator_admin_text(uid, chat_id, text):
@@ -11730,6 +11725,10 @@ def _creator_admin_text(uid, chat_id, text):
         _creator_send(chat_id,_top_song_searchers_text(100),reply_markup=_creator_admin_keyboard()); return
     if text=="📢 Broadcast Creator Users":
         _creator_set_session(uid,{"state":"admin_broadcast_creator"}); _creator_send(chat_id,"📢 Send the message to broadcast to users who have interacted with the Creator Bot."); return
+    if text=="🟢 Open Powered by":
+        set_setting("managed_powered_by_enabled",True); _creator_send(chat_id,"🟢 <b>Powered by OPEN</b>\n\nStandard managed bots will send Powered by after downloads.",reply_markup=_creator_admin_keyboard()); return
+    if text=="🔴 Close Powered by":
+        set_setting("managed_powered_by_enabled",False); _creator_send(chat_id,"🔴 <b>Powered by CLOSED</b>\n\nManaged bots will stop sending Powered by messages.",reply_markup=_creator_admin_keyboard()); return
     if text=="🚫 Remove Ads Prices":
         plans=_remove_ads_plans()
         _creator_set_session(uid,{"state":"admin_remove_ads_prices"})
@@ -11861,24 +11860,30 @@ def _creator_on_managed_update(update):
 def _creator_callback(call):
     uid=str((call.get("from") or {}).get("id") or ""); chat_id=((call.get("message") or {}).get("chat") or {}).get("id"); mid=((call.get("message") or {}).get("message_id")); data=str(call.get("data") or "")
     _creator_answer(call.get("id"),"")
+    if data=="creatorwallet:request":
+        if users.get(uid,{}).get("creator_wallet_linked"):
+            _creator_edit(chat_id,mid,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot account and @Downloadvedioytibot share the same balance.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":"cmybots"}]]}); return
+        try:
+            _main_bot.send_message(int(uid),"💳 <b>CREATOR WALLET CONNECTION</b>\n\nConnect your Creator Bot account to your main <b>@Downloadvedioytibot</b> balance?\n\nAfter confirmation, both systems use the same balance.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm",callback_data=f"creatorwallet:confirm:{uid}"),InlineKeyboardButton("❌ Reject",callback_data=f"creatorwallet:reject:{uid}")]]))
+            _creator_edit(chat_id,mid,"📨 <b>Confirmation sent</b>\n\nOpen @Downloadvedioytibot and press <b>Confirm</b> or <b>Reject</b>.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":"cmybots"}]]})
+        except Exception as e:
+            print("Creator wallet request error:",repr(e)); _creator_answer(call.get("id"),"Could not send request.",True)
+        return
+    if data=="cmybots":
+        _creator_my_bots_edit(uid,chat_id,mid); return
+    if data=="cmypremium":
+        _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
         if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
         _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
         _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
-    if data.startswith("cwallet:"):
-        bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
-        if not d or str(d.get("owner_id"))!=uid: _creator_answer(call.get("id"),"This is not your bot.",True); return
-        kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("✅ Confirm",callback_data=f"mwconfirm:{bid}"),InlineKeyboardButton("❌ Reject",callback_data=f"mwreject:{bid}"))
-        try: _main_bot.send_message(int(uid),"💳 <b>SHARED WALLET CONNECTION</b>\n\n"+f"Connect <b>@{html.escape(str(d.get('username') or 'your bot'))}</b> to your <b>@Downloadvedioytibot</b> balance?\n\nAfter confirmation both systems use the same balance. No wallet code is required.",parse_mode="HTML",reply_markup=kb); _creator_answer(call.get("id"),"Confirmation sent to @Downloadvedioytibot")
-        except Exception as e: _creator_answer(call.get("id"),"Could not send wallet confirmation.",True); print("Creator wallet request error:",repr(e))
-        return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
-        _creator_send(chat_id,f"🤖 <b>Bot Information</b>\n\nName: <b>{html.escape(str(d.get('name') or 'Downloader Bot'))}</b>\nUsername: @{html.escape(str(d.get('username') or 'unknown'))}\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: {'💎 Active' if is_premium(uid) else '🆓 Standard'}")
-        return
+        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
+        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
@@ -11888,18 +11893,18 @@ def _creator_callback(call):
     if data.startswith("cpickbot:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid: _creator_answer(call.get("id"),"Not your bot.",True); return
-        _creator_send(chat_id,f"💎 <b>Premium — @{html.escape(str(d.get('username') or 'unknown'))}</b>\n\nChoose payment method first:",reply_markup={"inline_keyboard":[[{"text":"💰 Wallet","callback_data":f"cpaymethod:{bid}:wallet"},{"text":"⭐ Telegram Stars","callback_data":f"cpaymethod:{bid}:stars"}],[{"text":"💳 Link Wallet","callback_data":f"cwallet:{bid}"}]]}); return
+        _creator_edit(chat_id,mid,f"💎 <b>Premium — @{html.escape(str(d.get('username') or 'unknown'))}</b>\n\nChoose payment method:",reply_markup={"inline_keyboard":[[{"text":"💰 Wallet","callback_data":f"cpaymethod:{bid}:wallet"},{"text":"⭐ Telegram Stars","callback_data":f"cpaymethod:{bid}:stars"}],[{"text":"⬅️ Back","callback_data":f"cbotinfo:{bid}"}]]}); return
     if data.startswith("cpaymethod:"):
         parts=data.split(":",2); bid=parts[1] if len(parts)>1 else ""; method=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid or method not in {"wallet","stars"}: _creator_answer(call.get("id"),"Invalid request.",True); return
-        if method=="wallet" and not d.get("wallet_linked"):
-            _creator_send(chat_id,"💳 <b>Wallet is not connected</b>\n\nConnect this bot to your @Downloadvedioytibot balance first.",reply_markup={"inline_keyboard":[[{"text":"🔗 CONNECT WALLET","callback_data":f"cwallet:{bid}"}]]}); return
+        if method=="wallet" and not users.get(uid,{}).get("creator_wallet_linked"):
+            _creator_edit(chat_id,mid,"💳 <b>Creator Wallet is not connected</b>\n\nConnect your Creator Bot account to @Downloadvedioytibot first. This is one shared wallet for your Creator account, not a wallet attached to one bot.",reply_markup={"inline_keyboard":[[{"text":"🔗 Connect Wallet","callback_data":"creatorwallet:request"}],[{"text":"⬅️ Back","callback_data":f"cpickbot:{bid}"}]]}); return
         prices=get_premium_prices(); rate=max(1,int(get_setting("stars_per_usd",100) or 100)); rows=[]
         for months in ("1","3","9","12"):
             if method=="wallet": rows.append([{"text":f"💰 {months} Month — ${float(prices[months]):.2f}","callback_data":f"cprem:{bid}:{months}"}])
             else:
                 stars=max(1,int(round(float(prices[months])*rate))); rows.append([{"text":f"⭐ {months} Month — {stars} Stars","callback_data":f"cpremstars:{bid}:{months}"}])
-        _creator_send(chat_id,f"Choose Premium period for <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>:",reply_markup={"inline_keyboard":rows}); return
+        _creator_edit(chat_id,mid,f"Choose Premium period for <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>:",reply_markup={"inline_keyboard":rows+[[{"text":"⬅️ Back","callback_data":f"cpickbot:{bid}"}]]}); return
     if data.startswith("cpremstars:"):
         parts=data.split(":"); bid=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid}); price=get_premium_prices().get(months)
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
@@ -11907,7 +11912,7 @@ def _creator_callback(call):
         try:
             rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]},timeout=20); body=rr.json()
             if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
-            _creator_send(chat_id,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":str(body.get('result') or '')}]]})
+            _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":str(body.get('result') or '')}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
             _creator_answer(call.get("id"),"Payment link ready")
         except Exception as e: print("Creator createInvoiceLink error:",repr(e)); _creator_answer(call.get("id"),"Could not create payment link.",True)
         return
@@ -11916,7 +11921,7 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
         pa=usd_to_asset(cur_code(uid),price)
         if available_asset_amount(uid)<pa: _creator_send(chat_id,f"❌ <b>Insufficient balance</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),pa))}\nAvailable: {html.escape(format_asset(cur_code(uid),available_asset_amount(uid)))}\n\n{_premium_balance_help(uid)}"); return
-        _creator_send(chat_id,f"💰 <b>Wallet Premium</b>\n\nBot: @{html.escape(str(d.get('username') or 'unknown'))}\nPlan: {months} month(s)\nPrice: ${price:.2f}",reply_markup={"inline_keyboard":[[{"text":f"✅ Pay ${price:.2f}","callback_data":f"cprempay:{bid}:{months}"},{"text":"❌ Cancel","callback_data":"cpremcancel"}]]}); return
+        _creator_edit(chat_id,mid,f"💰 <b>Wallet Premium</b>\n\nBot: @{html.escape(str(d.get('username') or 'unknown'))}\nPlan: {months} month(s)\nPrice: ${price:.2f}",reply_markup={"inline_keyboard":[[{"text":f"✅ Pay ${price:.2f}","callback_data":f"cprempay:{bid}:{months}"}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:wallet"}]]}); return
     if data.startswith("cprempay:"):
         parts=data.split(":"); bid=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid}); price=get_premium_prices().get(months)
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
@@ -11926,7 +11931,7 @@ def _creator_callback(call):
         try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now; old_dt=old_dt if old_dt.tzinfo else old_dt.replace(tzinfo=timezone.utc)
         except Exception: old_dt=now
         until=max(now,old_dt)+timedelta(days=30*int(months)); ledger_debit(uid,pa,"managed_bot_premium_purchase",{"bot_id":bid,"price_usd":price,"months":months}); managed_bots_col.update_one({"bot_id":bid},{"$set":{"premium_until":until.isoformat(),"premium_source":"wallet","premium_updated_at":now}}); premium_logs_col.insert_one({"user_id":uid,"bot_id":bid,"months":int(months),"price":price,"until":until.isoformat(),"time":now,"type":"managed_bot_wallet_purchase"})
-        _creator_send(chat_id,f"🎉 <b>Premium Activated</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n💰 Paid: ${price:.2f}\n⏱️ {months} month(s)\n⏰ {html.escape(local_datetime_text(uid,until))}",reply_markup=_creator_keyboard(uid)); return
+        _creator_edit(chat_id,mid,f"🎉 <b>Premium Activated</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n💰 Paid: ${price:.2f}\n⏱️ {months} month(s)\n⏰ {html.escape(local_datetime_text(uid,until))}",reply_markup={"inline_keyboard":[[{"text":"⬅️ My Bots","callback_data":"cmybots"},{"text":"💎 Premium","callback_data":"cmypremium"}]]}); return
     if data=="cpremcancel": _creator_answer(call.get("id"),"Cancelled"); return
 
 
@@ -11996,8 +12001,8 @@ def _managed_bot_start_instance(doc):
                 _ctx()
                 if str(doc.get("owner_id") or "")!=str(m.from_user.id): mb.send_message(m.chat.id,"🔐 <b>Owner only.</b>",parse_mode="HTML"); return
                 typ="🎵 Music Downloader" if btype=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(_managed_bot_doc(bid) or {}) else "🆓 Standard"
-                kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("📊 Bot Info",callback_data=f"mbotinfo:{bid}"))
-                mb.send_message(m.chat.id,f"👑 <b>BOT ADMIN PANEL</b>\n\nType: <b>{typ}</b>\nPremium: <b>{prem}</b>\n\nPremium and Wallet are managed only from the Creator Bot.",reply_markup=kb,parse_mode="HTML")
+                kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("📊 Stats",callback_data=f"mstats:{bid}"),InlineKeyboardButton("📢 Broadcast",callback_data=f"mbroadcast:{bid}"))
+                mb.send_message(m.chat.id,"👑 <b>BOT ADMIN PANEL</b>\n\nChoose an action:",reply_markup=kb,parse_mode="HTML")
             managed_music_pending={}
             def _music_search(m):
                 _ctx(); uid=str(m.from_user.id); q=_music_clean_text(m.text)
@@ -12065,18 +12070,37 @@ def _managed_bot_start_instance(doc):
                     mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
                 mb.answer_callback_query(call.id); _send_remove_ads_plans(mb,str(call.from_user.id),call.message.chat.id,bid)
 
-            def _ad_skip_from_gate(call):
-                _ctx(); token=str(call.data).split(":",1)[1]; row=ad_gates_col.find_one({"token":token})
-                if not row or str(row.get("user_id"))!=str(call.from_user.id) or str(row.get("bot_id"))!=bid:
-                    mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
-                mb.answer_callback_query(call.id); _ad_skip_message(mb,call.message.chat.id)
-
+            def _stats(call):
+                _ctx()
+                if str(doc.get("owner_id") or "")!=str(call.from_user.id):
+                    mb.answer_callback_query(call.id,"Owner only.",show_alert=True); return
+                d2=_managed_bot_doc(bid) or {}; stats=d2.get("stats") or {}; users_n=len(d2.get("users") or [])
+                typ="🎵 Music Downloader" if btype=="music" else "🎬 Video Downloader"
+                text=f"📊 <b>BOT STATS</b>\n\n🤖 Type: <b>{typ}</b>\n👥 Users: <b>{users_n}</b>\n📥 Downloads: <b>{int(stats.get('downloads',0) or 0)}</b>\n🔎 Song searches: <b>{int(stats.get('song_searches',0) or 0)}</b>\n🎵 Songs downloaded: <b>{int(stats.get('songs',0) or 0)}</b>"
+                mb.answer_callback_query(call.id); mb.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel",callback_data=f"mbotinfo:{bid}")]]))
+            def _broadcast(call):
+                _ctx()
+                if str(doc.get("owner_id") or "")!=str(call.from_user.id):
+                    mb.answer_callback_query(call.id,"Owner only.",show_alert=True); return
+                mb.answer_callback_query(call.id)
+                prompt=mb.send_message(call.message.chat.id,"📢 <b>BROADCAST</b>\n\nSend the message you want to send to users of this bot.",parse_mode="HTML")
+                def _broadcast_process(m2):
+                    _ctx(); text2=_message_entities_to_html(m2)
+                    if not text2:
+                        mb.send_message(m2.chat.id,"❌ Message is empty."); return
+                    targets=list((_managed_bot_doc(bid) or {}).get("users") or [])
+                    sent=failed=0
+                    for target in targets:
+                        try: mb.send_message(int(target),text2,parse_mode="HTML"); sent+=1
+                        except Exception: failed+=1
+                    mb.send_message(m2.chat.id,f"📢 <b>Broadcast complete</b>\n\n✅ Sent: <b>{sent}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+                mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
@@ -12094,6 +12118,8 @@ def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
     q=_music_clean_text(q)
     if not q: return
     try:
+        try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.song_searches":1}})
+        except Exception: pass
         rows=_song_search_all(q,30)
         # If a provider returned nothing, use the same lower-level fallback used
         # by the main song engine before reporting failure.
@@ -12206,6 +12232,8 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                         try: mb.send_audio(chat_id,fh,**kwargs)
                         except Exception: kwargs.pop("thumb",None); fh.seek(0); mb.send_audio(chat_id,fh,**kwargs)
                     _record_song_download(uid,{**song,"title":title,"artist":artist,"album":album})
+                    try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.songs":1,"stats.downloads":1}})
+                    except Exception: pass
                     powered=_active_powered_text()
                     if powered:
                         try: mb.send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
@@ -12355,6 +12383,30 @@ def verifycreate_command(m):
         return
     kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("🔐 VERIFY ACCOUNT",callback_data="start_verify_flow"))
     bot.send_message(m.chat.id,"🔐 <b>Verify before creating a bot</b>\n\nChoose one of the available verification methods below. After verification, return to the Creator Bot.",reply_markup=kb)
+
+@bot.message_handler(func=lambda m: m.text == "🟢 Open Ads")
+def admin_open_ads(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("main_ads_enabled",True)
+    bot.send_message(m.chat.id,"🟢 <b>ADS OPEN</b>\n\n@Downloadvedioytibot will now use the 90-minute per-user ad gate.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔴 Close Ads")
+def admin_close_ads(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("main_ads_enabled",False)
+    bot.send_message(m.chat.id,"🔴 <b>ADS CLOSED</b>\n\nThe main downloader will no longer show ad gates.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🟢 Open Powered by")
+def admin_open_powered_by(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("managed_powered_by_enabled",True)
+    bot.send_message(m.chat.id,"🟢 <b>Powered by OPEN</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔴 Close Powered by")
+def admin_close_powered_by(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("managed_powered_by_enabled",False)
+    bot.send_message(m.chat.id,"🔴 <b>Powered by CLOSED</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 # Compatibility aliases retained so older callback/menu references do not crash.
 @bot.message_handler(func=lambda m: m.text == "🤖 Open Creation")
