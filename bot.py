@@ -4318,8 +4318,8 @@ def download_media(chat_id, link, message_id, quality=None):
         supported=", ".join(premium_platform_names())
         text=f"❌ Unsupported or invalid link.\n\n🌐 Supported Premium/Trial platforms ({len(premium_platform_names())}): {html.escape(supported)}"
         try:
-            if message_id: bot.edit_message_text(text,chat_id,message_id,parse_mode="HTML")
-            else: bot.send_message(chat_id,text,parse_mode="HTML")
+            if message_id: _current_bot().edit_message_text(text,chat_id,message_id,parse_mode="HTML")
+            else: _current_bot().send_message(chat_id,text,parse_mode="HTML")
         except Exception: pass
         return
     uid=str(chat_id)
@@ -4343,8 +4343,8 @@ def download_media(chat_id, link, message_id, quality=None):
                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
             kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             try:
-                if message_id: bot.edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
-                else: bot.send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
+                if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
+                else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
             except Exception as e: print("Premium duration gate send failed:",repr(e))
             return
         max_seconds=youtube_free_limit_minutes()*60
@@ -4354,7 +4354,7 @@ def download_media(chat_id, link, message_id, quality=None):
     # upload action is shown immediately and is refreshed until the real media
     # is sent. This keeps the chat clean and makes fast providers feel instant.
     if message_id:
-        try: bot.delete_message(chat_id,message_id)
+        try: _current_bot().delete_message(chat_id,message_id)
         except Exception: pass
     action_stop=threading.Event()
     action_thread=start_action_heartbeat(chat_id,"upload_video",action_stop)
@@ -4500,7 +4500,7 @@ def download_media(chat_id, link, message_id, quality=None):
                 if _is_video_file(path):
                     powered=_active_powered_text()
                     if powered:
-                        try: _current_bot().send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                        try: _current_bot().send_message(chat_id,powered)
                         except Exception as e: print("Managed powered-by send failed:",repr(e))
             finally:
                 upload_stop.set()
@@ -4517,20 +4517,30 @@ def download_media(chat_id, link, message_id, quality=None):
     except Exception as e:
         print(f"Download error [{platform}] {link}: {e!r}")
         err_text=str(e)
-        if platform=="youtube" and not priority and "too long" in err_text.lower():
-            msg=premium_gate_message(uid,"youtube",youtube_free_limit_minutes()*60+1)
-            kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+        if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
+            # Never expose the generic failure for a video that is over the configured free duration.
+            duration_retry=None
             try:
-                if message_id: bot.edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
-                else: bot.send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
-            except Exception: pass
-            return
+                duration_retry,_=_youtube_duration_fast(link)
+            except Exception: duration_retry=None
+            if (duration_retry and duration_retry > youtube_free_limit_minutes()*60) or any(k in err_text.lower() for k in ("too long","duration limit","maximum duration","longer than","exceeds the maximum","video is too long")):
+                msg=premium_gate_message(uid,"youtube",duration_retry or youtube_free_limit_minutes()*60+1)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
+                plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
+                for months in ("1","3","9","12"):
+                    if months in plans:
+                        kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
+                kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+                try:
+                    if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
+                    else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
+                except Exception: pass
+                return
         msg="❌ Download failed. Please try again."
         try:
-            if message_id: bot.edit_message_text(msg,chat_id,message_id)
-            else: bot.send_message(chat_id,msg)
+            if message_id: _current_bot().edit_message_text(msg,chat_id,message_id)
+            else: _current_bot().send_message(chat_id,msg)
         except Exception:
-            try: bot.send_message(chat_id,msg)
+            try: _current_bot().send_message(chat_id,msg)
             except Exception: pass
     finally:
         action_stop.set()
@@ -5308,6 +5318,10 @@ def _song_search_all(query, limit=30):
         key=str(x.get("id") or x.get("download") or "")
         if not key or key in seen: continue
         if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
+        if str(x.get("source") or "youtube").lower()=="youtube" and not _youtube_song_is_music(x.get("title"), x.get("artist"), x.get("duration"), x):
+            continue
+        if not _song_is_relevant(query, x.get("title",""), x.get("artist",""), x.get("album","")):
+            continue
         seen.add(key); merged.append(x)
     # Native ytmsearch is only used when the first two fast paths still have too
     # few results. This keeps normal searches fast while preserving recall.
@@ -5318,6 +5332,10 @@ def _song_search_all(query, limit=30):
         for x in extra:
             key=str(x.get("id") or x.get("download") or "")
             if not key or key in seen: continue
+            if str(x.get("source") or "youtube").lower()=="youtube" and not _youtube_song_is_music(x.get("title"), x.get("artist"), x.get("duration"), x):
+                continue
+            if not _song_is_relevant(query, x.get("title",""), x.get("artist",""), x.get("album","")):
+                continue
             seen.add(key); merged.append(x)
             if len(merged)>=want: break
     # Re-rank the merged set so exact artist/title matches come first.
@@ -5401,14 +5419,26 @@ def _song_auto_search_should_handle(m):
     except Exception: pass
     return text not in excluded
 
+def _record_song_search(uid, query, source="youtube"):
+    """Record every completed Search Song query for Top Song Searchers."""
+    try:
+        activity_col.insert_one({"user_id":str(uid),"action":"song_search",
+            "details":{"query":_music_clean_text(query),"source":str(source or "youtube")},
+            "time":datetime.now(timezone.utc)})
+    except Exception as e:
+        print("Song search stats error:",repr(e))
+
 def _record_song_download(uid, song, file_bytes=None):
     """Store aggregate stats and a small per-user event record."""
     now=datetime.now(timezone.utc)
     try:
+        sid=str(song.get("id") or song.get("download") or "").strip()
+        if not sid:
+            sid=(_song_norm(song.get("title") or "")+"|"+_song_norm(song.get("artist") or "")).strip("|") or uuid.uuid4().hex
         song_stats_col.update_one(
-            {"_id":str(song.get("id"))},
-            {"$setOnInsert":{"title":song.get("title"),"artist":song.get("artist"),"album":song.get("album"),"source":song.get("source","jamendo")},
-             "$inc":{"downloads":1}, "$set":{"last_download":now}}, upsert=True)
+            {"_id":sid},
+            {"$set":{"title":song.get("title"),"artist":song.get("artist"),"album":song.get("album"),"source":song.get("source","youtube"),"last_download":now},
+             "$inc":{"downloads":1}}, upsert=True)
         activity_col.insert_one({"user_id":str(uid),"action":"song_download",
             "details":{"song_id":str(song.get("id")),"title":song.get("title"),"artist":song.get("artist"),"source":song.get("source","jamendo")},"time":now})
     except Exception as e: print("Song stats error:",repr(e))
@@ -5428,15 +5458,15 @@ def _song_stats_text():
 
 def _top_song_searchers_text(limit=100):
     try:
-        pipeline=[{"$match":{"action":"song_download"}},{"$group":{"_id":"$user_id","downloads":{"$sum":1}}},{"$sort":{"downloads":-1,"_id":1}},{"$limit":int(limit)}]
+        pipeline=[{"$match":{"action":"song_search"}},{"$group":{"_id":"$user_id","searches":{"$sum":1}}},{"$sort":{"searches":-1,"_id":1}},{"$limit":int(limit)}]
         rows=list(activity_col.aggregate(pipeline))
-        lines=["🏆 <b>TOP SONG SEARCHERS</b>","",f"Top <b>{len(rows)}</b> users by completed song downloads.",""]
+        lines=["🏆 <b>TOP SONG SEARCHERS</b>","",f"Top <b>{len(rows)}</b> users by song searches.",""]
         if not rows:
             lines.append("No song downloads recorded yet."); return "\n".join(lines)
         for i,row in enumerate(rows,1):
             uid=str(row.get("_id") or ""); u=users.get(uid,{}) or {}; username=str(u.get("username") or "").strip()
             label=f"@{username}" if username else str(u.get("first_name") or "User")
-            lines.append(f"<b>{i}.</b> {html.escape(label)} — ID: <code>{html.escape(uid)}</code> — 🎵 <b>{int(row.get('downloads',0))}</b>")
+            lines.append(f"<b>{i}.</b> {html.escape(label)} — ID: <code>{html.escape(uid)}</code> — 🔎 <b>{int(row.get('searches',0))}</b>")
         return "\n".join(lines)
     except Exception as e:
         return f"❌ Could not load top song searchers: {html.escape(str(e)[:300])}"
@@ -5566,6 +5596,7 @@ def search_song_query_step(m):
         if _send_ad_gate(bot,uid,m.chat.id,"main","song_search",{"query":query},premium_url="https://t.me/Downloadvedioytibot"): return
     def _job():
         try:
+            _record_song_search(uid, query)
             rows=_song_search_all(query,30)
             _cleanup_song_search()
             token=uuid.uuid4().hex[:16]
@@ -5592,6 +5623,7 @@ def auto_song_search_handler(m):
         if _send_ad_gate(bot,str(m.from_user.id),m.chat.id,"main","song_search",{"query":query},premium_url="https://t.me/Downloadvedioytibot"): return
     def _song_job():
         try:
+            _record_song_search(str(m.from_user.id), query)
             rows=_song_search_all(query,30)
             _cleanup_song_search(); token=uuid.uuid4().hex[:16]
             song_search_pending[token]={"uid":str(m.from_user.id),"query":query,"results":rows,"created":time.time()}
@@ -6382,7 +6414,7 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         if _ACTIVE_MANAGED_META.get():
             powered=_active_powered_text()
             if powered:
-                try: _current_bot().send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                try: _current_bot().send_message(chat_id,powered)
                 except Exception as e: print("Managed music powered-by send failed:",repr(e))
         if status_message_id:
             try: _current_bot().delete_message(chat_id, status_message_id)
@@ -12050,6 +12082,7 @@ def _managed_bot_start_instance(doc):
                     if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
                 action_stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",action_stop)
                 try:
+                    _record_song_search(uid,q)
                     _run_managed_music_search(mb,m.chat.id,q,uid,bid,managed_music_pending)
                 finally:
                     action_stop.set()
@@ -12081,6 +12114,11 @@ def _managed_bot_start_instance(doc):
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
+                pre_stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",pre_stop)
+                # The worker/download path will start its own upload action. Stop this immediate
+                # acknowledgement heartbeat when the worker has been queued.
+                try: pass
+                finally: pre_stop.set()
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
@@ -12157,14 +12195,22 @@ def _managed_bot_start_instance(doc):
                 mb.answer_callback_query(call.id)
                 prompt=mb.send_message(call.message.chat.id,"📢 <b>BROADCAST</b>\n\nSend the message you want to send to users of this bot.",parse_mode="HTML")
                 def _broadcast_process(m2):
-                    _ctx(); text2=_message_entities_to_html(m2)
-                    if not text2:
-                        mb.send_message(m2.chat.id,"❌ Message is empty."); return
+                    _ctx()
                     targets=list((_managed_bot_doc(bid) or {}).get("users") or [])
                     sent=failed=0
                     for target in targets:
-                        try: mb.send_message(int(target),text2,parse_mode="HTML"); sent+=1
-                        except Exception: failed+=1
+                        try:
+                            # copy_message preserves photos, videos, audio, captions, Telegram
+                            # custom emoji entities, formatting and other supported message entities.
+                            if hasattr(mb,"copy_message"):
+                                mb.copy_message(int(target),m2.chat.id,m2.message_id)
+                            else:
+                                text2=_message_entities_to_html(m2)
+                                if not text2: raise RuntimeError("Unsupported broadcast message type")
+                                mb.send_message(int(target),text2,parse_mode="HTML")
+                            sent+=1
+                        except Exception as e:
+                            print("Managed broadcast send failed:",repr(e)); failed+=1
                     mb.send_message(m2.chat.id,f"📢 <b>Broadcast complete</b>\n\n✅ Sent: <b>{sent}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
                 mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
@@ -12313,7 +12359,7 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                     except Exception: pass
                     powered=_active_powered_text()
                     if powered:
-                        try: mb.send_message(chat_id,html.escape(powered).replace("\n","<br>"),parse_mode="HTML")
+                        try: mb.send_message(chat_id,powered)
                         except Exception as e: print("Managed music powered-by send failed:",repr(e))
                     return
             except Exception as e:
