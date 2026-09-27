@@ -28,6 +28,7 @@ except Exception:
     Fernet = None
 
 from telethon import TelegramClient
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ================= CONFIG =================
 
