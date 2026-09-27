@@ -7151,35 +7151,116 @@ def verify_start(message):
 
 # ================= CHECK MEMBERSHIP =================
 
+def _force_join_localized_text(user_id):
+    lang = lang_of(str(user_id))
+    texts = {
+        "en": "⚠️ You must join our channel to use this bot.",
+        "so": "⚠️ Waa inaad ku biirtaa kanaalkeena si aad bot-kan u isticmaasho.",
+        "am": "⚠️ ይህን ቦት ለመጠቀም ቻናላችንን መቀላቀል አለብዎት።",
+        "om": "⚠️ Bot kana fayyadamuuf chaanaalii keenya keessatti makamuu qabda.",
+        "ar": "⚠️ يجب عليك الانضمام إلى قناتنا لاستخدام هذا البوت.",
+        "fr": "⚠️ Vous devez rejoindre notre chaîne pour utiliser ce bot.",
+        "es": "⚠️ Debes unirte a nuestro canal para usar este bot.",
+        "de": "⚠️ Du musst unserem Kanal beitreten, um diesen Bot zu verwenden.",
+        "pt": "⚠️ Você precisa entrar no nosso canal para usar este bot.",
+        "tr": "⚠️ Bu botu kullanmak için kanalımıza katılmalısınız.",
+        "hi": "⚠️ इस बॉट का उपयोग करने के लिए आपको हमारे चैनल से जुड़ना होगा।",
+        "id": "⚠️ Anda harus bergabung dengan channel kami untuk menggunakan bot ini.",
+        "ja": "⚠️ このボットを使用するには、チャンネルに参加してください。",
+        "ko": "⚠️ 이 봇을 사용하려면 채널에 가입해야 합니다.",
+        "zh": "⚠️ 使用此机器人前，请先加入我们的频道。",
+    }
+    return texts.get(lang, texts["en"])
+
+
+def _force_join_join_label(user_id):
+    lang = lang_of(str(user_id))
+    return {
+        "en": ("➕ JOIN CHANNEL", "✅ CONFIRM"),
+        "so": ("➕ KU BIIR KANAALKA", "✅ XAQIIJI"),
+        "am": ("➕ ቻናሉን ተቀላቀል", "✅ አረጋግጥ"),
+        "om": ("➕ CHAAANALII SEENI", "✅ MIRKANEESSI"),
+        "ar": ("➕ انضم إلى القناة", "✅ تأكيد"),
+        "fr": ("➕ REJOINDRE", "✅ CONFIRMER"),
+        "es": ("➕ UNIRSE AL CANAL", "✅ CONFIRMAR"),
+        "de": ("➕ KANAL BEITRETEN", "✅ BESTÄTIGEN"),
+        "pt": ("➕ ENTRAR NO CANAL", "✅ CONFIRMAR"),
+        "tr": ("➕ KANALA KATIL", "✅ ONAYLA"),
+        "hi": ("➕ चैनल से जुड़ें", "✅ पुष्टि करें"),
+        "id": ("➕ GABUNG CHANNEL", "✅ KONFIRMASI"),
+        "ja": ("➕ チャンネルに参加", "✅ 確認"),
+        "ko": ("➕ 채널 가입", "✅ 확인"),
+        "zh": ("➕ 加入频道", "✅ 确认"),
+    }.get(lang, ("➕ JOIN CHANNEL", "✅ CONFIRM"))
+
+
+def _is_force_join_member(user_id):
+    """Check the MAIN downloader bot's channel membership only.
+
+    Force Join must never use the managed-bot router because that router can point
+    at a created small bot inside its worker context.  Telegram membership checks
+    therefore always go through the real main bot instance.
+    """
+    uid = int(user_id)
+    last_error = None
+    for attempt in range(3):
+        try:
+            member = _main_bot.get_chat_member(CHANNEL_ID, uid)
+            status = str(getattr(member, "status", "") or "")
+            if status in {"member", "administrator", "creator"}:
+                return True
+            if status == "restricted" and bool(getattr(member, "is_member", False)):
+                return True
+            return False
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(0.5)
+    print("FORCE JOIN CHECK ERROR:", repr(last_error))
+    return False
+
+
+def _send_force_join_success(user_id):
+    """Send the saved-language welcome + localized main menu after verification."""
+    uid = str(user_id)
+    _main_bot.send_message(
+        int(user_id),
+        render_start_message(uid),
+        reply_markup=welcome_destination_markup(),
+        parse_mode="HTML"
+    )
+    _main_bot.send_message(
+        int(user_id),
+        "👇 <b>Main Menu</b>",
+        reply_markup=localized_user_menu(uid),
+        parse_mode="HTML"
+    )
+
+
 def check_membership(user_id):
     touch_user(user_id)
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"] or (member.status == "restricted" and getattr(member, "is_member", False)):
-            bot.send_message(
-                user_id,
-                render_start_message(str(user_id)),
-                reply_markup=welcome_destination_markup(),
-                parse_mode="HTML"
-            )
-            bot.send_message(user_id, "👇 <b>Main Menu</b>", reply_markup=localized_user_menu(str(user_id)), parse_mode="HTML")
-        else:
-            send_join_message(user_id)
-    except Exception as e:
-        print("FORCE JOIN CHECK ERROR:", repr(e))
+    if _is_force_join_member(user_id):
+        try:
+            _send_force_join_success(user_id)
+        except Exception as e:
+            print("WELCOME AFTER MEMBERSHIP CHECK ERROR:", repr(e))
+    else:
         send_join_message(user_id)
 
+
 def send_join_message(user_id):
+    join_text, confirm_text = _force_join_join_label(user_id)
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("➕ JOIN CHANNEL", url="https://t.me/tiktokvediodownload"))
-    kb.add(InlineKeyboardButton("✅ CONFIRM", callback_data="confirm_join"))
+    kb.add(InlineKeyboardButton(join_text, url="https://t.me/tiktokvediodownload"))
+    kb.add(InlineKeyboardButton(confirm_text, callback_data="confirm_join"))
     try:
-        bot.send_message(
-            user_id,
-            "⚠️ You must join our channel to use this bot.",
+        _main_bot.send_message(
+            int(user_id),
+            _force_join_localized_text(user_id),
             reply_markup=kb
         )
-    except: pass
+    except Exception as e:
+        print("FORCE JOIN MESSAGE ERROR:", repr(e))
 
 def send_multi_join(user_id):
     kb = InlineKeyboardMarkup(row_width=3)
@@ -7193,39 +7274,58 @@ def send_multi_join(user_id):
 @bot.callback_query_handler(func=lambda call: call.data == "confirm_join")
 def confirm_join(call):
     user_id = call.from_user.id
-    try:
-        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
-        if member.status in ["member", "administrator", "creator"] or (member.status == "restricted" and getattr(member, "is_member", False)):
+    if _is_force_join_member(user_id):
+        try:
             bot.answer_callback_query(call.id, "✅ Join verified")
+        except Exception:
+            pass
+        # Remove the old Join/Confirm gate so it cannot remain on screen.
+        try:
+            _main_bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
             try:
-                bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
-            except: pass
-            # After the user's first successful channel confirmation, show the
-            # same welcome message + main menu used by the normal /start flow.
-            # Do NOT replace this with a bare "Join confirmed" message.
-            # The welcome is part of the onboarding system.
-            try:
-                bot.send_message(
-                    user_id,
-                    render_start_message(str(user_id)),
-                    reply_markup=welcome_destination_markup(),
-                    parse_mode="HTML"
+                _main_bot.edit_message_reply_markup(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    reply_markup=None
                 )
-                bot.send_message(user_id, "👇 <b>Main Menu</b>", reply_markup=localized_user_menu(str(user_id)), parse_mode="HTML")
-            except Exception as e:
-                print("WELCOME AFTER CONFIRM ERROR:", repr(e))
-            if user_id in pending_links:
-                link = pending_links.pop(user_id, None)
-                if link:
-                    msg = bot.send_message(user_id, "⏳ Processing...")
-                    download_executor_for(user_id).submit(
-                        download_media, user_id, link, msg.message_id,
-                        users.get(str(user_id), {}).get("premium_quality") or ("1080" if is_quick_access(user_id) else None)
-                    )
-        else:
-            bot.answer_callback_query(call.id, "❌ You must join the channel first!", show_alert=True)
-    except:
-        bot.answer_callback_query(call.id, "❌ Please join the channel first!", show_alert=True)
+            except Exception:
+                pass
+        try:
+            _send_force_join_success(user_id)
+        except Exception as e:
+            print("WELCOME AFTER CONFIRM ERROR:", repr(e))
+        if user_id in pending_links:
+            link = pending_links.pop(user_id, None)
+            if link:
+                msg = _main_bot.send_message(user_id, "⏳ Processing...")
+                download_executor_for(user_id).submit(
+                    download_media, user_id, link, msg.message_id,
+                    users.get(str(user_id), {}).get("premium_quality") or ("1080" if is_quick_access(user_id) else None)
+                )
+    else:
+        lang = lang_of(str(user_id))
+        alerts = {
+            "en": "❌ Please join the channel first!",
+            "so": "❌ Fadlan marka hore ku biir kanaalka!",
+            "am": "❌ እባክዎ መጀመሪያ ቻናሉን ይቀላቀሉ!",
+            "om": "❌ Maaloo dura chaanaalii seeni!",
+            "ar": "❌ يرجى الانضمام إلى القناة أولاً!",
+            "fr": "❌ Veuillez d'abord rejoindre la chaîne !",
+            "es": "❌ ¡Únete primero al canal!",
+            "de": "❌ Bitte tritt zuerst dem Kanal bei!",
+            "pt": "❌ Entre primeiro no canal!",
+            "tr": "❌ Lütfen önce kanala katılın!",
+            "hi": "❌ कृपया पहले चैनल से जुड़ें!",
+            "id": "❌ Silakan bergabung ke channel terlebih dahulu!",
+            "ja": "❌ まずチャンネルに参加してください！",
+            "ko": "❌ 먼저 채널에 가입해주세요!",
+            "zh": "❌ 请先加入频道！",
+        }
+        try:
+            bot.answer_callback_query(call.id, alerts.get(lang, alerts["en"]), show_alert=True)
+        except Exception:
+            pass
 
 @bot.message_handler(func=lambda m: m.text == "➕ ADD NEW ADMIN")
 def admin_add_new_admin_start(m):
