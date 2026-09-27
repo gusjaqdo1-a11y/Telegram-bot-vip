@@ -180,7 +180,11 @@ AD_GATE_SECONDS=max(1,int(os.getenv("AD_GATE_SECONDS","5")))
 AD_HTTP_HOST=os.getenv("AD_HTTP_HOST","0.0.0.0")
 AD_HTTP_PORT=int(os.getenv("PORT",os.getenv("AD_HTTP_PORT","8080")))
 
-MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "64"))
+# High-throughput download queues. Main Downloader gets its own larger queue;
+# managed/small bots keep a separate queue so a busy small bot cannot slow the main bot.
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "128"))
+MAIN_CONCURRENT_DOWNLOADS = int(os.getenv("MAIN_CONCURRENT_DOWNLOADS", "128"))
+MANAGED_CONCURRENT_DOWNLOADS = int(os.getenv("MANAGED_CONCURRENT_DOWNLOADS", "64"))
 
 # Fast Telegram broadcast controls. Telegram's free Bot API broadcast limit is
 # about 30 messages/sec; keep a small safety margin by default. If you explicitly
@@ -256,12 +260,16 @@ PREMIUM_YOUTUBE_MAX_MB_DEFAULT = int(os.getenv("PREMIUM_YOUTUBE_MAX_MB", "0"))  
 
 # Dual executors for Priority (Quick Access) & Normal
 
-PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("PREMIUM_CONCURRENT_DOWNLOADS", "96"))
-FREE_CONCURRENT_DOWNLOADS = int(os.getenv("FREE_CONCURRENT_DOWNLOADS", str(min(32, MAX_CONCURRENT_DOWNLOADS))))
-QUICK_ACCESS_CONCURRENT_DOWNLOADS = int(os.getenv("QUICK_ACCESS_CONCURRENT_DOWNLOADS", "160"))
+PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("PREMIUM_CONCURRENT_DOWNLOADS", "128"))
+FREE_CONCURRENT_DOWNLOADS = int(os.getenv("FREE_CONCURRENT_DOWNLOADS", "96"))
+QUICK_ACCESS_CONCURRENT_DOWNLOADS = int(os.getenv("QUICK_ACCESS_CONCURRENT_DOWNLOADS", "192"))
+MAIN_CONCURRENT_DOWNLOADS = max(1, MAIN_CONCURRENT_DOWNLOADS)
+MANAGED_CONCURRENT_DOWNLOADS = max(1, MANAGED_CONCURRENT_DOWNLOADS)
 vip_executor = ThreadPoolExecutor(max_workers=max(1, PREMIUM_CONCURRENT_DOWNLOADS))
 quick_executor = ThreadPoolExecutor(max_workers=max(1, QUICK_ACCESS_CONCURRENT_DOWNLOADS))
 normal_executor = ThreadPoolExecutor(max_workers=max(1, FREE_CONCURRENT_DOWNLOADS))
+main_executor = ThreadPoolExecutor(max_workers=MAIN_CONCURRENT_DOWNLOADS)
+managed_executor = ThreadPoolExecutor(max_workers=MANAGED_CONCURRENT_DOWNLOADS)
 
 http_session = requests.Session()
 
@@ -980,6 +988,35 @@ def youtube_free_limit_minutes():
         return max(1,min(1440,v))
     except Exception:
         return max(1,min(1440,YOUTUBE_FREE_MAX_MINUTES))
+
+def _youtube_duration_from_page(link):
+    """Last-resort duration probe used only after a failed YouTube download.
+
+    It reads the public watch page for lengthSeconds/approxDurationMs without
+    downloading media. This keeps normal successful downloads fast while making
+    sure an over-limit free YouTube video is offered Premium instead of ending
+    with the generic Download failed message.
+    """
+    try:
+        vid=_extract_youtube_video_id(link)
+        if not vid:
+            return None
+        u=f"https://www.youtube.com/watch?v={vid}"
+        headers={"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Safari/537.36","Accept-Language":"en-US,en;q=0.9"}
+        r=requests.get(u,headers=headers,timeout=(4,7),allow_redirects=True)
+        r.raise_for_status(); text=r.text or ""
+        m=re.search(r'"lengthSeconds":"(\d+)"',text)
+        if m: return int(m.group(1))
+        m=re.search(r'"approxDurationMs":"(\d+)"',text)
+        if m: return int(int(m.group(1))/1000)
+    except Exception as e:
+        print("YouTube page duration fallback failed:",repr(e))
+    return None
+
+def _youtube_duration_for_gate(link, rapid_data=None):
+    d,_=_youtube_duration_fast(link, rapid_data=rapid_data)
+    return d or _youtube_duration_from_page(link)
+
 
 def _youtube_duration_seconds(link):
     d,_=_youtube_duration_fast(link)
@@ -2374,13 +2411,23 @@ def is_priority_user(uid):
     return is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
 
 def download_executor_for(uid):
-    """Return the fastest queue available to this user."""
+    """Return the fastest queue available to this user.
+
+    The main downloader has a dedicated high-throughput queue. Managed/small bots
+    use their own queue so their traffic cannot consume the main bot's workers.
+    """
     uid=str(uid)
+    try:
+        managed_ctx=_ACTIVE_MANAGED_META.get()
+    except Exception:
+        managed_ctx=None
+    if managed_ctx:
+        return managed_executor
     if is_quick_access(uid):
         return quick_executor
     if is_priority_user(uid):
         return vip_executor
-    return normal_executor
+    return main_executor
 
 def find_user_by_botid(bid):
     for u, data in users.items():
@@ -4129,7 +4176,7 @@ def _rapid_download_file(url, path, max_bytes=0):
         r.raise_for_status()
         total=0
         with open(path,"wb") as f:
-            for chunk in r.iter_content(chunk_size=1024*1024):
+            for chunk in r.iter_content(chunk_size=8*1024*1024):
                 if not chunk: continue
                 total += len(chunk)
                 if max_bytes and total > max_bytes:
@@ -5021,9 +5068,9 @@ def download_media(chat_id, link, message_id, quality=None):
                 "retries":2 if quick else 2,"fragment_retries":3 if quick else 3,"extractor_retries":2,
                 "socket_timeout":12 if quick else 18,
                 "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
-                "concurrent_fragment_downloads":48 if is_quick_access(uid) else (32 if premium or _is_trial_active(uid) else 20),
-                "http_chunk_size": 24 * 1024 * 1024 if is_quick_access(uid) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
-                "buffersize": 16 * 1024 * 1024 if is_quick_access(uid) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
+                "concurrent_fragment_downloads":64 if not managed_meta else (48 if (premium or _is_trial_active(uid)) else 32),
+                "http_chunk_size": 32 * 1024 * 1024 if not managed_meta else (24 * 1024 * 1024 if (premium or _is_trial_active(uid)) else 16 * 1024 * 1024),
+                "buffersize": 32 * 1024 * 1024 if not managed_meta else (16 * 1024 * 1024 if (premium or _is_trial_active(uid)) else 8 * 1024 * 1024),
                 "ratelimit": None,
                 **cookie_args
             }
@@ -5086,7 +5133,7 @@ def download_media(chat_id, link, message_id, quality=None):
             try:
                 _safe_send_file(chat_id,path,_active_managed_caption() if _ACTIVE_MANAGED_META.get() else DOWNLOAD_CAPTION,reply_markup=markup,platform=platform,link=link); sent+=1
                 if _is_video_file(path):
-                    powered=_active_powered_text()
+                    powered=_active_powered_text() if _ACTIVE_MANAGED_META.get() else ""
                     if powered:
                         try: _current_bot().send_message(chat_id,powered)
                         except Exception as e: print("Managed powered-by send failed:",repr(e))
@@ -5109,7 +5156,7 @@ def download_media(chat_id, link, message_id, quality=None):
             # Never expose the generic failure for a video that is over the configured free duration.
             duration_retry=None
             try:
-                duration_retry,_=_youtube_duration_fast(link)
+                duration_retry=_youtube_duration_for_gate(link)
             except Exception: duration_retry=None
             if (duration_retry and duration_retry > youtube_free_limit_minutes()*60) or any(k in err_text.lower() for k in ("too long","duration limit","maximum duration","longer than","exceeds the maximum","video is too long")):
                 msg=premium_gate_message(uid,"youtube",duration_retry or youtube_free_limit_minutes()*60+1)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
@@ -6339,8 +6386,11 @@ def _download_search_song_mp3(song, tmp_dir, uid):
             "outtmpl":os.path.join(tmp_dir,"search_%(id)s.%(ext)s"),
             "postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}],
             "prefer_ffmpeg":True, "overwrites":True,
-            "retries":4, "fragment_retries":4, "extractor_retries":3,
-            "socket_timeout":30,
+            "retries":3, "fragment_retries":3, "extractor_retries":2,
+            "concurrent_fragment_downloads":32,
+            "http_chunk_size":16*1024*1024,
+            "buffersize":16*1024*1024,
+            "socket_timeout":20,
             "http_headers":{"User-Agent":"Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
             "cachedir":False,
         }
@@ -6406,7 +6456,13 @@ def song_pick_callback(call):
                 bot.edit_message_text("⏳ <b>Downloading song...</b>",chat_id,status_id,parse_mode="HTML")
                 path=_download_search_song_mp3(song,tmp,uid)
                 audio_title,audio_artist=_song_audio_metadata(song)
-                cover_path=_music_download_image(song.get("cover") or _youtube_artwork_url(str(song.get("id") or _extract_youtube_video_id(song.get("download") or ""))),tmp,"cover.jpg")
+                cover_url=song.get("cover") or _youtube_artwork_url(str(song.get("id") or _extract_youtube_video_id(song.get("download") or "")))
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        cover_future=pool.submit(_music_download_image,cover_url,tmp,"cover.jpg") if cover_url else None
+                        cover_path=cover_future.result() if cover_future else None
+                except Exception:
+                    cover_path=None
                 _embed_music_metadata(path,audio_title,audio_artist,cover_path=cover_path,album=song.get("album") or "")
                 bot.edit_message_text("🎵 <b>Sending song...</b>",chat_id,status_id,parse_mode="HTML")
                 kwargs={"title":audio_title,"performer":audio_artist,"duration":int(song.get("duration") or 0),"caption":_song_caption(song),"parse_mode":"HTML"}
@@ -13301,10 +13357,25 @@ def _managed_download_song(mb,chat_id,song,uid,bid,status_id=None):
         title,artist=_song_audio_metadata(song)
         album=_music_clean_text(song.get("album") or "")
         catalog={}
-        for fn in (_music_deezer_lookup,_music_itunes_lookup,_music_musicbrainz_lookup):
-            try: catalog=fn(title,artist) or {}
-            except Exception: catalog={}
-            if catalog.get("title") and catalog.get("artist"): break
+        # Search results already contain title/artist/cover. Only hit catalog APIs
+        # when metadata is genuinely missing; otherwise the song is sent without
+        # adding three unnecessary network round-trips after the download.
+        if (not artist or artist.strip().lower() in {"unknown","unknown artist"}) or not album:
+            try:
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    jobs=[pool.submit(fn,title,artist) for fn in (_music_deezer_lookup,_music_itunes_lookup,_music_musicbrainz_lookup)]
+                    for job in jobs:
+                        try:
+                            result=job.result() or {}
+                        except Exception:
+                            result={}
+                        if result.get("title") and result.get("artist"):
+                            catalog=result
+                            break
+                        if not catalog and result:
+                            catalog=result
+            except Exception:
+                catalog={}
         title=_music_clean_text(catalog.get("title") or title)
         artist=_music_clean_text(catalog.get("artist") or artist) or "Unknown artist"
         album=album or _music_clean_text(catalog.get("album") or "")
