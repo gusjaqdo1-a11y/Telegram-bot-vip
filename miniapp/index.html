@@ -1,1 +1,51 @@
-
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>QuickDL Reward</title>
+<script src="https://telegram.org/js/telegram-web-app.js?63"></script>
+<script src="https://libtl.com/sdk.js" data-zone="11909176" data-sdk="show_11909176"></script>
+<style>
+:root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--tg-theme-bg-color,#eef3ef);color:var(--tg-theme-text-color,#111);display:flex;align-items:flex-end;justify-content:center}.wrap{width:100%;max-width:720px;min-height:100vh;padding:18px 14px 18px;display:flex;flex-direction:column;justify-content:flex-end}.card{background:var(--tg-theme-secondary-bg-color,#fff);border-radius:22px;padding:18px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:0 8px 35px #0001}.top{display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-weight:800;font-size:20px}.status{font-size:13px;opacity:.72}.adspace{min-height:260px;margin:14px 0;border-radius:18px;background:rgba(127,127,127,.10);display:flex;align-items:center;justify-content:center;text-align:center;padding:16px}.timer{text-align:center;font-size:42px;font-weight:900;margin:6px 0}.progress{text-align:center;font-size:14px;opacity:.7;margin-bottom:12px}.btn{width:100%;border:0;border-radius:14px;padding:15px;font-size:18px;font-weight:800;background:#168af7;color:#fff}.btn:disabled{opacity:.45}.error{padding:12px;border-radius:12px;background:#ff3b3018;color:#c62828;display:none;margin-bottom:12px;line-height:1.35}.ok{padding:12px;border-radius:12px;background:#22a55918;color:#1d7d46;display:none;margin-bottom:12px}.small{font-size:12px;opacity:.62;text-align:center;margin-top:10px}</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<div class="top"><div class="brand">🎬 Continue Download</div><div class="status" id="status">Connecting…</div></div>
+<div class="adspace"><div><div style="font-size:48px">📢</div><div>Monetag Rewarded Ad</div><div class="small">The ad is provided by Monetag.</div></div></div>
+<div class="timer" id="timer">—</div>
+<div class="progress" id="progress">Preparing…</div>
+<div class="error" id="error"></div><div class="ok" id="ok">✅ Ad verified. Continuing…</div>
+<button class="btn" id="watch" disabled>▶️ Watch ad</button>
+<button class="btn" id="continue" disabled style="margin-top:10px">Continue</button>
+<div class="small">Your session is private and tied to your Telegram account.</div>
+</div></div>
+<script>
+const tg=window.Telegram?.WebApp; if(tg){tg.ready();tg.expand();}
+const token=location.pathname.split('/').filter(Boolean).pop();
+const initData=tg?.initData||'';
+const $=id=>document.getElementById(id);
+let cfg=null,verified=0,running=false,startedAt=0;
+function showError(s){$('error').textContent=s;$('error').style.display='block';$('ok').style.display='none';}
+function clearMsg(){$('error').style.display='none';}
+async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||j.detail||'Request failed');return j;}
+async function status(){const j=await api('/api/tma/status',{token,initData});if(j.ok){verified=j.verified_ads||0; $('progress').textContent=`Verified ads: ${verified}/${j.required}`; if(verified>=j.required){$('continue').disabled=false;$('watch').disabled=true;$('timer').textContent='✓';}}return j;}
+function waitRemaining(ms){return new Promise(res=>setTimeout(res,Math.max(0,ms-(Date.now()-startedAt))));}
+async function watchAds(){if(running)return;running=true;clearMsg();$('watch').disabled=true;let required=cfg.ads_required;
+for(let i=verified;i<required;i++){
+ const ymid=`tma:${token}:${i}:${crypto.randomUUID()}`; startedAt=Date.now(); $('timer').textContent=cfg.watch_seconds; $('progress').textContent=`Watching ad ${i+1} of ${required}…`;
+ try{
+   if(typeof window.show_11909176!=='function') throw new Error('Monetag SDK did not load.');
+   const result=await window.show_11909176({type:'end',ymid:ymid,requestVar:'download_gate'});
+   await api('/api/tma/ad-result',{token,initData,ymid,result});
+   if(cfg.require_valued && result && result.reward_event_type && result.reward_event_type!=='valued') throw new Error('This ad was not monetized. Please try again.');
+   await waitRemaining(cfg.watch_seconds*1000);
+   let ok=false; for(let k=0;k<8;k++){const st=await status(); if((st.verified_ads||0)>=i+1){ok=true;break;} await new Promise(r=>setTimeout(r,1500));}
+   if(!ok && cfg.require_valued) throw new Error('Waiting for Monetag verification timed out. Please try again.');
+ }catch(e){showError(e.message||'Ad failed.');$('watch').disabled=false;running=false;return;}
+}
+running=false;$('ok').style.display='block';$('progress').textContent=`Verified ads: ${verified}/${required}`;$('timer').textContent='✓';$('continue').disabled=verified<required;}
+$('watch').onclick=watchAds;
+$('continue').onclick=async()=>{if(verified<(cfg?.ads_required||1))return; $('continue').disabled=true;$('progress').textContent='Starting download…';try{const r=await api('/api/tma/complete',{token,initData});if(!r.ok)throw new Error(r.error||'Not verified');$('ok').textContent='✅ Verified. Returning to Telegram…';$('ok').style.display='block';setTimeout(()=>{try{tg?.close();}catch(e){}},500);}catch(e){showError(e.message||'Could not continue.');$('continue').disabled=false;}};
+(async()=>{try{if(!token||!initData)throw new Error('Open this Mini App from Telegram.');cfg=await api('/api/tma/session',{token,initData});$('status').textContent='Secure session';verified=cfg.verified_ads||0;$('progress').textContent=`Verified ads: ${verified}/${cfg.ads_required}`;$('timer').textContent=cfg.watch_seconds+'s';if(verified>=cfg.ads_required){$('continue').disabled=false;$('watch').disabled=true;$('timer').textContent='✓';}else{$('watch').disabled=false;}}catch(e){showError(e.message||'Mini App failed to load.');$('status').textContent='Error';}})();
+</script></body></html>
