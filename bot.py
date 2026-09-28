@@ -179,7 +179,7 @@ MONETAG_SITE_ID=str(os.getenv("MONETAG_SITE_ID","3509344")).strip()
 # Main SDK zone for the Rewarded Interstitial code supplied by Monetag.
 MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_REWARDED_ZONE_ID","11910323")).strip() or "11910323"
 MONETAG_SDK_URL=os.getenv("MONETAG_SDK_URL","//libtl.com/sdk.js").strip()
-AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","").strip()
+AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","https://omg10.com/4/11909123").strip()
 AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
 AD_GATE_SECONDS=max(1,int(os.getenv("AD_GATE_SECONDS","5")))
 AD_HTTP_HOST=os.getenv("AD_HTTP_HOST","0.0.0.0")
@@ -606,7 +606,7 @@ def _active_managed_caption():
 def _active_powered_text():
     # Powered by is a managed/small-bot feature only.
     meta=_ACTIVE_MANAGED_META.get() or {}
-    if not meta or not meta.get("bot_id"): return ""
+    if not meta or not meta.get("bot_id") or str(meta.get("bot_id")) == "main": return ""
     if not _managed_powered_by_open(): return ""
     if _active_managed_premium(): return ""
     return MANAGED_POWERED_BY
@@ -1582,7 +1582,7 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             zone=html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)
             sdk=html.escape(MONETAG_SDK_URL,quote=True)
             reward=f"/ad/reward/{token}"
-            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="{sdk}" data-zone="{zone}"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px;line-height:1.45}}.ok{{color:#79ff9a;font-weight:700}}.err{{color:#ff9b9b;font-weight:700}}</style></head><body><div class="box"><h2>🎁 Continue Download</h2><div id="status">Preparing your rewarded ad…</div><div id="timer" class="timer">5</div><div class="small">The ad opens automatically. When Monetag confirms the rewarded view, your download continues automatically.</div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const zone={json.dumps(MONETAG_REWARDED_ZONE_ID)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let finished=false,seconds=5;const timer=document.getElementById('timer'),status=document.getElementById('status');function reward(){{if(finished)return;finished=true;status.innerHTML='<span class="ok">✅ Ad completed. Continuing…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(()=>setTimeout(()=>{{try{{tg.close();}}catch(e){{}}}},350)).catch(()=>{{}});}}function failed(){{status.innerHTML='<span class="err">The rewarded ad is temporarily unavailable.</span><div class="small" style="margin-top:10px">Please close this window and use Skip, or try Watch ad again.</div>';timer.textContent='×';}}async function waitSdk(){{let tries=0;while(typeof window['show_'+zone]!=='function'&&tries<120){{await new Promise(r=>setTimeout(r,100));tries++;}}if(typeof window['show_'+zone]!=='function')throw new Error('Monetag SDK function show_'+zone+' is unavailable');}}async function run(){{try{{await waitSdk();status.textContent='Ad is ready…';try{{await window['show_'+zone]({{ymid:token}});}}catch(first){{console.warn('Rewarded interstitial failed, trying rewarded popup',first);await window['show_'+zone]('pop');}}reward();}}catch(e){{console.error(e);failed();}}}}const ct=setInterval(()=>{{if(finished){{clearInterval(ct);return;}}seconds=Math.max(0,seconds-1);timer.textContent=seconds;}},1000);run();</script></body></html>'''
+            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://libtl.com/sdk.js" data-zone="{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}" data-sdk="show_{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px;line-height:1.45}}.ok{{color:#79ff9a;font-weight:700}}.err{{color:#ff9b9b;font-weight:700}}button{{border:0;border-radius:14px;padding:14px 22px;font-size:17px;font-weight:700}}</style></head><body><div class="box"><h2>🎁 Continue Download</h2><div id="status">Preparing rewarded ad…</div><div id="timer" class="timer">5</div><div class="small">The rewarded ad starts after the short preparation timer. Reward is granted only after Monetag's rewarded promise completes.</div><div id="retry" style="display:none;margin-top:16px"><button onclick="runAd()">▶️ Show Ad Again</button></div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let rewarded=false;const timer=document.getElementById('timer'),status=document.getElementById('status'),retry=document.getElementById('retry');function reward(){{if(rewarded)return;rewarded=true;status.innerHTML='<span class="ok">✅ Ad completed. Continuing…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(()=>setTimeout(()=>{{try{{tg.close();}}catch(e){{}}}},350)).catch(()=>{{}});}}function failed(){{status.innerHTML='<span class="err">The ad could not be displayed. Please try again.</span>';timer.textContent='×';retry.style.display='block';}}async function runAd(){{if(rewarded)return;retry.style.display='none';status.textContent='Opening rewarded ad…';try{{if(typeof window['show_{MONETAG_REWARDED_ZONE_ID}']!=='function')throw new Error('Monetag rewarded function is not available');await window['show_{MONETAG_REWARDED_ZONE_ID}']();reward();}}catch(e){{console.error('Monetag rewarded interstitial failed',e);failed();}}}}let left=5;timer.textContent=left;const ct=setInterval(()=>{{left--;timer.textContent=Math.max(0,left);if(left<=0){{clearInterval(ct);runAd();}}}},1000);</script></body></html>'''
             self._send(200,body); return
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
@@ -1599,9 +1599,15 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             _complete_ad_gate(m.group(1),source="reward"); self._send(200,"ok","text/plain; charset=utf-8"); return
         m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
         if m:
-            if _skip_ad_gate(m.group(1)):
-                body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title></head><body style="margin:0;background:#0b1220;color:#fff;font-family:Arial;text-align:center;padding:48px 20px"><div style="max-width:430px;margin:auto;background:#111b2e;border-radius:22px;padding:28px"><div style="font-size:30px">⏭️</div><h2>QuickDL Reward</h2><p style="opacity:.8">Your request is continuing.</p><p style="font-size:12px;opacity:.55;word-break:break-all">Token: {html.escape(m.group(1))}</p><p>Return to Telegram. Your download/search will continue automatically.</p></div></body></html>'''
-                self._send(200,body)
+            token=m.group(1)
+            if _skip_ad_gate(token):
+                smart=AD_SMARTLINK_URL
+                if smart:
+                    sep="&" if "?" in smart else "?"
+                    target=smart+sep+"subid="+urllib.parse.quote(token)
+                    self.send_response(302); self.send_header("Location",target); self.send_header("Cache-Control","no-store"); self.end_headers()
+                else:
+                    self._send(503,"SmartLink is not configured.")
             else: self._send(410,"Skip link expired or already used.")
             return
         self._send(404,"Not found")
@@ -2225,6 +2231,8 @@ def admin_menu():
     kb.add("🤖 See All Bots", "📊 Bot Stats")
     kb.add("✏️ SONG CLOSED MESSAGE")
     kb.add("⚡ AUTO SONG SEARCH ON", "⛔ AUTO SONG SEARCH OFF")
+    kb.add("🟢 Open Store songs", "🔴 Close Store songs")
+    kb.add("🗑️ Clear Songs")
     # Keep the legacy song admin controls from the previous bot version.
     kb.add("➕ ADD CAPTION", "📝 DEFAULT CAPTION")
     kb.add("📊 SONG STATS", "🏆 TOP SONGS")
@@ -5466,7 +5474,18 @@ def _send_cached_song(chat_id, song, send_bot=None):
         except Exception: pass
         return False
 
+def _song_store_open():
+    return bool(get_setting("song_store_enabled", True))
+
+def _clear_song_cache_all():
+    try:
+        result=song_media_cache_col.delete_many({})
+        return int(getattr(result,"deleted_count",0) or 0)
+    except Exception as e:
+        print("Clear song cache failed:",repr(e)); return 0
+
 def _store_song_cache(song, message):
+    if not _song_store_open(): return
     key=_song_cache_key(song)
     try:
         file_id=str(getattr(getattr(message,"audio",None),"file_id","") or "")
@@ -5808,8 +5827,9 @@ def song_page_callback(call):
 
 def _download_main_song_fast(chat_id, status_id, song, uid):
     """Dedicated Search Song downloader: RapidAPI audio first, yt-dlp audio second."""
-    tmp=None
+    tmp=None; action_stop=threading.Event()
     try:
+        start_action_heartbeat(chat_id,"upload_audio",action_stop)
         uid=str(uid); vid=str(song.get("id") or _extract_youtube_video_id(song.get("download") or "") or "")
         title,artist=_song_audio_metadata(song)
         album=_music_clean_text(song.get("album") or "")
@@ -5868,6 +5888,7 @@ def _download_main_song_fast(chat_id, status_id, song, uid):
         try: _current_bot().edit_message_text(chat_id=chat_id,message_id=status_id,text="❌ Song download could not be completed. Please choose the song again.")
         except Exception: pass
     finally:
+        action_stop.set()
         if tmp: shutil.rmtree(tmp,ignore_errors=True)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("songpick:"))
@@ -6769,9 +6790,12 @@ def convert_link_to_mp3(chat_id, link, status_message_id, local_source=None, loc
         if (not local_source) and ("Sign in to confirm" in str(e) or "not a bot" in str(e)):
             friendly = "❌ YouTube music is not available right now. Please try again."
         try:
-            bot.edit_message_text(friendly, chat_id, status_message_id)
+            active_bot=_current_bot()
+            if status_message_id: active_bot.edit_message_text(friendly, chat_id, status_message_id)
+            else: active_bot.send_message(chat_id,friendly)
         except Exception:
-            pass
+            try: _current_bot().send_message(chat_id,friendly)
+            except Exception: pass
     finally:
         try: action_stop.set()
         except Exception: pass
@@ -11758,7 +11782,7 @@ def _creator_handle_text(uid, chat_id, text):
         return
     if text in ("🆘 Help","/help"):
         _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
-    if text=="👑 ADMIN PANEL" and _creator_admin(uid):
+    if (text=="👑 ADMIN PANEL" or low in {"/admin","admin panel","admin"}) and _creator_admin(uid):
         _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
 
     sess=_creator_session(uid); state=sess.get("state")
@@ -11782,7 +11806,8 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
 
     if _creator_admin(uid):
-        _creator_admin_text(uid,chat_id,text)
+        admin_text=re.sub(r"\s+"," ",text).strip()
+        _creator_admin_text(uid,chat_id,admin_text)
     else:
         _creator_send(chat_id,"Use the buttons below.",reply_markup=_creator_keyboard(uid))
 
@@ -12292,9 +12317,11 @@ def _managed_bot_start_instance(doc):
                         mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
                 mb.answer_callback_query(call.id,"⬇️ Downloading...")
                 try:
-                    mb.edit_message_text(f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",call.message.chat.id,call.message.message_id,parse_mode="HTML")
-                except Exception: pass
-                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid)
+                    status_msg=mb.send_message(call.message.chat.id,f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",parse_mode="HTML")
+                    status_id=status_msg.message_id
+                except Exception:
+                    status_id=None
+                ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,_managed_download_song,mb,call.message.chat.id,song,str(call.from_user.id),bid,status_id)
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
@@ -12498,13 +12525,16 @@ def _managed_music_show(mb,chat_id,token2,page,pending,edit_message=None):
         except Exception as e: print("Managed music results edit failed:",repr(e))
     mb.send_message(chat_id,text,parse_mode="HTML",reply_markup=kb)
 
-def _managed_download_song(mb,chat_id,song,uid,bid):
+def _managed_download_song(mb,chat_id,song,uid,bid,status_id=None):
     tmp=None
     action_stop=threading.Event()
     try:
         if _send_cached_song(chat_id,song,mb):
             try: managed_bots_col.update_one({"bot_id":str(bid)},{"$inc":{"stats.songs":1,"stats.downloads":1}})
             except Exception: pass
+            if status_id:
+                try: mb.delete_message(chat_id,status_id)
+                except Exception: pass
             return
         vid=str(song.get("id") or _extract_youtube_video_id(song.get("download") or ""))
         title,artist=_song_audio_metadata(song)
@@ -12552,16 +12582,19 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
                     return
             except Exception as e:
                 print("Managed RapidAPI music failed; falling back to yt-dlp:",repr(e))
-        # Fallback uses the exact managed-bot context, so convert_link_to_mp3 sends
-        # the MP3 through the small bot rather than the main bot.
+        # Use the same dedicated Search Song downloader as the main bot while
+        # preserving the managed-bot context.
         ctx=contextvars.copy_context()
-        ctx.run(convert_link_to_mp3,chat_id,str(song.get("download") or ""),None,None,None,title,artist,None,str(song.get("id") or song.get("download") or ""))
+        ctx.run(_download_main_song_fast,chat_id,None,song,uid)
     except Exception as e:
         print("Managed music download error:",repr(e))
-        try: mb.send_message(chat_id,"❌ Music download failed. Please try another song.")
+        try: mb.send_message(chat_id,"❌ Music download failed. Please choose the song again.")
         except Exception: pass
     finally:
         action_stop.set()
+        if status_id:
+            try: mb.delete_message(chat_id,status_id)
+            except Exception: pass
         if tmp: shutil.rmtree(tmp,ignore_errors=True)
 
 
@@ -12717,6 +12750,24 @@ def admin_close_ads(m):
     if not is_admin(m.from_user.id): return
     set_setting("main_ads_enabled",False)
     bot.send_message(m.chat.id,"🔴 <b>ADS CLOSED</b>\n\nThe main downloader will no longer show ad gates.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🟢 Open Store songs")
+def admin_open_store_songs(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("song_store_enabled",True)
+    bot.send_message(m.chat.id,"🟢 <b>STORE SONGS OPEN</b>\n\nDownloaded songs can be cached for 10 minutes for instant delivery to other users.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔴 Close Store songs")
+def admin_close_store_songs(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("song_store_enabled",False)
+    bot.send_message(m.chat.id,"🔴 <b>STORE SONGS CLOSED</b>\n\nNew song downloads will not be saved to the 10-minute cache.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑️ Clear Songs")
+def admin_clear_song_cache(m):
+    if not is_admin(m.from_user.id): return
+    count=_clear_song_cache_all()
+    bot.send_message(m.chat.id,f"🗑️ <b>SONG CACHE CLEARED</b>\n\nRemoved <b>{count}</b> cached song record(s).",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🟢 Open Powered by")
 def admin_open_powered_by(m):
