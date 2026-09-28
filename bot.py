@@ -175,9 +175,10 @@ SAVEAPI_TIMEOUT = int(os.getenv("SAVEAPI_TIMEOUT", "45"))
 # AD gate configuration
 AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").strip().rstrip("/")
 # Monetag Rewarded Interstitial. Override MONETAG_ZONE_ID in Railway if you create a new zone.
-MONETAG_SITE_ID=str(os.getenv("MONETAG_SITE_ID","3509344")).strip()
-# Main SDK zone for the Rewarded Interstitial code supplied by Monetag.
-MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_ZONE_ID") or os.getenv("MONETAG_REWARDED_ZONE_ID") or "11910323").strip() or "11910323"
+MONETAG_SITE_ID=str(os.getenv("MONETAG_SITE_ID","")).strip()
+# IMPORTANT: this must be the MAIN Monetag SDK zone ID shown in the
+# Rewarded Interstitial integration code. Do not use a sub-zone ID here.
+MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_ZONE_ID") or os.getenv("MONETAG_REWARDED_ZONE_ID") or "").strip()
 MONETAG_SDK_URL=os.getenv("MONETAG_SDK_URL","//libtl.com/sdk.js").strip()
 AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","https://omg10.com/4/11909123").strip()
 AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
@@ -605,7 +606,8 @@ def _active_managed_caption():
     return f"Downloaded Via: @{username}" if username else DOWNLOAD_CAPTION
 
 def _active_powered_text():
-    # Powered by is a managed/small-bot feature only.
+    # Powered by is a managed/small-bot feature only. The main downloader must
+    # never emit it, even if a worker accidentally inherited managed context.
     meta=_ACTIVE_MANAGED_META.get() or {}
     if not meta or not meta.get("bot_id") or str(meta.get("bot_id")) == "main": return ""
     if not _managed_powered_by_open(): return ""
@@ -1360,7 +1362,12 @@ def _ad_enabled_for(uid, bot_id=None):
     if _remove_ads_active(uid,bot_id): return True
     try:
         bid=_ad_bot_key(bot_id); now=datetime.now(timezone.utc)
-        row=ad_gates_col.find_one({"user_id":str(uid),"bot_id":bid,"status":{"$in":["opened","completed"]},"cooldown_until":{"$gt":now}},sort=[("cooldown_until",-1)])
+        row=ad_gates_col.find_one({
+            "user_id":str(uid),
+            "bot_id":bid,
+            "status":"completed",
+            "cooldown_until":{"$gt":now},
+        },sort=[("cooldown_until",-1)])
         return bool(row)
     except Exception as e:
         print("Ad pass lookup failed:",repr(e)); return False
@@ -1413,11 +1420,34 @@ def _ad_gate_keyboard(token, premium_url=None):
     kb.add(InlineKeyboardButton("⏭️ Skip", url=skip_url))
     return kb
 
+def _delete_ad_gate_message(row, bot_obj=None):
+    """Best-effort removal of an old ad-gate Telegram message."""
+    try:
+        if not row: return
+        mid=row.get("message_id"); chat_id=row.get("chat_id")
+        if not mid or chat_id is None: return
+        obj=bot_obj
+        bid=str(row.get("bot_id") or "main")
+        if obj is None:
+            obj=bot if bid=="main" else managed_bot_objects.get(bid)
+        if obj is None and bid!="main":
+            d=managed_bots_col.find_one({"bot_id":bid}); obj=_managed_bot_start_instance(d) if d else None
+        if obj: obj.delete_message(int(chat_id),int(mid))
+    except Exception as e:
+        print("Old ad gate delete skipped:",repr(e))
+
+
 def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
     if _ad_enabled_for(uid,bot_id): return False
     bid=_ad_bot_key(bot_id); uid=str(uid); now=datetime.now(timezone.utc)
-    existing=ad_gates_col.find_one({"user_id":uid,"bot_id":bid,"status":"pending"})
-    if existing: return True
+    # Every new protected action gets a fresh gate. If the user sent another
+    # link while an older gate was still visible, remove the old gate first.
+    existing=ad_gates_col.find_one({"user_id":uid,"bot_id":bid,"status":"pending"},sort=[("created_at",-1)])
+    if existing:
+        _delete_ad_gate_message(existing,bot_obj)
+        try:
+            ad_gates_col.update_one({"_id":existing.get("_id")},{"$set":{"status":"replaced","replaced_at":now}})
+        except Exception: pass
     token=secrets.token_urlsafe(24).replace("-","").replace("_","")[:40]
     ad_gates_col.insert_one({"token":token,"user_id":uid,"chat_id":int(chat_id),"bot_id":bid,"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","ad_views":0,"required_ads":_ad_required_count(),"gate_seconds":_ad_gate_seconds(),"created_at":now})
     try:
@@ -1636,7 +1666,10 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             zone=html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)
             sdk=html.escape(MONETAG_SDK_URL,quote=True)
             reward=f"/ad/reward/{token}"
-            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://libtl.com/sdk.js" data-zone="{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}" data-sdk="show_{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px;line-height:1.45}}.ok{{color:#79ff9a;font-weight:700}}.err{{color:#ff9b9b;font-weight:700}}button{{border:0;border-radius:14px;padding:14px 22px;font-size:17px;font-weight:700}}</style></head><body><div class="box"><h2>🎁 Continue Download</h2><div id="status">Preparing rewarded ad…</div><div id="timer" class="timer">5</div><div class="small">The rewarded ad opens immediately. Complete the rewarded ad to continue.</div><div id="retry" style="display:none;margin-top:16px"><button onclick="runAd()">▶️ Show Ad Again</button></div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let rewarded=false;const timer=document.getElementById('timer'),status=document.getElementById('status'),retry=document.getElementById('retry');function reward(){{if(rewarded)return;rewarded=true;status.innerHTML='<span class="ok">✅ Ad completed. Continuing…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(r=>r.text()).then(v=>{{if(String(v).trim()==='more'){{rewarded=false;status.textContent='Opening next rewarded ad…';timer.textContent='▶';setTimeout(runAd,50);return;}}setTimeout(()=>{{try{{tg.close();}}catch(e){{}}}},350);}}).catch(()=>{{}});}}function failed(){{status.innerHTML='<span class="err">The ad could not be displayed. Please try again.</span>';timer.textContent='×';retry.style.display='block';}}async function runAd(){{if(rewarded)return;retry.style.display='none';status.textContent='Opening rewarded ad…';try{{if(typeof window['show_{MONETAG_REWARDED_ZONE_ID}']!=='function')throw new Error('Monetag rewarded function is not available');await window['show_{MONETAG_REWARDED_ZONE_ID}']();reward();}}catch(e){{console.error('Monetag rewarded interstitial failed',e);failed();}}}}if({int(_ad_gate_seconds())}<=0){{runAd();}}else{{let left={int(_ad_gate_seconds())};timer.textContent=left;const ct=setInterval(()=>{{left--;timer.textContent=Math.max(0,left);if(left<=0){{clearInterval(ct);runAd();}}}},1000);}}</script></body></html>'''
+            if not MONETAG_REWARDED_ZONE_ID:
+                self._send(503,"Monetag is not configured. Set MONETAG_ZONE_ID to the MAIN Rewarded Interstitial SDK zone ID.")
+                return
+            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://libtl.com/sdk.js" data-zone="{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}" data-sdk="show_{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px;line-height:1.45}}.ok{{color:#79ff9a;font-weight:700}}.err{{color:#ff9b9b;font-weight:700}}button{{border:0;border-radius:14px;padding:14px 22px;font-size:17px;font-weight:700}}</style></head><body><div class="box"><h2>🎁 Continue Download</h2><div id="status">Preparing rewarded ad…</div><div id="timer" class="timer">5</div><div class="small">The rewarded ad opens immediately. Complete the rewarded ad to continue.</div><div id="retry" style="display:none;margin-top:16px"><button onclick="runAd()">▶️ Show Ad Again</button></div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let rewarded=false;const timer=document.getElementById('timer'),status=document.getElementById('status'),retry=document.getElementById('retry');function reward(){{if(rewarded)return;rewarded=true;status.innerHTML='<span class="ok">✅ Ad completed. Continuing…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(r=>r.text()).then(v=>{{if(String(v).trim()==='more'){{rewarded=false;status.textContent='Opening next rewarded ad…';timer.textContent='▶';setTimeout(runAd,50);return;}}setTimeout(()=>{{try{{if(tg)tg.close();}}catch(e){{}}}},150);}}).catch(()=>{{rewarded=false;failed();}});}}function failed(){{status.innerHTML='<span class="err">The ad could not be displayed. Please try again.</span>';timer.textContent='×';retry.style.display='block';}}async function waitForSdk(){{const fn='show_{MONETAG_REWARDED_ZONE_ID}';for(let i=0;i<80;i++){{if(typeof window[fn]==='function')return window[fn];await new Promise(r=>setTimeout(r,100));}}throw new Error('Monetag SDK did not load');}}async function runAd(){{if(rewarded)return;retry.style.display='none';status.textContent='Opening rewarded ad…';try{{const fn=await waitForSdk();await fn({{type:'preload',ymid:token}});await fn({{ymid:token}});reward();}}catch(e){{console.error('Monetag rewarded interstitial failed',e);failed();}}}}if({int(_ad_gate_seconds())}<=0){{runAd();}}else{{let left={int(_ad_gate_seconds())};timer.textContent=left;const ct=setInterval(()=>{{left--;timer.textContent=Math.max(0,left);if(left<=0){{clearInterval(ct);runAd();}}}},1000);}}</script></body></html>'''
             self._send(200,body); return
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
@@ -11688,11 +11721,27 @@ def _creator_edit(chat_id, message_id, text, reply_markup=None):
 
 
 def _creator_admin(uid):
+    """Return True for the main admins and any explicitly configured Creator admins.
+
+    Creator Bot is polled separately from the main bot, so do not rely only on
+    the persisted Mongo admin list: always include the source-code ADMIN_IDS as
+    a compatibility fallback, plus CREATOR_ADMIN_IDS/CREATOR_ADMIN_ID.
+    """
     try:
-        if is_admin(uid): return True
-    except Exception: pass
-    try: return str(uid) in {x.strip() for x in str(os.getenv("CREATOR_ADMIN_IDS","")).split(",") if x.strip()}
-    except Exception: return False
+        target=str(uid).strip()
+        allowed={str(x).strip() for x in (ADMIN_IDS or [])}
+        allowed.add(str(PRIMARY_ADMIN_ID).strip())
+        try:
+            allowed.update(str(x).strip() for x in get_admin_ids())
+        except Exception:
+            pass
+        raw=os.getenv("CREATOR_ADMIN_IDS","")
+        allowed.update(x.strip() for x in raw.split(",") if x.strip())
+        one=str(os.getenv("CREATOR_ADMIN_ID","")).strip()
+        if one: allowed.add(one)
+        return target in allowed
+    except Exception:
+        return False
 
 
 def _creator_keyboard(uid):
@@ -11895,6 +11944,10 @@ def _creator_handle_text(uid, chat_id, text):
 
     if _creator_admin(uid):
         admin_text=re.sub(r"\s+"," ",text).strip()
+        # A new admin button must always work, even if the previous admin action
+        # left a temporary input state (for example Ads Per User).
+        if admin_text in _CREATOR_ADMIN_BUTTONS:
+            _creator_clear_session(uid)
         _creator_admin_text(uid,chat_id,admin_text)
     else:
         _creator_send(chat_id,"Use the buttons below.",reply_markup=_creator_keyboard(uid))
@@ -12050,6 +12103,22 @@ def _creator_premium(uid, chat_id, edit=None):
     markup={"inline_keyboard":buttons+[[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}
     if edit: _creator_edit(edit[0],edit[1],text,reply_markup=markup)
     else: _creator_send(chat_id,text,reply_markup=markup)
+
+
+_CREATOR_ADMIN_BUTTONS = {
+    "🟢 Open Creation", "🔴 Close Creation",
+    "🟢 Open Verify Create Bot", "🔴 Close Verify Create Bot",
+    "🟢 Open Create Caption", "🔴 Close Create Caption", "✏️ Set Create Caption",
+    "📤 Send To Create Bot", "🤖 See All Bots", "📊 Bot Stats",
+    "📢 Broadcast All Bot Users", "📢 Broadcast All Bots",
+    "👑 Broadcast Bot Admins", "👤 Broadcast Bot Non-Admins",
+    "🏆 Top Songs", "🏆 Top Song Searchers", "📢 Broadcast Creator Users",
+    "💎 Premium Prices", "🚫 Remove Ads Prices", "♻️ Reset Ads",
+    "🔢 Ads Per User", "⏱️ Ad Seconds", "📊 Ad Settings",
+    "🟢 OPEN MANAGED ADS", "🔴 CLOSE MANAGED ADS",
+    "🟢 Open Managed Ads", "🔴 Close Managed Ads",
+    "🟢 Open Powered by", "🔴 Close Powered by", "🔙 USER MENU",
+}
 
 
 def _creator_admin_text(uid, chat_id, text):
