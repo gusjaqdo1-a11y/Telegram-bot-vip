@@ -315,6 +315,9 @@ managed_bot_objects = {}
 managed_bot_threads = {}
 managed_bot_lock = threading.RLock()
 creator_sessions = {}
+# Shared pending state for managed Music searches so an ad-completed search uses
+# the exact same pending result map as normal managed-bot callbacks.
+managed_music_pending_store = {}
 # SUPPORT_TICKETS_COL is initialized after MongoDB db2 is ready.
 SUPPORT_TICKETS_COL = None
 SUPPORT_ADMIN_IDS = [7983838654, 8668532036]
@@ -545,6 +548,9 @@ managed_bot_objects = {}
 managed_bot_threads = {}
 managed_bot_lock = threading.RLock()
 creator_sessions = {}
+# Shared pending state for managed Music searches so an ad-completed search uses
+# the exact same pending result map as normal managed-bot callbacks.
+managed_music_pending_store = {}
 
 def _refresh_all_user_menus(message=None):
     """Refresh state without broadcasting a message to every user.
@@ -602,6 +608,7 @@ def _active_managed_caption():
     return f"Downloaded Via: @{username}" if username else DOWNLOAD_CAPTION
 
 def _active_powered_text():
+    if not (_ACTIVE_MANAGED_META.get() or {}): return ""
     if not _managed_powered_by_open(): return ""
     if _active_managed_premium(): return ""
     return MANAGED_POWERED_BY
@@ -1312,6 +1319,7 @@ ad_gates_col = db1["ad_gates"]
 remove_ads_col = db1["remove_ads_access"]
 remove_ads_payments_col = db1["remove_ads_payments"]
 song_media_cache_col = db2["song_media_cache"]
+managed_premium_pending_col = db2["managed_premium_pending"]
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -1417,6 +1425,48 @@ def _create_remove_ads_invoice(bot_id,uid,months,send_to_chat=None,send_func=Non
     return link,stars
 
 
+def _save_youtube_premium_pending(bot_id, uid, chat_id, link, quality=None):
+    """Remember the exact YouTube request so Premium can resume it automatically."""
+    try:
+        managed_premium_pending_col.update_one(
+            {"bot_id":_ad_bot_key(bot_id),"user_id":str(uid),"status":"pending"},
+            {"$set":{"chat_id":int(chat_id),"link":str(link),"quality":quality,
+                     "updated_at":datetime.now(timezone.utc),"created_at":datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    except Exception as e:
+        print("Premium pending request save failed:",repr(e))
+
+
+def _resume_youtube_premium_pending(bot_id, uid):
+    """Resume one saved YouTube request after Premium activation, exactly once."""
+    bid=_ad_bot_key(bot_id); uid=str(uid)
+    try:
+        row=managed_premium_pending_col.find_one_and_update(
+            {"bot_id":bid,"user_id":uid,"status":"pending"},
+            {"$set":{"status":"resumed","resumed_at":datetime.now(timezone.utc)}},
+            sort=[("updated_at",-1)],
+        )
+        if not row: return False
+        chat_id=int(row.get("chat_id") or uid); link=str(row.get("link") or ""); quality=row.get("quality")
+        if not link: return False
+        if bid=="main":
+            download_executor_for(uid).submit(_download_request_job,chat_id,link,quality,uid)
+            return True
+        d=managed_bots_col.find_one({"bot_id":bid}); mb=managed_bot_objects.get(bid) or (_managed_bot_start_instance(d) if d else None)
+        if not mb: raise RuntimeError("Managed bot is unavailable")
+        meta={"bot_id":bid,"owner_id":str((d or {}).get("owner_id") or ""),"username":str((d or {}).get("username") or "").lstrip("@"),"name":str((d or {}).get("name") or "Downloader Bot"),"bot_type":str((d or {}).get("bot_type") or "video")}
+        def run():
+            _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta); download_media(chat_id,link,None,quality)
+        ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,run)
+        return True
+    except Exception as e:
+        print("Premium pending request resume failed:",repr(e))
+        try: managed_premium_pending_col.update_one({"bot_id":bid,"user_id":uid,"status":"resumed"},{"$set":{"status":"pending","resume_error":str(e)[:500]}})
+        except Exception: pass
+        return False
+
+
 def _dispatch_ad_action(doc):
     try:
         uid=str(doc.get("user_id") or ""); chat_id=int(doc.get("chat_id")); bid=str(doc.get("bot_id") or "main"); action=str(doc.get("action") or ""); payload=doc.get("payload") or {}
@@ -1446,7 +1496,7 @@ def _dispatch_ad_action(doc):
                 ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,run_in_managed_context,download_media,chat_id,link,None,None)
         elif action=="music_search":
             q=_music_clean_text(payload.get("query"))
-            if q: _run_managed_music_search(mb,chat_id,q,uid,bid)
+            if q: _run_managed_music_search(mb,chat_id,q,uid,bid,managed_music_pending_store.setdefault(bid,{}))
         elif action=="music_download":
             ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,run_in_managed_context,_managed_download_song,mb,chat_id,payload.get("song") or {},uid,bid)
     except Exception as e: print("Ad action dispatch failed:",repr(e))
@@ -1575,7 +1625,7 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             zone=html.escape(MONETAG_ZONE_ID,quote=True)
             sdk=html.escape(MONETAG_SDK_URL,quote=True)
             reward=f"/ad/reward/{token}"
-            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Ad</title><script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}"></script><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px}}.ok{{color:#79ff9a;font-weight:700}}</style></head><body><div class="box"><h2>📢 Advertisement</h2><div id="status">Loading ad…</div><div id="timer" class="timer">5</div><div class="small">Please wait until the rewarded ad finishes. Your download will continue automatically.</div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const zone={json.dumps(MONETAG_ZONE_ID)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let rewarded=false;let seconds=5;const timer=document.getElementById('timer');const status=document.getElementById('status');function reward(){{if(rewarded)return;rewarded=true;status.innerHTML='<span class="ok">✅ Ad completed. Sending your file…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(()=>setTimeout(()=>{{try{{tg.close();}}catch(e){{}}}},500)).catch(()=>setTimeout(()=>location.href=rewardUrl,300));}}async function runAd(){{try{{status.textContent='Loading ad…';let tries=0;while(typeof window['show_'+zone]!=='function' && tries<100){{await new Promise(r=>setTimeout(r,100));tries++;}}if(typeof window['show_'+zone]!=='function')throw new Error('Monetag SDK did not load');status.textContent='Ad is playing…';await window['show_'+zone]();reward();}}catch(e){{console.error(e);status.textContent='Ad is preparing…';setTimeout(runAd,1500);}}}}const ct=setInterval(()=>{{if(rewarded){{clearInterval(ct);return;}}seconds--;timer.textContent=Math.max(0,seconds);}},1000);runAd();</script></body></html>'''
+            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Ad</title><script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}" async></script><script src="https://telegram.org/js/telegram-web-app.js"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px}}.ok{{color:#79ff9a;font-weight:700}}button{{width:100%;padding:14px;border:0;border-radius:12px;background:#2ea6ff;color:#fff;font-weight:700;font-size:17px}}button:disabled{{opacity:.45}}</style></head><body><div class="box"><h2>📢 Advertisement</h2><div id="status">Loading ad…</div><div id="timer" class="timer">15</div><button id="continue" disabled>Continue</button><div class="small">The reward is unlocked by the Monetag rewarded-ad flow. After completion your pending download continues automatically.</div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const zone={json.dumps(MONETAG_ZONE_ID)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}const timer=document.getElementById('timer');const status=document.getElementById('status');const btn=document.getElementById('continue');let done=false,adStarted=false,seconds=15;function finish(){{if(done)return;done=true;btn.disabled=true;status.innerHTML='<span class="ok">✅ Ad completed. Sending your file…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(r=>{{if(!r.ok)throw new Error('Reward request failed');return r.text();}}).then(()=>setTimeout(()=>{{try{{tg.close();}}catch(e){{}}}},250)).catch(e=>{{console.error(e);status.textContent='Reward connection failed. Please return to Telegram and try again.';done=false;btn.disabled=false;}});}}btn.addEventListener('click',finish);function enableFallback(){{if(!adStarted||done)return;setTimeout(()=>{{if(!done){{btn.disabled=false;status.textContent='Ad completed. Tap Continue to receive your file.';}}}},16000);}}async function runAd(){{try{{status.textContent='Loading ad…';let tries=0;while(typeof window['show_'+zone]!=='function'&&tries<120){{await new Promise(r=>setTimeout(r,100));tries++;}}if(typeof window['show_'+zone]!=='function')throw new Error('Monetag SDK did not load');adStarted=true;status.textContent='Ad is playing…';const p=window['show_'+zone]();if(p&&typeof p.then==='function'){{p.then(()=>{{btn.disabled=false;status.textContent='Ad completed. Tap Continue to receive your file.';}}).catch(e=>{{console.error(e);enableFallback();}});}}else{{enableFallback();}}enableFallback();}}catch(e){{console.error(e);status.textContent='Ad is preparing…';setTimeout(runAd,1500);}}}}const ct=setInterval(()=>{{if(done){{clearInterval(ct);return;}}if(seconds>0)seconds--;timer.textContent=Math.max(0,seconds);}},1000);runAd();</script></body></html>'''
             self._send(200,body); return
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
@@ -1593,7 +1643,7 @@ class _AdGateHandler(BaseHTTPRequestHandler):
         m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
         if m:
             if _skip_ad_gate(m.group(1)):
-                body=f'''<!doctype html><html><head><meta http-equiv="refresh" content="1;url={html.escape(AD_PUBLIC_BASE_URL,quote=True)}/health"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:Arial;text-align:center;padding:50px"><h3>⏭️ Continuing…</h3><p>Return to Telegram. Your request is being processed.</p></body></html>'''
+                body=f'''<!doctype html><html><head><meta http-equiv="refresh" content="2;url=https://t.me/Downloadvedioytibot"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font-family:Arial;text-align:center;padding:50px"><h3>⏭️ Continuing…</h3><p>Return to Telegram. Your request is being processed.</p></body></html>'''
                 self._send(200,body)
             else: self._send(410,"Skip link expired or already used.")
             return
@@ -4398,6 +4448,7 @@ def download_media(chat_id, link, message_id, quality=None):
         # failure message to appear. RapidAPI is preferred for this probe.
         duration_check,rapid_data_prefetched=_youtube_duration_fast(link)
         if duration_check and duration_check > youtube_free_limit_minutes()*60:
+            _save_youtube_premium_pending("main",uid,chat_id,link,quality)
             msg=premium_gate_message(uid,"youtube",duration_check)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
             kb=InlineKeyboardMarkup(row_width=2)
             plans=get_premium_prices()
@@ -5420,6 +5471,10 @@ def _main_bot_username():
 
 SONG_MEDIA_CACHE_SECONDS = max(60,int(os.getenv("SONG_MEDIA_CACHE_SECONDS","600")))
 
+def _song_store_open():
+    return bool(get_setting("song_store_enabled", True))
+
+
 def _song_cache_key(song):
     song=song or {}
     key=str(song.get("id") or "").strip()
@@ -5452,6 +5507,7 @@ def _send_cached_song(chat_id, song, send_bot=None):
         return False
 
 def _store_song_cache(song, message):
+    if not _song_store_open(): return
     key=_song_cache_key(song)
     try:
         file_id=str(getattr(getattr(message,"audio",None),"file_id","") or "")
@@ -9902,6 +9958,7 @@ def successful_payment_handler(message):
             if mb:
                 try: mb.send_message(int(uid),f"🎉 <b>Premium Activated</b>\n\n⭐ Paid with Telegram Stars: <b>{stars}</b>\n⏰ Expires: <b>{html.escape(local_datetime_text(uid,until))}</b>\n\nPowered-by and promotional messages are now hidden for this bot.",parse_mode="HTML")
                 except Exception: pass
+            _resume_youtube_premium_pending(bid,uid)
         return
 
     if payload.startswith("managed_creator_premium_stars:"):
@@ -9916,6 +9973,7 @@ def successful_payment_handler(message):
             until=max(now,old_dt)+timedelta(days=30*int(months)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"premium_until":until.isoformat(),"premium_source":"stars","premium_updated_at":now}})
             premium_logs_col.insert_one({"user_id":uid,"bot_id":bid,"months":int(months),"price":price,"until":until.isoformat(),"time":now,"type":"creator_stars_purchase","stars":stars})
             bot.send_message(message.chat.id,f"🎉 <b>Premium Activated</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n⭐ Paid: <b>{stars} Stars</b>\n⏱️ {months} month(s)\n⏰ {html.escape(local_datetime_text(uid,until))}",parse_mode="HTML")
+            _resume_youtube_premium_pending(bid,uid)
         return
 
     if payload.startswith("balance_topup:"):
@@ -10141,6 +10199,7 @@ def premium_confirm_callback(call):
     bot.answer_callback_query(call.id, "✅ Premium activated!")
     bot.edit_message_text(f"🎉 <b>Premium Activated!</b>\n\n📅 Duration: {months} months\n💵 Paid: ${price:.2f}\n⏰ Expires: <b>{local_datetime_text(uid, until)}</b>\n\n🌐 <b>17 Premium/Trial Platforms:</b>\n{html.escape(', '.join(premium_platform_names()))}\n\n⚡ Priority downloads\n🎥 Higher quality\n▶️ Full YouTube is unlocked.", call.message.chat.id, call.message.message_id, parse_mode="HTML")
     send_premium_email(uid, "Premium Activated", months, price, until)
+    _resume_youtube_premium_pending("main",uid)
 
 @bot.callback_query_handler(func=lambda call: call.data == "premium_cancel")
 def premium_cancel(call):
@@ -10276,6 +10335,8 @@ def _download_request_job(chat_id, link, quality, uid):
                 if platform=="youtube":
                     try: duration=_youtube_duration_seconds(link)
                     except Exception: duration=None
+                    if duration and duration>youtube_free_limit_minutes()*60:
+                        _save_youtube_premium_pending("main",uid,chat_id,link,quality)
                 kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
                 bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
                 return
@@ -11569,6 +11630,8 @@ def _creator_admin_keyboard():
         [{"text":"🏆 Top Songs"},{"text":"🏆 Top Song Searchers"}],
         [{"text":"📢 Broadcast Creator Users"}],
         [{"text":"💎 Premium Prices"}],
+        [{"text":"🎵 Clear Songs"},{"text":"🔴 Close Store Songs"}],
+        [{"text":"🟢 Open Store Songs"}],
         [{"text":"🚫 Remove Ads Prices"},{"text":"♻️ Reset Ads"}],
         [{"text":"🟢 Open Powered by"},{"text":"🔴 Close Powered by"}],
         [{"text":"🔙 USER MENU"}],
@@ -11712,6 +11775,17 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
     if text=="👑 ADMIN PANEL" and _creator_admin(uid):
         _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
+
+    # Admin reply-keyboard controls must always win over stale creation/input states.
+    if _creator_admin(uid) and text in {
+        "🟢 Open Creation","🔴 Close Creation","🟢 Open Verify Create Bot","🔴 Close Verify Create Bot",
+        "🟢 Open Create Caption","🔴 Close Create Caption","✏️ Set Create Caption","📤 Send To Create Bot",
+        "🤖 See All Bots","📊 Bot Stats","📢 Broadcast All Bot Users","📢 Broadcast All Bots",
+        "👑 Broadcast Bot Admins","👤 Broadcast Bot Non-Admins","🏆 Top Songs","🏆 Top Song Searchers",
+        "📢 Broadcast Creator Users","💎 Premium Prices","🎵 Clear Songs","🔴 Close Store Songs","🟢 Open Store Songs","🚫 Remove Ads Prices","♻️ Reset Ads",
+        "🟢 Open Powered by","🔴 Close Powered by","🔙 USER MENU"
+    }:
+        _creator_admin_text(uid,chat_id,text); return
 
     sess=_creator_session(uid); state=sess.get("state")
     if state=="type":
@@ -11929,6 +12003,21 @@ def _creator_admin_text(uid, chat_id, text):
         set_setting("managed_powered_by_enabled",True); _creator_send(chat_id,"🟢 <b>Powered by OPEN</b>\n\nStandard managed bots will send Powered by after downloads.",reply_markup=_creator_admin_keyboard()); return
     if text=="🔴 Close Powered by":
         set_setting("managed_powered_by_enabled",False); _creator_send(chat_id,"🔴 <b>Powered by CLOSED</b>\n\nManaged bots will stop sending Powered by messages.",reply_markup=_creator_admin_keyboard()); return
+    if text=="🎵 Clear Songs":
+        try:
+            result=song_media_cache_col.delete_many({})
+            _creator_send(chat_id,f"🧹 <b>Song cache cleared</b>\n\nDeleted <b>{int(result.deleted_count)}</b> cached song entries.",reply_markup=_creator_admin_keyboard())
+        except Exception as e:
+            _creator_send(chat_id,f"❌ Could not clear song cache: <code>{html.escape(str(e)[:300])}</code>",reply_markup=_creator_admin_keyboard())
+        return
+    if text=="🔴 Close Store Songs":
+        set_setting("song_store_enabled",False)
+        _creator_send(chat_id,"🔴 <b>Store Songs CLOSED</b>\n\nNewly downloaded songs will not be cached for 10 minutes. Existing cache entries remain available until they expire or are cleared.",reply_markup=_creator_admin_keyboard())
+        return
+    if text=="🟢 Open Store Songs":
+        set_setting("song_store_enabled",True)
+        _creator_send(chat_id,"🟢 <b>Store Songs OPEN</b>\n\nDownloaded songs will again be cached for 10 minutes and can be delivered immediately to later users.",reply_markup=_creator_admin_keyboard())
+        return
     if text=="🚫 Remove Ads Prices":
         plans=_remove_ads_plans()
         _creator_set_session(uid,{"state":"admin_remove_ads_prices"})
@@ -12131,6 +12220,7 @@ def _creator_callback(call):
         try: old_dt=datetime.fromisoformat(str(old).replace("Z","+00:00")) if old else now; old_dt=old_dt if old_dt.tzinfo else old_dt.replace(tzinfo=timezone.utc)
         except Exception: old_dt=now
         until=max(now,old_dt)+timedelta(days=30*int(months)); ledger_debit(uid,pa,"managed_bot_premium_purchase",{"bot_id":bid,"price_usd":price,"months":months}); managed_bots_col.update_one({"bot_id":bid},{"$set":{"premium_until":until.isoformat(),"premium_source":"wallet","premium_updated_at":now}}); premium_logs_col.insert_one({"user_id":uid,"bot_id":bid,"months":int(months),"price":price,"until":until.isoformat(),"time":now,"type":"managed_bot_wallet_purchase"})
+        _resume_youtube_premium_pending(bid,uid)
         _creator_edit(chat_id,mid,f"🎉 <b>Premium Activated</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n💰 Paid: ${price:.2f}\n⏱️ {months} month(s)\n⏰ {html.escape(local_datetime_text(uid,until))}",reply_markup={"inline_keyboard":[[{"text":"⬅️ My Bots","callback_data":"cmybots"},{"text":"💎 Premium","callback_data":"cmypremium"}]]}); return
     if data=="cpremcancel": _creator_answer(call.get("id"),"Cancelled"); return
 
@@ -12203,7 +12293,7 @@ def _managed_bot_start_instance(doc):
                 typ="🎵 Music Downloader" if btype=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(_managed_bot_doc(bid) or {}) else "🆓 Standard"
                 kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("📊 Stats",callback_data=f"mstats:{bid}"),InlineKeyboardButton("📢 Broadcast",callback_data=f"mbroadcast:{bid}"))
                 mb.send_message(m.chat.id,"👑 <b>BOT ADMIN PANEL</b>\n\nChoose an action:",reply_markup=kb,parse_mode="HTML")
-            managed_music_pending={}
+            managed_music_pending=managed_music_pending_store.setdefault(bid,{})
             def _music_search(m):
                 _ctx(); uid=str(m.from_user.id); q=_music_clean_text(m.text)
                 if not q or len(q)<2: return
@@ -12255,11 +12345,11 @@ def _managed_bot_start_instance(doc):
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
+                            _save_youtube_premium_pending(bid,uid,m.chat.id,link,None)
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
                             for months in ("1","3","9","12"):
                                 if months in plans:
                                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
-                            kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
                             msg=premium_gate_message(uid,"youtube",duration)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
@@ -12350,7 +12440,7 @@ def _managed_bot_start_instance(doc):
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adgateback:"))(lambda c, _mb=mb: _ad_gate_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
@@ -12512,15 +12602,37 @@ def _managed_download_song(mb,chat_id,song,uid,bid):
         if tmp: shutil.rmtree(tmp,ignore_errors=True)
 
 
-def _ad_premium_managed_cb(mb, call):
+def _ad_gate_back_managed_cb(mb, call):
     try:
         token=str(call.data).split(":",1)[1]; row=ad_gates_col.find_one({"token":token})
         if not row or str(row.get("user_id"))!=str(call.from_user.id):
             mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
         mb.answer_callback_query(call.id)
-        url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"
-        mb.send_message(call.message.chat.id,"💎 <b>Premium</b>\n\nOpen Premium to continue without the ad gate.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💎 Open Premium",url=url)]]))
-    except Exception as e: print("Managed ad premium callback failed:",repr(e))
+        mb.edit_message_text("To continue, watch a short ad (5 sec), use Premium, or Skip.",call.message.chat.id,call.message.message_id,reply_markup=_ad_gate_keyboard(token))
+    except Exception as e: print("Managed ad gate back failed:",repr(e))
+
+
+def _ad_premium_managed_cb(mb, call):
+    """Open Premium directly inside the managed bot; payment is generated by the main bot."""
+    try:
+        token=str(call.data).split(":",1)[1]
+        row=ad_gates_col.find_one({"token":token})
+        if not row or str(row.get("user_id"))!=str(call.from_user.id) or str(row.get("bot_id"))!=str((_ACTIVE_MANAGED_META.get() or {}).get("bot_id") or ""):
+            mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
+        bid=str(row.get("bot_id") or "")
+        uid=str(call.from_user.id)
+        plans=get_premium_prices(); rows=[]
+        for months in ("1","3","9","12"):
+            if months in plans:
+                rows.append([InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}")])
+        rows.append([InlineKeyboardButton("⬅️ Back",callback_data=f"adgateback:{token}")])
+        mb.answer_callback_query(call.id)
+        mb.edit_message_text(
+            "💎 <b>PREMIUM REQUIRED</b>\n\nChoose a Premium period. Payment is processed securely by <b>@Downloadvedioytibot</b> using Telegram Stars.",
+            call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows)
+        )
+    except Exception as e:
+        print("Managed ad premium callback failed:",repr(e))
 
 def _managed_bots_startup():
     try:
