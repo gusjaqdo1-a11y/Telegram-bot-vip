@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice, KeyboardButton, KeyboardButtonRequestChat, ChatAdministratorRights, ReplyKeyboardRemove, BotCommand, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice, KeyboardButton, KeyboardButtonRequestChat, ChatAdministratorRights, ReplyKeyboardRemove, BotCommand
 import os, json, random, secrets, string
 from datetime import datetime, timedelta, timezone
 try:
@@ -17,9 +17,11 @@ import asyncio
 import uuid
 import time
 import hashlib
+import hmac
 import html
 import urllib.parse
 import contextvars
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 try:
@@ -38,16 +40,6 @@ CUSTOMER_AI_BOT_TOKEN = os.getenv("CUSTOMER_AI_BOT_TOKEN", "").strip()
 # Dedicated Telegram managed-bot Creator. Bot Management Mode must be enabled.
 CREATOR_BOT_TOKEN = os.getenv("CREATOR_BOT_TOKEN", "").strip()
 CREATOR_BOT_USERNAME = os.getenv("CREATOR_BOT_USERNAME", "").strip().lstrip("@")
-
-def _parse_int_ids(value):
-    out=[]
-    for x in str(value or "").replace(","," ").split():
-        try: out.append(int(x))
-        except Exception: pass
-    return list(dict.fromkeys(out))
-CREATOR_ADMIN_IDS = _parse_int_ids(os.getenv("CREATOR_ADMIN_IDS", ""))
-CREATOR_ADMIN_IDS += _parse_int_ids(os.getenv("CREATOR_ADMIN_ID", ""))
-CREATOR_ADMIN_IDS = list(dict.fromkeys(CREATOR_ADMIN_IDS))
 MANAGED_TOKEN_ENCRYPTION_KEY = os.getenv("MANAGED_TOKEN_ENCRYPTION_KEY", "").strip()
 
 API_ID = int(os.getenv("API_ID", "0"))
@@ -647,24 +639,24 @@ ADS_TEXT = ""
 ADS_BTN_TEXT = ""
 ADS_URL = ""
 
-# ================= MANAGED-BOT ADSTERRA / REMOVE-ADS SYSTEM =================
-# SmartLink is a URL-based Adsterra unit. The bot does not embed Adsterra
-# JavaScript inside Telegram; it opens the SmartLink in Telegram's browser.
-# The optional gate endpoint below lets the bot detect that the SmartLink URL
-# was opened, then immediately releases the pending download/search.
-ADSTERRA_SMARTLINK_URL = os.getenv("ADSTERRA_SMARTLINK_URL", "https://www.profitableratecpmnetwork.com/zniv39az4q?key=e7ab3c91928f44615e99bf64ff2fe97c").strip()
+# ================= MANAGED-BOT MONETAG TMA / REMOVE-ADS SYSTEM =================
+# Monetag Telegram Mini App Rewarded Interstitial.
+# The Mini App is served from the same Railway service/domain so every pending
+# request gets a private, expiring URL tied to the Telegram user + managed bot.
+MONETAG_ZONE_ID = os.getenv("MONETAG_ZONE_ID", "11909176").strip()
+MONETAG_DIRECT_LINK = os.getenv("MONETAG_DIRECT_LINK", "https://omg10.com/4/11909123").strip()
 AD_GATE_BASE_URL = (os.getenv("AD_GATE_BASE_URL") or os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
 if not AD_GATE_BASE_URL:
     _railway_domain = str(os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().strip("/")
     if _railway_domain:
         AD_GATE_BASE_URL = "https://" + _railway_domain
-AD_SHOW_INTERVAL_SECONDS = max(60, int(os.getenv("AD_SHOW_INTERVAL_SECONDS", "600")))
+AD_SHOW_INTERVAL_SECONDS = max(60, int(os.getenv("AD_SHOW_INTERVAL_SECONDS", "5400")))
+MONETAG_WATCH_SECONDS_DEFAULT = max(1, int(os.getenv("MONETAG_WATCH_SECONDS", "15")))
+MONETAG_ADS_PER_GATE_DEFAULT = max(1, min(3, int(os.getenv("MONETAG_ADS_PER_GATE", "1"))))
+MONETAG_REQUIRE_VALUED_DEFAULT = str(os.getenv("MONETAG_REQUIRE_VALUED", "1")).strip().lower() not in {"0","false","no","off"}
 REMOVE_ADS_STARS_DEFAULT = max(1, int(os.getenv("REMOVE_ADS_STARS", "50")))
 REMOVE_ADS_PLAN_DEFAULTS = {"3": 50, "6": 90, "12": 150}
 AD_GATE_PORT = int(os.getenv("PORT", "8080"))
-MONETAG_ZONE_ID = str(os.getenv("MONETAG_ZONE_ID", "").strip())
-MONETAG_SDK_URL = str(os.getenv("MONETAG_SDK_URL", "").strip())
-MINI_APP_BASE_URL = (os.getenv("MINI_APP_BASE_URL") or AD_GATE_BASE_URL or "").strip().rstrip("/")
 managed_ad_pending = {}
 managed_ad_pending_lock = threading.RLock()
 managed_ad_http_server = None
@@ -4268,12 +4260,14 @@ def download_media(chat_id, link, message_id, quality=None):
             try:
                 _safe_send_file(chat_id,path,DOWNLOAD_CAPTION,reply_markup=markup,platform=platform,link=link); sent+=1
                 if _is_video_file(path):
-                    powered=_active_powered_text()
-                    if powered:
+                    managed_meta=_ACTIVE_MANAGED_META.get() or {}
+                    managed_bot=_ACTIVE_BOT.get()
+                    powered=_active_powered_text() if managed_meta.get("bot_id") else ""
+                    if powered and managed_bot is not None:
                         try:
-                            # Keep this as plain text: Telegram HTML does not support <br>,
-                            # and custom-entity parsing here previously caused 400 errors.
-                            bot.send_message(chat_id, powered)
+                            # Powered-by is ONLY for managed/small bots. The main downloader
+                            # must never append it. Send from the managed bot itself.
+                            managed_bot.send_message(chat_id, powered)
                         except Exception as e: print("Managed powered-by send failed:",repr(e))
             finally:
                 upload_stop.set()
@@ -11167,8 +11161,7 @@ def _creator_edit(chat_id, message_id, text, reply_markup=None):
 
 
 def _creator_admin(uid):
-    try: return int(uid) in (set(get_admin_ids()) | set(CREATOR_ADMIN_IDS))
-    except Exception: return False
+    return is_admin(uid)
 
 
 def _creator_keyboard(uid):
@@ -11200,10 +11193,11 @@ def _creator_admin_keyboard():
         [{"text":"👤 Broadcast Bot Non-Admins"}],
         [{"text":"🏆 Top Songs"},{"text":"🏆 Top Song Searchers"}],
         [{"text":"🟢 OPEN MANAGED ADS"},{"text":"🔴 CLOSE MANAGED ADS"}],
-        [{"text":"⚙️ SET MONETAG ZONE"},{"text":"⚙️ SET MONETAG SDK"}],
-        [{"text":"🔗 SET ADSTERRA SMARTLINK"}],
+        [{"text":"📺 SET MONETAG ZONE"},{"text":"🔗 SET MONETAG DIRECT LINK"}],
         [{"text":"🌐 SET AD GATE URL"}],
-        [{"text":"⏱️ AD FREQUENCY"},{"text":"⭐ REMOVE ADS PLANS"}],
+        [{"text":"⏱️ AD FREQUENCY"},{"text":"⏱️ AD WATCH TIME"}],
+        [{"text":"🔢 ADS PER GATE"},{"text":"♻️ RESET ADS"}],
+        [{"text":"⭐ REMOVE ADS PLANS"}],
         [{"text":"⭐ REMOVE ADS PRICE"}],
         [{"text":"📊 AD STATS"}],
         [{"text":"📢 Broadcast Creator Users"}],
@@ -11348,10 +11342,6 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
     if text=="👑 ADMIN PANEL" and _creator_admin(uid):
         _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
-
-    admin_buttons={"🟢 Open Creation","🔴 Close Creation","🟢 Open Verify Create Bot","🔴 Close Verify Create Bot","🟢 Open Create Caption","🔴 Close Create Caption","✏️ Set Create Caption","📤 Send To Create Bot","🤖 See All Bots","📊 Bot Stats","📢 Broadcast All Bot Users","👑 Broadcast Bot Admins","👤 Broadcast Bot Non-Admins","🏆 Top Songs","🏆 Top Song Searchers","🟢 OPEN MANAGED ADS","🔴 CLOSE MANAGED ADS","⚙️ SET MONETAG ZONE","⚙️ SET MONETAG SDK","🔗 SET ADSTERRA SMARTLINK","🌐 SET AD GATE URL","⏱️ AD FREQUENCY","⭐ REMOVE ADS PLANS","⭐ REMOVE ADS PRICE","📊 AD STATS","📢 Broadcast Creator Users","💎 Premium Prices","🔙 USER MENU"}
-    if _creator_admin(uid) and text in admin_buttons:
-        _creator_admin_text(uid,chat_id,text); return
 
     sess=_creator_session(uid); state=sess.get("state")
     if state=="type":
@@ -11600,21 +11590,28 @@ def _creator_admin_text(uid, chat_id, text):
     if text=="🏆 Top Song Searchers":
         _creator_send(chat_id,_top_song_searchers_text(100),reply_markup=_creator_admin_keyboard()); return
     if text=="🟢 OPEN MANAGED ADS":
-        if not _managed_ads_smartlink() and not _monetag_ready():
-            _creator_send(chat_id,"❌ <b>No ad provider is configured.</b>\n\nSet Monetag Main Zone + SDK, or set an Adsterra SmartLink.",reply_markup=_creator_admin_keyboard()); return
-        set_setting("managed_ads_enabled",True); _creator_send(chat_id,"🟢 <b>MANAGED ADS OPEN</b>\n\nMonetag TMA: <b>%s</b>\nAdsterra fallback: <b>%s</b>\nGate interval: <b>%d minutes</b>." % ("READY" if _monetag_ready() else "NOT SET","SET" if _managed_ads_smartlink() else "NOT SET",_managed_ads_interval()//60),reply_markup=_creator_admin_keyboard()); return
+        if not _monetag_zone_id():
+            _creator_send(chat_id,"❌ <b>Monetag zone is not configured.</b>\n\nSet the Monetag main SDK zone first.",reply_markup=_creator_admin_keyboard()); return
+        set_setting("managed_ads_enabled",True); _start_managed_ad_http_server(); _creator_send(chat_id,f"🟢 <b>MANAGED ADS OPEN</b>\n\nMonetag Rewarded Interstitial is active. Gate: <b>{_managed_ads_interval()//60} min</b> • Ads/gate: <b>{_monetag_ads_per_gate()}</b> • Watch timer: <b>{_monetag_watch_seconds()}s</b>.",reply_markup=_creator_admin_keyboard()); return
     if text=="🔴 CLOSE MANAGED ADS":
-        set_setting("managed_ads_enabled",False); _creator_send(chat_id,"🔴 <b>MANAGED ADS CLOSED</b>\n\nManaged bots will no longer require the Adsterra gate. Existing Remove Ads purchases remain saved.",reply_markup=_creator_admin_keyboard()); return
-    if text=="⚙️ SET MONETAG ZONE":
-        _creator_set_session(uid,{"state":"admin_monetag_zone"}); _creator_send(chat_id,"⚙️ <b>SET MONETAG MAIN ZONE</b>\n\nSend the MAIN zone ID from Monetag Telegram Mini Apps → Rewarded Interstitial."); return
-    if text=="⚙️ SET MONETAG SDK":
-        _creator_set_session(uid,{"state":"admin_monetag_sdk"}); _creator_send(chat_id,"⚙️ <b>SET MONETAG SDK</b>\n\nSend the exact SDK URL from Monetag Get SDK / Get instructions, or paste the full script tag."); return
-    if text=="🔗 SET ADSTERRA SMARTLINK":
-        _creator_set_session(uid,{"state":"admin_ad_smartlink"}); _creator_send(chat_id,"🔗 <b>SET ADSTERRA SMARTLINK</b>\n\nSend the full active SmartLink URL from your Adsterra Publisher account."); return
+        set_setting("managed_ads_enabled",False); _creator_send(chat_id,"🔴 <b>MANAGED ADS CLOSED</b>\n\nManaged bots will no longer require the Monetag ad gate. Existing Remove Ads purchases remain saved.",reply_markup=_creator_admin_keyboard()); return
+    if text=="📺 SET MONETAG ZONE":
+        _creator_set_session(uid,{"state":"admin_monetag_zone"}); _creator_send(chat_id,"📺 <b>SET MONETAG ZONE</b>\n\nSend the Monetag <b>main SDK zone ID</b>. Current: <code>{}</code>".format(html.escape(_monetag_zone_id()))); return
+    if text=="🔗 SET MONETAG DIRECT LINK":
+        _creator_set_session(uid,{"state":"admin_monetag_direct"}); _creator_send(chat_id,"🔗 <b>SET MONETAG DIRECT LINK</b>\n\nSend the Direct Link. This is used only by the Skip button. Current: <code>{}</code>".format(html.escape(_managed_ads_smartlink()))); return
     if text=="🌐 SET AD GATE URL":
         _creator_set_session(uid,{"state":"admin_ad_gate_url"}); _creator_send(chat_id,"🌐 <b>SET AD GATE URL</b>\n\nSend the public HTTPS URL of this Railway service, for example <code>https://your-app.up.railway.app</code>.\n\nThis is used so the bot can detect when the user opens the SmartLink and immediately release the pending download/search."); return
     if text=="⏱️ AD FREQUENCY":
-        _creator_set_session(uid,{"state":"admin_ad_frequency"}); _creator_send(chat_id,f"⏱️ <b>AD FREQUENCY</b>\n\nCurrent: <b>{_managed_ads_interval()//60} minutes</b>\n\nSend minutes, for example <code>10</code>."); return
+        _creator_set_session(uid,{"state":"admin_ad_frequency"}); _creator_send(chat_id,f"⏱️ <b>AD FREQUENCY</b>\n\nCurrent: <b>{_managed_ads_interval()//60} minutes</b>\n\nSend minutes, for example <code>90</code>."); return
+    if text=="⏱️ AD WATCH TIME":
+        _creator_set_session(uid,{"state":"admin_monetag_watch"}); _creator_send(chat_id,f"⏱️ <b>AD WATCH TIME</b>\n\nCurrent: <b>{_monetag_watch_seconds()} seconds</b>\n\nSend <code>10</code>, <code>15</code>, or another value from 1–120. This is the local reward-gate timer; Monetag's own rewarded ad lifecycle remains controlled by Monetag."); return
+    if text=="🔢 ADS PER GATE":
+        _creator_set_session(uid,{"state":"admin_monetag_count"}); _creator_send(chat_id,f"🔢 <b>ADS PER GATE</b>\n\nCurrent: <b>{_monetag_ads_per_gate()}</b>\n\nSend 1, 2, or 3."); return
+    if text=="♻️ RESET ADS":
+        result=managed_ad_users_col.update_many({}, {"$unset":{"ad_unlocked_until":"","last_ad_opened_at":"","last_ad_token":""}})
+        with managed_ad_pending_lock:
+            managed_ad_pending.clear()
+        _creator_send(chat_id,f"♻️ <b>ADS RESET</b>\n\nCleared unpaid ad timers/sessions: <b>{getattr(result,'modified_count',0)}</b>. Paid Remove Ads records were kept.",reply_markup=_creator_admin_keyboard()); return
     if text=="⭐ REMOVE ADS PLANS":
         p=_managed_remove_ads_plans()
         _creator_set_session(uid,{"state":"admin_remove_ads_plans"})
@@ -11624,7 +11621,7 @@ def _creator_admin_text(uid, chat_id, text):
     if text=="📊 AD STATS":
         clicks=managed_ad_clicks_col.count_documents({}); removed=managed_ad_users_col.count_documents({"ads_removed":True}); active=managed_ad_users_col.count_documents({"ads_removed":{"$ne":True},"ad_unlocked_until":{"$gt":time.time()}})
         plans=_managed_remove_ads_plans()
-        _creator_send(chat_id,f"📊 <b>MANAGED ADS STATS</b>\n\n🖱 Ad opens: <b>{clicks}</b>\n⭐ Remove Ads purchases: <b>{removed}</b>\n🟢 Users currently unlocked: <b>{active}</b>\n📢 Ads: <b>{'OPEN' if _managed_ads_enabled() else 'CLOSED'}</b>\n⏱ Frequency: <b>{_managed_ads_interval()//60} min</b>\n⭐ Plans: <b>3m {plans['3']} • 6m {plans['6']} • 12m {plans['12']} Stars</b>\n🔗 SmartLink: <b>{'SET' if _managed_ads_smartlink() else 'NOT SET'}</b>\n🌐 Gate URL: <b>{'SET' if _managed_ad_base_url() else 'NOT SET'}</b>",reply_markup=_creator_admin_keyboard()); return
+        _creator_send(chat_id,f"📊 <b>MANAGED ADS STATS</b>\n\n🖱 Ad gates: <b>{clicks}</b>\n⭐ Remove Ads purchases: <b>{removed}</b>\n🟢 Users currently unlocked: <b>{active}</b>\n📢 Ads: <b>{'OPEN' if _managed_ads_enabled() else 'CLOSED'}</b>\n⏱ Gate frequency: <b>{_managed_ads_interval()//60} min</b>\n⏱ Watch timer: <b>{_monetag_watch_seconds()}s</b>\n🔢 Ads/gate: <b>{_monetag_ads_per_gate()}</b>\n📺 Monetag zone: <b>{html.escape(_monetag_zone_id() or 'NOT SET')}</b>\n🔗 Direct Link: <b>{'SET' if _managed_ads_smartlink() else 'NOT SET'}</b>\n🌐 TMA URL: <b>{'SET' if _managed_ad_base_url() else 'NOT SET'}</b>\n⭐ Plans: <b>3m {plans['3']} • 6m {plans['6']} • 12m {plans['12']} Stars</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="📢 Broadcast Creator Users":
         _creator_set_session(uid,{"state":"admin_broadcast_creator"}); _creator_send(chat_id,"📢 Send the message to broadcast to users who have interacted with the Creator Bot."); return
     if text=="💎 Premium Prices":
@@ -11634,25 +11631,30 @@ def _creator_admin_text(uid, chat_id, text):
     sess=_creator_session(uid); state=sess.get("state")
     if state=="admin_monetag_zone":
         value=str(text or "").strip()
-        if not re.fullmatch(r"\d{3,20}",value): _creator_send(chat_id,"❌ Invalid Monetag zone ID. Digits only."); return
-        set_setting("monetag_zone_id_override",value); _creator_clear_session(uid); _creator_send(chat_id,"✅ Monetag main zone saved.",reply_markup=_creator_admin_keyboard()); return
-    if state=="admin_monetag_sdk":
+        if not re.fullmatch(r"\d{3,20}",value): _creator_send(chat_id,"❌ Send a numeric Monetag main SDK zone ID."); return
+        set_setting("monetag_zone_id",value); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Monetag zone saved: <code>{html.escape(value)}</code>",reply_markup=_creator_admin_keyboard()); return
+    if state=="admin_monetag_direct":
         value=str(text or "").strip()
-        if "<script" in value.lower():
-            m=re.search(r"src\s*=\s*['\"]([^'\"]+)['\"]",value,re.I)
-            if not m: _creator_send(chat_id,"❌ SDK URL could not be read from the script tag."); return
-            value=m.group(1).strip()
-        if not re.match(r"^https?://",value,re.I): _creator_send(chat_id,"❌ Send a valid HTTPS SDK URL or full script tag."); return
-        set_setting("monetag_sdk_url_override",value); _creator_clear_session(uid); _creator_send(chat_id,"✅ Monetag SDK saved.",reply_markup=_creator_admin_keyboard()); return
+        if not re.match(r"^https?://",value,re.I): _creator_send(chat_id,"❌ Send a valid Direct Link URL."); return
+        set_setting("managed_ads_direct_link",value); _creator_clear_session(uid); _creator_send(chat_id,"✅ Monetag Direct Link saved.",reply_markup=_creator_admin_keyboard()); return
+    if state=="admin_monetag_watch":
+        try:
+            sec=int(str(text).strip());
+            if sec<1 or sec>120: raise ValueError
+            set_setting("monetag_watch_seconds",sec); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Ad watch timer set to <b>{sec}s</b>.",reply_markup=_creator_admin_keyboard()); return
+        except Exception: _creator_send(chat_id,"❌ Send seconds between 1 and 120."); return
+    if state=="admin_monetag_count":
+        try:
+            count=int(str(text).strip());
+            if count<1 or count>3: raise ValueError
+            set_setting("monetag_ads_per_gate",count); _creator_clear_session(uid); _creator_send(chat_id,f"✅ Ads per gate set to <b>{count}</b>.",reply_markup=_creator_admin_keyboard()); return
+        except Exception: _creator_send(chat_id,"❌ Only 1, 2, or 3 is allowed."); return
     if state=="admin_ad_smartlink":
         value=str(text or "").strip()
         if not re.match(r"^https?://",value,re.I):
-            _creator_send(chat_id,"❌ Send a valid http(s) SmartLink URL."); return
-        set_setting("managed_ads_enabled",False)
-        # The environment value is preferred for secrets/configuration, so this setting
-        # stores the admin-supplied URL for runtime use without requiring a restart.
-        set_setting("managed_ads_smartlink_override",value)
-        _creator_clear_session(uid); _creator_send(chat_id,"✅ SmartLink saved. Restarting is not required. Press <b>🟢 OPEN MANAGED ADS</b> to enable it.",reply_markup=_creator_admin_keyboard()); return
+            _creator_send(chat_id,"❌ Send a valid http(s) Direct Link URL."); return
+        set_setting("managed_ads_direct_link",value)
+        _creator_clear_session(uid); _creator_send(chat_id,"✅ Monetag Direct Link saved. It is used by Skip.",reply_markup=_creator_admin_keyboard()); return
     if state=="admin_ad_gate_url":
         value=str(text or "").strip().rstrip("/")
         if not re.match(r"^https://",value,re.I):
@@ -11863,22 +11865,41 @@ def _creator_callback(call):
 
 
 
-# ================= MANAGED-BOT ADS / REMOVE ADS =================
+# ================= MANAGED-BOT MONETAG TMA / REMOVE ADS =================
 def _managed_ad_base_url():
     saved=str(get_setting("managed_ads_base_url", "") or "").strip().rstrip("/")
     return saved or str(AD_GATE_BASE_URL or "").strip().rstrip("/")
 
 def _managed_ads_smartlink():
-    return str(get_setting("managed_ads_smartlink_override", ADSTERRA_SMARTLINK_URL) or ADSTERRA_SMARTLINK_URL or "").strip()
+    # Backward-compatible function name; this now returns Monetag Direct Link.
+    return str(get_setting("managed_ads_direct_link", MONETAG_DIRECT_LINK) or MONETAG_DIRECT_LINK or "").strip()
+
+def _monetag_zone_id():
+    return str(get_setting("monetag_zone_id", MONETAG_ZONE_ID) or MONETAG_ZONE_ID).strip()
 
 def _managed_ads_enabled():
-    return bool(get_setting("managed_ads_enabled", False)) and bool(_managed_ads_smartlink())
+    return bool(get_setting("managed_ads_enabled", False)) and bool(_monetag_zone_id())
 
 def _managed_ads_interval():
     try:
         return max(60, int(get_setting("managed_ads_interval_seconds", AD_SHOW_INTERVAL_SECONDS) or AD_SHOW_INTERVAL_SECONDS))
     except Exception:
         return AD_SHOW_INTERVAL_SECONDS
+
+def _monetag_watch_seconds():
+    try:
+        return max(1, min(120, int(get_setting("monetag_watch_seconds", MONETAG_WATCH_SECONDS_DEFAULT) or MONETAG_WATCH_SECONDS_DEFAULT)))
+    except Exception:
+        return MONETAG_WATCH_SECONDS_DEFAULT
+
+def _monetag_ads_per_gate():
+    try:
+        return max(1, min(3, int(get_setting("monetag_ads_per_gate", MONETAG_ADS_PER_GATE_DEFAULT) or MONETAG_ADS_PER_GATE_DEFAULT)))
+    except Exception:
+        return MONETAG_ADS_PER_GATE_DEFAULT
+
+def _monetag_require_valued():
+    return bool(get_setting("monetag_require_valued", MONETAG_REQUIRE_VALUED_DEFAULT))
 
 def _managed_remove_ads_stars():
     try:
@@ -11918,20 +11939,14 @@ def _managed_ads_removed(bid, uid):
 
 def _managed_ad_required(bid, uid):
     uid=str(uid); bid=str(bid)
-    if not _managed_ads_enabled():
-        return False
-    if is_admin(uid):
-        return False
+    if not _managed_ads_enabled(): return False
+    if is_admin(uid): return False
     d=_managed_bot_doc(bid) or {}
-    if _managed_premium_active_doc(d):
-        return False
-    if _managed_remove_ads_active(bid,uid):
-        return False
+    if _managed_premium_active_doc(d): return False
+    if _managed_remove_ads_active(bid,uid): return False
     state=_managed_ad_state(bid,uid)
-    try:
-        until=float(state.get("ad_unlocked_until",0) or 0)
-    except Exception:
-        until=0
+    try: until=float(state.get("ad_unlocked_until",0) or 0)
+    except Exception: until=0
     return until <= time.time()
 
 def _managed_ad_mark_opened(bid, uid, token=""):
@@ -11941,29 +11956,22 @@ def _managed_ad_mark_opened(bid, uid, token=""):
         {"$set":{"ad_unlocked_until":until,"last_ad_opened_at":datetime.now(timezone.utc),"last_ad_token":str(token or "")}},
         upsert=True,
     )
-    managed_ad_clicks_col.insert_one({"bot_id":str(bid),"user_id":str(uid),"token":str(token or ""),"time":datetime.now(timezone.utc),"interval_seconds":_managed_ads_interval()})
+    managed_ad_clicks_col.insert_one({"bot_id":str(bid),"user_id":str(uid),"token":str(token or ""),"time":datetime.now(timezone.utc),"interval_seconds":_managed_ads_interval(),"ads_count":_monetag_ads_per_gate()})
 
-def _monetag_zone_id():
-    return str(get_setting("monetag_zone_id_override", MONETAG_ZONE_ID) or MONETAG_ZONE_ID or "").strip()
-
-def _monetag_sdk_url():
-    return str(get_setting("monetag_sdk_url_override", MONETAG_SDK_URL) or MONETAG_SDK_URL or "").strip()
-
-def _monetag_ready():
-    return bool(_monetag_zone_id() and _monetag_sdk_url() and MINI_APP_BASE_URL)
-
-def _managed_miniapp_url(token):
-    return f"{MINI_APP_BASE_URL}/miniapp/{urllib.parse.quote(str(token),safe='')}" if MINI_APP_BASE_URL else ""
-
-def _managed_ad_gate_url(token):
+def _managed_tma_url(token):
     base=_managed_ad_base_url()
-    if base:
-        return f"{base}/ad/open/{urllib.parse.quote(str(token),safe='')}"
-    return _managed_ads_smartlink()
+    if not base: return ""
+    return f"{base}/miniapp/{urllib.parse.quote(str(token),safe='')}"
 
 def _managed_ad_create_pending(bid, uid, action, **payload):
-    token=secrets.token_urlsafe(18).replace("-","").replace("_","")[:28]
-    row={"bot_id":str(bid),"uid":str(uid),"action":str(action),"created":time.time(),"expires":time.time()+900}
+    token=secrets.token_urlsafe(24).replace("-","").replace("_","")[:32]
+    count=_monetag_ads_per_gate()
+    row={
+        "bot_id":str(bid),"uid":str(uid),"action":str(action),
+        "created":time.time(),"expires":time.time()+900,
+        "ads_required":count,"verified_ads":0,"verified_ymids":[],
+        "watch_seconds":_monetag_watch_seconds(),"status":"pending",
+    }
     row.update(payload)
     with managed_ad_pending_lock:
         managed_ad_pending[token]=row
@@ -11975,52 +11983,45 @@ def _managed_ad_create_pending(bid, uid, action, **payload):
     return token
 
 def _managed_ad_message(mb, chat_id, bid, uid, token):
-    mins=max(1,int(round(_managed_ads_interval()/60)))
-    mini=_managed_miniapp_url(token) if _monetag_ready() else ""
-    skip=_managed_ad_gate_url(token)
+    url=_managed_tma_url(token)
     rows=[]
-    if mini: rows.append([InlineKeyboardButton("👉 Watch ad",web_app=WebAppInfo(url=mini))])
-    elif skip: rows.append([InlineKeyboardButton("👉 Watch ad",url=skip)])
-    rows.append([InlineKeyboardButton("💎 Premium",url="https://t.me/Downloadvedioytibot?start=premium")])
-    if skip: rows.append([InlineKeyboardButton("⏭ Skip",url=skip)])
-    sent=mb.send_message(chat_id,"To continue, watch a short ad or choose Premium.\n\n📢 Ads are shown about every <b>%d minutes</b>.\n⚡ Your pending download/search continues after the ad flow."%mins,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
-    try:
-        with managed_ad_pending_lock:
-            if token in managed_ad_pending: managed_ad_pending[token]["gate_message_id"]=int(sent.message_id)
-    except Exception: pass
+    if url:
+        rows.append([InlineKeyboardButton("👉 Watch ad",web_app=telebot.types.WebAppInfo(url=url))])
+    rows.append([
+        InlineKeyboardButton("💎 Premium",callback_data="mremoveads"),
+        InlineKeyboardButton("⏭️ Skip",url=_managed_ads_smartlink() or "https://omg10.com/4/11909123"),
+    ])
+    count=_monetag_ads_per_gate(); secs=_monetag_watch_seconds(); mins=max(1,int(round(_managed_ads_interval()/60)))
+    text=("To continue, watch a short ad or use Premium.\n\n"
+          f"📢 Ads required: <b>{count}</b>\n"
+          f"⏱️ Gate timer: <b>{secs}s</b>\n"
+          f"🔄 Ads reset after about <b>{mins} minutes</b>.\n\n"
+          "💎 Premium users and users who removed ads do not see this gate.")
+    mb.send_message(chat_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
 
 def _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
-    if not _managed_ad_required(bid,uid):
-        return False
+    if not _managed_ad_required(bid,uid): return False
     token=_managed_ad_create_pending(bid,uid,action,chat_id=int(chat_id),**payload)
     _managed_ad_message(mb,chat_id,bid,uid,token)
     return True
 
-# Backward-compatible name used by managed-bot handlers.
-# Keep one canonical implementation so ad-gating cannot fail at runtime.
 def _managed_ad_gate_or_continue(mb, chat_id, bid, uid, action, **payload):
     return _managed_ads_gate_or_continue(mb, chat_id, bid, uid, action, **payload)
 
 def _managed_execute_ad_pending(token):
     with managed_ad_pending_lock:
         row=managed_ad_pending.pop(str(token),None)
-    if not row or float(row.get("expires",0) or 0)<time.time():
-        return False
+    if not row or float(row.get("expires",0) or 0)<time.time(): return False
     bid=str(row.get("bot_id") or ""); uid=str(row.get("uid") or ""); mb=managed_bot_objects.get(bid) or _managed_bot_start_instance(_managed_bot_doc(bid) or {})
-    if not mb:
-        return False
+    if not mb: return False
     _managed_ad_mark_opened(bid,uid,token)
-    try:
-        if row.get("gate_message_id"): mb.delete_message(int(row.get("chat_id") or uid),int(row.get("gate_message_id")))
-    except Exception: pass
     action=str(row.get("action") or "")
     chat_id=int(row.get("chat_id") or uid)
     if action=="download":
         link=str(row.get("link") or "")
         def job():
             tok=_ACTIVE_BOT.set(mb); meta_doc=_managed_bot_doc(bid) or {}; meta=_ACTIVE_MANAGED_META.set({"bot_id":bid,"owner_id":str(meta_doc.get("owner_id") or ""),"username":str(meta_doc.get("username") or ""),"name":str(meta_doc.get("name") or "Downloader Bot"),"bot_type":str(meta_doc.get("bot_type") or "video")})
-            try:
-                download_media(chat_id,link,None,None)
+            try: download_media(chat_id,link,None,None)
             finally:
                 try: _ACTIVE_MANAGED_META.reset(meta)
                 except Exception: pass
@@ -12034,15 +12035,10 @@ def _managed_execute_ad_pending(token):
                 rows=_rapidapi_youtube_song_search(q,30) if RAPIDAPI_YT_KEY else _song_search_all(q,30)
                 rows=[x for x in rows if _parse_duration_value(x.get("duration"))>0][:30]
                 if not rows:
-                    mb.send_message(chat_id,"❌ No matching songs found. Try another title or artist.")
-                    return
-                token2=uuid.uuid4().hex[:12]
-                # Store into the same pending map used by the managed music handler.
-                pending=_MANAGED_MUSIC_PENDING.get(bid)
-                if pending is None:
-                    pending={}; _MANAGED_MUSIC_PENDING[bid]=pending
-                pending[token2]={"uid":uid,"rows":rows,"created":time.time()}
-                _managed_music_show(mb,chat_id,token2,0,pending)
+                    mb.send_message(chat_id,"❌ No matching songs found. Try another title or artist."); return
+                token2=uuid.uuid4().hex[:12]; pending=_MANAGED_MUSIC_PENDING.get(bid)
+                if pending is None: pending={}; _MANAGED_MUSIC_PENDING[bid]=pending
+                pending[token2]={"uid":uid,"rows":rows,"created":time.time()}; _managed_music_show(mb,chat_id,token2,0,pending)
             except Exception as e:
                 print("Managed gated music search error:",repr(e)); mb.send_message(chat_id,"❌ Music search failed. Please try again.")
         threading.Thread(target=music_job,daemon=True).start()
@@ -12090,47 +12086,165 @@ def _managed_invoice_url(bid, uid, months):
     except Exception as e:
         print("Managed invoice link error:",repr(e)); return ""
 
-class _ManagedAdGateHandler(BaseHTTPRequestHandler):
-    def _json(self,obj,status=200):
-        b=json.dumps(obj).encode(); self.send_response(status); self.send_header("Content-Type","application/json"); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(b)
-    def do_GET(self):
-        path=urllib.parse.urlparse(self.path).path
-        if path.startswith("/miniapp/"):
-            token=path[len("/miniapp/"):].strip()
-            with managed_ad_pending_lock: row=managed_ad_pending.get(token)
-            if not token or not row or float(row.get("expires",0) or 0)<time.time(): self.send_response(410); self.end_headers(); return
+def _validate_webapp_init_data(init_data, bot_token):
+    if not init_data or not bot_token: return None
+    try:
+        vals=urllib.parse.parse_qsl(init_data,keep_blank_values=True)
+        data=dict(vals); received=data.pop("hash",None)
+        if not received: return None
+        check="\n".join(f"{k}={v}" for k,v in sorted(data.items()))
+        secret=hmac.new(b"WebAppData",str(bot_token).encode(),hashlib.sha256).digest()
+        calc=hmac.new(secret,check.encode(),hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc,received): return None
+        auth=int(data.get("auth_date","0") or 0)
+        if auth and time.time()-auth>86400: return None
+        raw=data.get("user")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+def _managed_pending_get(token):
+    with managed_ad_pending_lock:
+        row=managed_ad_pending.get(str(token))
+        if row and float(row.get("expires",0) or 0)<time.time():
+            managed_ad_pending.pop(str(token),None); return None
+        return row
+
+def _managed_pending_verified_count(row):
+    return len(set(str(x) for x in (row or {}).get("verified_ymids",[]) if x))
+
+def _managed_postback_record(params):
+    token=""; ymid=str(params.get("ymid") or "").strip()
+    # ymid format: tma:<token>:<index>:<nonce>
+    if ymid.startswith("tma:"):
+        parts=ymid.split(":")
+        if len(parts)>=3: token=parts[1]
+    if not token: return False
+    event=str(params.get("event") or params.get("event_type") or "").strip().lower()
+    value=str(params.get("value") or params.get("reward_event_type") or "").strip().lower()
+    if event!="impression": return False
+    if value!="valued": return False
+    with managed_ad_pending_lock:
+        row=managed_ad_pending.get(token)
+        if not row or float(row.get("expires",0) or 0)<time.time(): return False
+        arr=list(row.get("verified_ymids") or [])
+        if ymid not in arr: arr.append(ymid)
+        row["verified_ymids"]=arr
+        row["verified_ads"]=_managed_pending_verified_count(row)
+        row["last_postback"]={"event":event,"value":value,"zone":params.get("zone") or params.get("zone_id"),"price":params.get("price") or params.get("estimated_price"),"time":time.time()}
+        return True
+
+def _managed_execute_verified_pending(token):
+    with managed_ad_pending_lock:
+        row=managed_ad_pending.get(str(token))
+        if not row: return False
+        if _managed_pending_verified_count(row) < int(row.get("ads_required",1) or 1): return False
+        row=dict(row); managed_ad_pending.pop(str(token),None)
+    bid=str(row.get("bot_id") or ""); uid=str(row.get("uid") or ""); mb=managed_bot_objects.get(bid) or _managed_bot_start_instance(_managed_bot_doc(bid) or {})
+    if not mb: return False
+    _managed_ad_mark_opened(bid,uid,token)
+    action=str(row.get("action") or ""); chat_id=int(row.get("chat_id") or uid)
+    if action=="download":
+        link=str(row.get("link") or "")
+        def job():
+            tok=_ACTIVE_BOT.set(mb); meta_doc=_managed_bot_doc(bid) or {}; meta=_ACTIVE_MANAGED_META.set({"bot_id":bid,"owner_id":str(meta_doc.get("owner_id") or ""),"username":str(meta_doc.get("username") or ""),"name":str(meta_doc.get("name") or "Downloader Bot"),"bot_type":str(meta_doc.get("bot_type") or "video")})
+            try: download_media(chat_id,link,None,None)
+            finally:
+                try: _ACTIVE_MANAGED_META.reset(meta)
+                except Exception: pass
+                try: _ACTIVE_BOT.reset(tok)
+                except Exception: pass
+        download_executor_for(uid).submit(job)
+    elif action=="music_search":
+        q=_music_clean_text(row.get("query") or "")
+        def music_job():
             try:
-                tpl=Path(__file__).with_name("miniapp.html").read_text()
-                body=tpl.replace("__MONETAG_SDK_URL__",_monetag_sdk_url()).replace("__MONETAG_ZONE_ID__",_monetag_zone_id()).replace("__TOKEN__",token).replace("__UID__",str(row.get("uid") or ""))
-            except Exception as e:
-                self.send_response(500); self.end_headers(); self.wfile.write(str(e).encode()); return
-            b=body.encode(); self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Cache-Control","no-store"); self.end_headers(); self.wfile.write(b); return
-        if path.startswith("/ad/reward/"):
-            token=path[len("/ad/reward/"):].strip(); ok=_managed_execute_ad_pending(token)
-            if ok: self._json({"ok":True}); return
-            self._json({"ok":False,"error":"Ad session expired or already used."},410); return
-        prefix="/ad/open/"
-        if not path.startswith(prefix): self.send_response(404); self.end_headers(); return
-        token=path[len(prefix):].strip(); ok=_managed_execute_ad_pending(token)
-        if ok:
-            target=_managed_ads_smartlink(); self.send_response(302); self.send_header("Location",target or "/"); self.end_headers(); return
-        self.send_response(410); self.end_headers()
-    def log_message(self,fmt,*args): return
+                rows=_rapidapi_youtube_song_search(q,30) if RAPIDAPI_YT_KEY else _song_search_all(q,30)
+                rows=[x for x in rows if _parse_duration_value(x.get("duration"))>0][:30]
+                if not rows: mb.send_message(chat_id,"❌ No matching songs found. Try another title or artist."); return
+                token2=uuid.uuid4().hex[:12]; pending=_MANAGED_MUSIC_PENDING.get(bid)
+                if pending is None: pending={}; _MANAGED_MUSIC_PENDING[bid]=pending
+                pending[token2]={"uid":uid,"rows":rows,"created":time.time()}; _managed_music_show(mb,chat_id,token2,0,pending)
+            except Exception as e: print("Managed verified music search error:",repr(e)); mb.send_message(chat_id,"❌ Music search failed. Please try again.")
+        threading.Thread(target=music_job,daemon=True).start()
+    return True
+
+class _ManagedAdGateHandler(BaseHTTPRequestHandler):
+    def _json(self, code, obj):
+        raw=json.dumps(obj,separators=(",",":"),ensure_ascii=False).encode("utf-8")
+        self.send_response(code); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw)
+    def _html(self, code, raw):
+        raw=raw.encode("utf-8") if isinstance(raw,str) else raw
+        self.send_response(code); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Content-Length",str(len(raw))); self.end_headers(); self.wfile.write(raw)
+    def do_GET(self):
+        parsed=urllib.parse.urlparse(self.path); path=parsed.path; qs=urllib.parse.parse_qs(parsed.query)
+        if path.startswith("/miniapp/"):
+            token=urllib.parse.unquote(path[len("/miniapp/"):].strip("/")); row=_managed_pending_get(token)
+            if not row: return self._html(410,"<h2>Ad session expired</h2><p>Return to Telegram and send the request again.</p>")
+            html_path=Path(__file__).resolve().parent/"miniapp"/"index.html"
+            try:
+                page=html_path.read_text(encoding="utf-8")
+                zone=_monetag_zone_id() or MONETAG_ZONE_ID
+                page=page.replace("11909176",zone).replace("show_11909176",f"show_{zone}")
+                return self._html(200,page)
+            except Exception as e: return self._html(500,f"<h2>Mini App unavailable</h2><p>{html.escape(str(e))}</p>")
+        if path=="/api/tma/status":
+            token=str((qs.get("token") or [""])[0]); row=_managed_pending_get(token)
+            if not row: return self._json(404,{"ok":False,"error":"expired"})
+            return self._json(405,{"ok":False,"error":"POST required"})
+        if path=="/postback":
+            ok=_managed_postback_record(qs)
+            return self._json(200,{"ok":bool(ok)})
+        if path=="/healthz": return self._json(200,{"ok":True,"service":"quickdl-tma"})
+        # Backward compatibility with the previous ad-open endpoint: do NOT
+        # auto-release downloads from a URL anymore; opening a URL alone is not
+        # proof of a rewarded ad.
+        if path.startswith("/ad/open/"):
+            return self._html(410,"<h2>Ad flow updated</h2><p>Please use the Watch ad button in Telegram.</p>")
+        return self._html(404,"Not found")
+    def do_POST(self):
+        parsed=urllib.parse.urlparse(self.path); path=parsed.path
+        try: length=int(self.headers.get("Content-Length","0") or 0); body=self.rfile.read(length) if length else b"{}"; data=json.loads(body.decode("utf-8") or "{}")
+        except Exception: return self._json(400,{"ok":False,"error":"invalid json"})
+        if path in {"/api/tma/session","/api/tma/status","/api/tma/ad-result","/api/tma/complete"}:
+            token=str(data.get("token") or "").strip(); init_data=str(data.get("initData") or "")
+            row=_managed_pending_get(token)
+            if not row: return self._json(404,{"ok":False,"error":"expired"})
+            bid=str(row.get("bot_id") or ""); uid=str(row.get("uid") or "")
+            doc=_managed_bot_doc(bid) or {}; bot_token=_decrypt_managed_token(doc)
+            tg_user=_validate_webapp_init_data(init_data,bot_token)
+            if not tg_user or str(tg_user.get("id"))!=uid: return self._json(403,{"ok":False,"error":"telegram user mismatch"})
+            if path=="/api/tma/session":
+                return self._json(200,{"ok":True,"user_id":int(uid),"ads_required":int(row.get("ads_required",1) or 1),"watch_seconds":int(row.get("watch_seconds",15) or 15),"verified_ads":_managed_pending_verified_count(row),"require_valued":_monetag_require_valued(),"zone_id":_monetag_zone_id()})
+            if path=="/api/tma/status":
+                return self._json(200,{"ok":True,"verified_ads":_managed_pending_verified_count(row),"required":int(row.get("ads_required",1) or 1),"completed":False})
+            if path=="/api/tma/ad-result":
+                # Frontend result is UI evidence only. Real verification comes from
+                # Monetag's server-side postback; ymid is stored for correlation.
+                ymid=str(data.get("ymid") or "").strip(); result=data.get("result") or {}
+                if ymid:
+                    row.setdefault("frontend_results",{})[ymid]={"result":result,"time":time.time()}
+                return self._json(200,{"ok":True,"verified_ads":_managed_pending_verified_count(row),"required":int(row.get("ads_required",1) or 1)})
+            # complete: only releases when all required Monetag impressions were
+            # confirmed as valued via postback.
+            count=_managed_pending_verified_count(row); required=int(row.get("ads_required",1) or 1)
+            if count < required:
+                return self._json(409,{"ok":False,"verified_ads":count,"required":required,"error":"waiting_for_monetag_confirmation"})
+            ok=_managed_execute_verified_pending(token)
+            return self._json(200 if ok else 409,{"ok":bool(ok),"verified_ads":count,"required":required})
+        return self._json(404,{"ok":False,"error":"not found"})
+    def log_message(self, fmt, *args): return
 
 def _start_managed_ad_http_server():
     global managed_ad_http_server
-    if managed_ad_http_server is not None:
-        return
+    if managed_ad_http_server is not None: return
     if not _managed_ad_base_url():
-        print("⚠️ Managed ad click tracking is disabled: set AD_GATE_BASE_URL to your public Railway URL.")
-        return
+        print("⚠️ Managed TMA disabled: set AD_GATE_BASE_URL or RAILWAY_PUBLIC_DOMAIN."); return
     try:
         managed_ad_http_server=ThreadingHTTPServer(("0.0.0.0",AD_GATE_PORT),_ManagedAdGateHandler)
-        threading.Thread(target=managed_ad_http_server.serve_forever,daemon=True,name="managed-ad-gate").start()
-        print(f"📢 Managed Ad gate listening on 0.0.0.0:{AD_GATE_PORT} -> {_managed_ad_base_url()}")
-    except Exception as e:
-        print("Managed ad HTTP server failed:",repr(e))
-
+        threading.Thread(target=managed_ad_http_server.serve_forever,daemon=True,name="managed-tma-server").start()
+        print(f"📢 Managed Monetag TMA listening on 0.0.0.0:{AD_GATE_PORT} -> {_managed_ad_base_url()}")
+    except Exception as e: print("Managed TMA HTTP server failed:",repr(e))
 
 def _managed_bot_remove_from_system(bot_id):
     bid=str(bot_id); doc=managed_bots_col.find_one({"bot_id":bid}) or {}
