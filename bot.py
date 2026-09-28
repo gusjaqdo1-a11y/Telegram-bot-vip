@@ -11652,15 +11652,30 @@ def localized_action_dispatch(m):
 
 # ================= ADMIN TEXT / TELEGRAM CUSTOM EMOJI =================
 def _message_entities_to_html(message):
-    text=str(getattr(message,"text",None) or getattr(message,"caption",None) or "")
-    entities=getattr(message,"entities",None) or getattr(message,"caption_entities",None) or []
+    """Convert Telegram text/caption entities to safe HTML.
+
+    This helper is used by the Creator Bot's raw Bot API polling loop, where
+    messages are plain dictionaries, as well as by pyTelegramBotAPI message
+    objects.  The old implementation only used getattr(), so a raw Telegram
+    dict produced an empty string.  That made every Creator admin keyboard
+    button arrive as an empty command and fall through to "Use the admin
+    buttons."  Support both representations and preserve custom emoji.
+    """
+    def val(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    text=str(val(message,"text",None) or val(message,"caption",None) or "")
+    entities=val(message,"entities",None) or val(message,"caption_entities",None) or []
     if not text: return ""
     raw=text.encode("utf-16-le")
     def s16(a,b): return raw[a*2:b*2].decode("utf-16-le",errors="ignore")
     spans=[]
     for e in entities:
-        if str(getattr(e,"type","") or "")!="custom_emoji": continue
-        off=int(getattr(e,"offset",0) or 0); ln=int(getattr(e,"length",0) or 0); cid=str(getattr(e,"custom_emoji_id","") or "")
+        etype=str(val(e,"type","") or "")
+        if etype!="custom_emoji": continue
+        off=int(val(e,"offset",0) or 0); ln=int(val(e,"length",0) or 0); cid=str(val(e,"custom_emoji_id","") or "")
         if cid and ln>0: spans.append((off,off+ln,cid,s16(off,off+ln)))
     if not spans: return html.escape(text)
     spans.sort(); out=[]; pos=0; total=len(raw)//2
@@ -11919,8 +11934,18 @@ def _creator_handle_text(uid, chat_id, text):
         return
     if text in ("🆘 Help","/help"):
         _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
-    if (text=="👑 ADMIN PANEL" or low in {"/admin","admin panel","admin"}) and _creator_admin(uid):
-        _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
+    # Creator admin controls always take priority over any stale input session.
+    # A previous caption/broadcast/name session must never swallow an admin
+    # keyboard button.
+    if _creator_admin(uid):
+        admin_text=re.sub(r"\s+"," ",text).strip()
+        if admin_text=="👑 ADMIN PANEL" or low in {"/admin","admin panel","admin"}:
+            _creator_clear_session(uid)
+            _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
+        if admin_text in _CREATOR_ADMIN_BUTTONS:
+            _creator_clear_session(uid)
+            _creator_admin_text(uid,chat_id,admin_text)
+            return
 
     sess=_creator_session(uid); state=sess.get("state")
     if state=="type":
@@ -12837,8 +12862,14 @@ def _creator_poll_loop():
                     if msg.get("text") is not None:
                         uid=str((msg.get("from") or {}).get("id") or ""); chat=msg.get("chat",{}).get("id")
                         if uid and chat:
+                            # Always pass the raw message text.  Entity conversion
+                            # is only for preserving custom emoji in admin input;
+                            # never let conversion of a raw Bot API dict turn a
+                            # normal keyboard button into an empty string.
                             sess=_creator_session(uid); st=str(sess.get("state") or "")
-                            _creator_handle_text(uid,chat,_message_entities_to_html(msg) if st.startswith("admin_") else msg.get("text"))
+                            raw_text=msg.get("text") or ""
+                            admin_text=_message_entities_to_html(msg) if st.startswith("admin_") else raw_text
+                            _creator_handle_text(uid,chat,admin_text or raw_text)
                 except Exception as e:
                     print("Creator update error:",repr(e))
         except Exception as e:
