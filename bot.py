@@ -12248,7 +12248,21 @@ def _managed_premium_callback(call):
             if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
             link=str(body.get("result") or "")
             if not link: raise RuntimeError("empty invoice link")
-            bot.send_message(call.message.chat.id,f"💎 <b>Premium — {months} Month(s)</b>\n\n⭐ Price: <b>{stars} Stars</b>\n\n🚫 No mandatory ads\n📦 Higher file-size access\n⚡ Priority processing\n🎵 Full music/MP3 downloads\n🛠️ Priority support\n\nPayment is securely processed by <b>@Downloadvedioytibot</b>.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]]),parse_mode="HTML")
+            premium_image=_creator_premium_image(months)
+            premium_caption=f"💎 <b>Premium — {months} Month(s)</b>
+
+⭐ Price: <b>{stars} Stars</b>
+
+🚫 No mandatory ads
+📦 Higher file-size access
+⚡ Priority processing
+🎵 Full music/MP3 downloads
+🛠️ Priority support
+
+Payment is securely processed by <b>@Downloadvedioytibot</b>."
+            premium_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]])
+            if premium_image: bot.send_photo(call.message.chat.id,premium_image,caption=premium_caption,reply_markup=premium_markup,parse_mode="HTML")
+            else: bot.send_message(call.message.chat.id,premium_caption,reply_markup=premium_markup,parse_mode="HTML")
             bot.answer_callback_query(call.id,'⭐ Invoice link ready')
         except Exception as e:
             bot.answer_callback_query(call.id,'Could not create Stars invoice.',show_alert=True); print('Managed Stars invoice error:',repr(e))
@@ -12264,7 +12278,22 @@ def _managed_premium_callback(call):
             return
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton(f"✅ Pay ${price:.2f}",callback_data=f"mprempay:{months}"),InlineKeyboardButton("❌ Cancel",callback_data="mpremcancel"))
         bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id,f"💎 <b>{months} Month Premium</b>\n\nPrice: {html.escape(money_text(uid,price))}\nShared balance: {html.escape(money_text(uid,balance_usd_value(uid)))}\n\nConfirm purchase?",reply_markup=kb); return
+        premium_image=_creator_premium_image(months)
+        premium_caption=f"💎 <b>{months} Month Premium</b>
+
+Price: {html.escape(money_text(uid,price))}
+Shared balance: {html.escape(money_text(uid,balance_usd_value(uid)))}
+
+🚫 No mandatory ads
+📦 Higher file-size access
+⚡ Priority processing
+🎵 Full music/MP3 downloads
+🛠️ Priority support
+
+Confirm purchase?"
+        if premium_image: bot.send_photo(call.message.chat.id,premium_image,caption=premium_caption,reply_markup=kb,parse_mode="HTML")
+        else: bot.send_message(call.message.chat.id,premium_caption,reply_markup=kb,parse_mode="HTML")
+        return
     if data.startswith('mprempay:'):
         months=data.split(':',1)[1]; price=get_premium_prices().get(months)
         if price is None: bot.answer_callback_query(call.id,'Invalid plan.',show_alert=True); return
