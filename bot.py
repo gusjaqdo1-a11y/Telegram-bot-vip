@@ -187,7 +187,7 @@ AD_REQUIRED_COUNT=max(1,int(os.getenv("AD_REQUIRED_COUNT","1")))
 AD_HTTP_HOST=os.getenv("AD_HTTP_HOST","0.0.0.0")
 AD_HTTP_PORT=int(os.getenv("PORT",os.getenv("AD_HTTP_PORT","8080")))
 
-MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "64"))
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "96"))
 
 # Fast Telegram broadcast controls. Telegram's free Bot API broadcast limit is
 # about 30 messages/sec; keep a small safety margin by default. If you explicitly
@@ -263,9 +263,9 @@ PREMIUM_YOUTUBE_MAX_MB_DEFAULT = int(os.getenv("PREMIUM_YOUTUBE_MAX_MB", "0"))  
 
 # Dual executors for Priority (Quick Access) & Normal
 
-PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("PREMIUM_CONCURRENT_DOWNLOADS", "96"))
+PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("PREMIUM_CONCURRENT_DOWNLOADS", "160"))
 FREE_CONCURRENT_DOWNLOADS = int(os.getenv("FREE_CONCURRENT_DOWNLOADS", str(min(32, MAX_CONCURRENT_DOWNLOADS))))
-QUICK_ACCESS_CONCURRENT_DOWNLOADS = int(os.getenv("QUICK_ACCESS_CONCURRENT_DOWNLOADS", "160"))
+QUICK_ACCESS_CONCURRENT_DOWNLOADS = int(os.getenv("QUICK_ACCESS_CONCURRENT_DOWNLOADS", "256"))
 vip_executor = ThreadPoolExecutor(max_workers=max(1, PREMIUM_CONCURRENT_DOWNLOADS))
 quick_executor = ThreadPoolExecutor(max_workers=max(1, QUICK_ACCESS_CONCURRENT_DOWNLOADS))
 normal_executor = ThreadPoolExecutor(max_workers=max(1, FREE_CONCURRENT_DOWNLOADS))
@@ -1416,7 +1416,7 @@ def _create_ad_premium_invoice(token,uid,bot_id,months):
     if months not in plans: raise ValueError("Invalid Premium plan")
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[months])*rate)))
     payload=f"ad_gate_premium:{token}:{_ad_bot_key(bot_id)}:{str(uid)}:{months}:{stars}"
-    body={"title":f"Premium {months} Month(s)","description":f"Premium/ad-free access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
+    body={"title":f"Premium {months} Month(s)","description":f"Premium/ad-free access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
     link=str(data.get("result") or "")
@@ -1512,7 +1512,7 @@ def _create_remove_ads_invoice(bot_id,uid,months,send_to_chat=None,send_func=Non
     payload=f"remove_ads:{bid}:{uid}:{months}:{stars}"
     d=managed_bots_col.find_one({"bot_id":bid}) if bid!="main" else None
     bot_name=("@"+str(d.get("username")).lstrip("@")) if d and d.get("username") else "@Downloadvedioytibot"
-    body={"title":f"Remove Ads {months} Months","description":f"Remove ads for {bot_name} for {months} months.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Remove Ads {months} Months","amount":int(stars)}]}
+    body={"title":f"Remove Ads {months} Months","description":f"Remove ads for {bot_name} for {months} months.","payload":payload,"currency":"XTR","prices":[{"label":f"Remove Ads {months} Months","amount":int(stars)}]}
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20)
     data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
@@ -1733,33 +1733,119 @@ class _AdGateHandler(BaseHTTPRequestHandler):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#000000">
-<title>QuickDL</title>
+<title>QuickDL — Watch Ad</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}"></script>
 <style>
 html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}
 body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}
-#status{{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);font-size:13px;opacity:.7;text-align:center;max-width:90vw}}
-#retry{{display:none;position:fixed;left:50%;bottom:50px;transform:translateX(-50%);border:0;border-radius:12px;padding:10px 16px;background:#2ea6ff;color:#fff;font-weight:700}}
+#status{{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);font-size:14px;line-height:1.35;opacity:.9;text-align:center;max-width:88vw}}
+#retry,#skip{{display:none;position:fixed;left:50%;transform:translateX(-50%);border:0;border-radius:14px;padding:12px 18px;font-weight:700;font-size:15px}}
+#retry{{bottom:66px;background:#2ea6ff;color:#fff}}
+#skip{{bottom:18px;background:#26313c;color:#fff}}
 </style>
 </head>
 <body>
-<div id="status"></div><button id="retry" type="button">Try again</button>
+<div id="status">Preparing your ad…</div>
+<button id="retry" type="button">Try again</button>
+<button id="skip" type="button">Skip ad</button>
 <script>
 (function(){{
   const token={json.dumps(token)};
   const validateUrl={json.dumps(f"/ad/validate/{token}")};
   const rewardUrl={json.dumps(f"/ad/reward/{token}")};
+  const skipUrl={json.dumps(f"/ad/skip/{token}")};
   const tg=window.Telegram&&window.Telegram.WebApp;
-  const status=document.getElementById("status"),retry=document.getElementById("retry");
+  const status=document.getElementById("status");
+  const retry=document.getElementById("retry");
+  const skip=document.getElementById("skip");
   let busy=false,completed=false;
+
   if(tg){{tg.ready();tg.expand();}}
-  function headers(){{return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};}}
-  async function validate(){{if(!tg||!tg.initData)throw new Error("Telegram identity unavailable");const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});if(!r.ok)throw new Error("Telegram user could not be verified");}}
-  async function reward(eventData){{if(completed)return;const h=headers();h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});const r=await fetch(rewardUrl,{{cache:"no-store",headers:h}});if(!r.ok)throw new Error("Reward confirmation failed");completed=true;try{{if(tg)tg.close();}}catch(e){{}}}}
-  async function sdk(){{const n="show_{MONETAG_REWARDED_ZONE_ID}";for(let i=0;i<120;i++){{if(typeof window[n]==="function")return window[n];await new Promise(r=>setTimeout(r,100));}}throw new Error("Monetag SDK did not load");}}
-  async function run(){{if(busy||completed)return;busy=true;retry.style.display="none";status.textContent="";try{{await validate();const show=await sdk();const ymid=token;try{{await show({{type:"preload",ymid:ymid,requestVar:"download_gate"}});}}catch(e){{console.debug("Monetag preload failed",e);}}const eventData=await show({{ymid:ymid,requestVar:"download_gate"}});await reward(eventData);}}catch(e){{console.error("Monetag Rewarded Interstitial failed",e);busy=false;status.textContent="Ad unavailable. Please try again.";retry.style.display="block";}}}}
-  retry.addEventListener("click",run);run();
+
+  function headers(){{
+    return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};
+  }}
+
+  async function validate(){{
+    if(!tg||!tg.initData) throw new Error("Telegram identity unavailable");
+    const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});
+    if(!r.ok) throw new Error("Telegram user could not be verified");
+  }}
+
+  async function reward(eventData){{
+    if(completed) return;
+    const h=headers();
+    h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});
+    const r=await fetch(rewardUrl,{{cache:"no-store",headers:h}});
+    if(!r.ok) throw new Error("Reward confirmation failed");
+    completed=true;
+    status.textContent="Ad completed. Returning to Telegram…";
+    try{{if(tg) tg.close();}}catch(e){{}}
+  }}
+
+  async function sdk(){{
+    const n="show_{MONETAG_REWARDED_ZONE_ID}";
+    for(let i=0;i<150;i++){{
+      if(typeof window[n]==="function") return window[n];
+      await new Promise(r=>setTimeout(r,100));
+    }}
+    throw new Error("Monetag SDK did not load");
+  }}
+
+  function showSkip(){{
+    skip.style.display="block";
+    skip.onclick=function(){{window.location.href=skipUrl;}};
+  }}
+
+  async function run(){{
+    if(busy||completed) return;
+    busy=true;
+    retry.style.display="none";
+    skip.style.display="none";
+    status.textContent="Loading ad…";
+    try{{
+      await validate();
+      const show=await sdk();
+      const ymid=token;
+
+      // Preload first for the fastest possible start.
+      try{{
+        await show({{type:"preload",ymid:ymid,requestVar:"download_gate",timeout:5,catchIfNoFeed:true}});
+      }}catch(e){{
+        // Continue to end() once; some SDK versions can recover during show.
+        console.debug("Monetag preload failed",e);
+      }}
+
+      status.textContent="Starting ad…";
+      const eventData=await show({{
+        type:"end",
+        ymid:ymid,
+        requestVar:"download_gate",
+        catchIfNoFeed:true
+      }});
+
+      // Monetag resolves with the confirmed event. Do not invent a reward when
+      // the SDK explicitly reports that no feed was available.
+      if(eventData && eventData.reward_event_type==="non_valued"){{
+        throw new Error("Ad completed without a valued event");
+      }}
+
+      await reward(eventData);
+    }}catch(e){{
+      console.error("Monetag Rewarded Interstitial failed",e);
+      busy=false;
+      status.textContent="Ad unavailable or not completed. You can retry or use Skip.";
+      retry.style.display="block";
+      showSkip();
+    }}
+  }}
+
+  retry.addEventListener("click",run);
+
+  // The Mini App is a per-request URL. Start the ad as soon as Telegram has
+  // supplied initData and the Monetag SDK has loaded.
+  run();
 }})();
 </script>
 </body>
@@ -1776,6 +1862,21 @@ body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-conte
             else:
                 self._send(409,"not ready","text/plain; charset=utf-8")
             return
+
+        if path=="/ad/postback":
+            q=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            ymid=str((q.get("ymid") or [""])[0] or "")
+            value=str((q.get("value") or q.get("reward_event_type") or [""])[0] or "")
+            if ymid:
+                try:
+                    ad_gates_col.update_one({"token":ymid},{"$set":{
+                        "monetag_last_postback_at":datetime.now(timezone.utc),
+                        "monetag_reward_event_type":value,
+                        "monetag_estimated_price":str((q.get("price") or q.get("estimated_price") or [""])[0] or ""),
+                    }})
+                except Exception as e:
+                    print("Monetag postback store failed:",repr(e))
+            self._send(200,"ok","text/plain; charset=utf-8"); return
 
         m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
         if m:
@@ -4757,10 +4858,12 @@ def download_media(chat_id, link, message_id, quality=None):
             try:
                 _safe_send_file(chat_id,path,_active_managed_caption() if _ACTIVE_MANAGED_META.get() else DOWNLOAD_CAPTION,reply_markup=markup,platform=platform,link=link); sent+=1
                 if _is_video_file(path):
-                    powered=_active_powered_text()
-                    if powered:
-                        try: _current_bot().send_message(chat_id,powered)
-                        except Exception as e: print("Managed powered-by send failed:",repr(e))
+                    # Powered-by is strictly for managed/small bots.
+                    if _ACTIVE_MANAGED_META.get():
+                        powered=_active_powered_text()
+                        if powered:
+                            try: _current_bot().send_message(chat_id,powered)
+                            except Exception as e: print("Managed powered-by send failed:",repr(e))
             finally:
                 upload_stop.set()
             # Never fall back to a visible typing/preparing action between files.
@@ -6023,7 +6126,12 @@ def _download_main_song_fast(chat_id, status_id, song, uid):
                 rapid=_rapidapi_youtube_details(vid)
                 formats=_rapid_formats(rapid) if rapid else []
                 audios=[z for z in formats if z.get("audio") and not z.get("video")]
-                source_url=audios[0].get("url") if audios else None
+                videos=[z for z in formats if z.get("video")]
+                # Some RapidAPI responses expose only a muxed video stream.
+                # That is still a valid source for Search Song: download it and
+                # extract the audio locally instead of falling straight to a slower
+                # yt-dlp retry.
+                source_url=(audios[0].get("url") if audios else (videos[0].get("url") if videos else None))
                 if source_url:
                     raw=os.path.join(tmp,"source_audio")
                     _rapid_download_file(source_url,raw,max_bytes=0)
@@ -6033,8 +6141,8 @@ def _download_main_song_fast(chat_id, status_id, song, uid):
         if not made:
             opts={"quiet":True,"no_warnings":True,"noplaylist":True,"format":"bestaudio/best","outtmpl":os.path.join(tmp,"%(id)s.%(ext)s"),
                   "postprocessors":[{"key":"FFmpegExtractAudio","preferredcodec":"mp3","preferredquality":"192"}],
-                  "prefer_ffmpeg":True,"overwrites":True,"retries":5,"fragment_retries":5,"extractor_retries":3,
-                  "socket_timeout":30,"concurrent_fragment_downloads":16,"http_chunk_size":8*1024*1024,"cachedir":False,
+                  "prefer_ffmpeg":True,"overwrites":True,"retries":6,"fragment_retries":6,"extractor_retries":4,
+                  "socket_timeout":30,"concurrent_fragment_downloads":32,"http_chunk_size":16*1024*1024,"cachedir":False,
                   "http_headers":{"User-Agent":"Mozilla/5.0 Chrome/131 Safari/537.36"},**_ytdlp_cookie_args()}
             extra=_youtube_extractor_args()
             if extra: opts["extractor_args"]=extra
@@ -6091,12 +6199,10 @@ def song_pick_callback(call):
         return
     if not x.get("download_allowed") or not x.get("download"):
         bot.answer_callback_query(call.id,"❌ Full download is not allowed for this track.",show_alert=True); return
-    if str(x.get("source")) == "youtube":
-        song_uid=str(call.from_user.id); song_url=str(x.get("download") or "")
-        song_priority=is_admin(song_uid) or is_quick_access(song_uid) or is_premium(song_uid) or _is_trial_active(song_uid)
-        if premium_required_for_platform("youtube",song_uid,song_url) and not song_priority and not users.get(song_uid,{}).get("youtube_30m",False):
-            bot.answer_callback_query(call.id,"💎 Premium/Trial is required for full YouTube songs.",show_alert=True)
-            return
+    # Search Song is a music feature, not a YouTube-video duration gate.
+    # The normal ad gate still applies to the song download when the user's
+    # cooldown has expired. This prevents a free YouTube duration setting from
+    # incorrectly blocking otherwise valid song results.
     if not _ad_enabled_for(str(call.from_user.id),"main"):
         if _send_ad_gate(bot,str(call.from_user.id),call.message.chat.id,"main","song_download",{"song":x},premium_url="https://t.me/Downloadvedioytibot"):
             bot.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
