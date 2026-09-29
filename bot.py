@@ -12321,7 +12321,7 @@ _CREATOR_ADMIN_BUTTONS = {
     "📤 Send To Create Bot", "🤖 See All Bots", "📊 Bot Stats", "🧹 Clear crash bots",
     "📢 Broadcast All Bot Users", "📢 Broadcast All Bots",
     "👑 Broadcast Bot Admins", "👤 Broadcast Bot Non-Admins",
-    "🏆 Top Songs", "🏆 Top Song Searchers", "📢 Broadcast Creator Users",
+    "🏆 Top Songs", "🏆 Top Song Searchers", "📢 Broadcast Creator Users", "🖼️ Premium Images",
     "💎 Premium Prices", "🚫 Remove Ads Prices", "♻️ Reset Ads",
     "🔢 Ads Per User", "⏱️ Ad Seconds", "📊 Ad Settings",
     "🟢 OPEN MANAGED ADS", "🔴 CLOSE MANAGED ADS",
