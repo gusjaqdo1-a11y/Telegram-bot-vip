@@ -11969,40 +11969,10 @@ def _creator_handle_text(uid, chat_id, text):
         return
     if state=="type":
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
-    if state=="name":
-        if not 1<=len(text)<=64:
-            _creator_send(chat_id,"❌ Name must be 1–64 characters. Send it again."); return
-        _creator_set_session(uid,{"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,"<b>Step 2 of 3</b>\n\nSend your bot username. It must end with <code>bot</code>.\n\nExample: <code>my_downloader_bot</code>"); return
-    if state=="username":
-        username=text.lstrip("@").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",username,re.I):
-            _creator_send(chat_id,"❌ Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
-        # Store the requested values. Telegram itself performs the final username check.
-        _creator_set_session(uid,{**sess,"state":"ready","username":username,"updated_at":datetime.now(timezone.utc)})
-        _creator_finish_request(uid,chat_id); return
-    if state=="token":
-        token=text.strip()
-        if not re.fullmatch(r"\d{5,12}:[A-Za-z0-9_-]{20,}",token):
-            _creator_send(chat_id,"❌ That does not look like a valid Telegram bot token. Send the token again."); return
-        try:
-            rr=requests.get(f"https://api.telegram.org/bot{token}/getMe",timeout=15)
-            body=rr.json() if rr.content else {}
-        except Exception as e:
-            _creator_send(chat_id,"❌ Could not validate that token right now. Try again."); print("Existing bot token validation error:",repr(e)); return
-        if not body.get("ok") or not (body.get("result") or {}).get("is_bot"):
-            _creator_send(chat_id,"❌ Token is invalid or the bot is unavailable. Send a valid BotFather token."); return
-        info=body.get("result") or {}; username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot")
-        if not username:
-            _creator_send(chat_id,"❌ Telegram did not return a bot username for this token."); return
-        if username.lower()==str(CREATOR_BOT_USERNAME or "").lower():
-            _creator_send(chat_id,"❌ The Creator Bot token cannot be added as a managed downloader bot."); return
-        _creator_set_session(uid,{**sess,"state":"token_type","token_enc":_encrypt_managed_token(token),"username":username,"name":name,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"✅ <b>Token verified</b>\n\n🤖 @{html.escape(username)}\n📝 {html.escape(name)}\n\nChoose the bot type:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"tokentype:video"}],[{"text":"🎵 Music Downloader","callback_data":"tokentype:music"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}); return
-    if state=="token_type":
-        _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
-    if state=="ready":
-        _creator_finish_request(uid,chat_id); return
+    if state in {"name","username","ready"}:
+        _creator_clear_session(uid)
+        _creator_start_create(uid,chat_id)
+        return
     if state=="waiting_managed_bot":
         _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
 
@@ -12348,6 +12318,23 @@ def _creator_on_managed_bot_created(msg):
 
     token,err=_creator_fetch_managed_token(bot_id,attempts=8)
     if err or not token:
+        # Persist the managed bot immediately if Telegram's token handoff is late.
+        # The health worker will fetch the token automatically; the user never
+        # needs to paste a token.
+        managed_bots_col.update_one(
+            {"bot_id":str(bot_id)},
+            {"$set":{
+                "bot_id":str(bot_id),"owner_id":uid,"token_enc":"",
+                "username":username,"name":name,"bot_type":bot_type,
+                "active":True,"suspended":False,"source":"managed","managed":True,
+                "premium_until":None,"wallet_linked":False,
+                "updated_at":datetime.now(timezone.utc),
+                "token_sync_error":str(err or "token unavailable")[:500],
+                "last_token_sync_attempt":datetime.now(timezone.utc),
+                "users":[]
+            }},
+            upsert=True
+        )
         _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_id":str(bot_id),
                                   "token_sync_error":str(err or "token unavailable")[:500],
                                   "last_token_sync_attempt":datetime.now(timezone.utc)})
@@ -12515,7 +12502,7 @@ def _managed_bot_token_health_worker():
                     "user not found","bot not found","managed bot not found",
                     "chat not found","bad request: user not found"
                 ))
-                if definitive_missing and failures[bid] >= 2:
+                if definitive_missing and failures[bid] >= 3:
                     _managed_bot_mark_removed(d,err_text)
                     failures.pop(bid,None)
         except Exception as e:
