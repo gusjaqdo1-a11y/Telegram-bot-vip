@@ -173,14 +173,14 @@ SAVEAPI_URL = (os.getenv("SAVEAPI_URL") or os.getenv("SAVE_API_URL") or "https:/
 SAVEAPI_TIMEOUT = int(os.getenv("SAVEAPI_TIMEOUT", "45"))
 
 # AD gate configuration
-AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").strip().rstrip("/")
+AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").strip().rstrip("/") or "https://go.quickdl.site"
 # Monetag Rewarded Interstitial. Override MONETAG_ZONE_ID in Railway if you create a new zone.
 MONETAG_SITE_ID=str(os.getenv("MONETAG_SITE_ID","")).strip()
 # IMPORTANT: this must be the MAIN Monetag SDK zone ID shown in the
 # Rewarded Interstitial integration code. Do not use a sub-zone ID here.
 MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_ZONE_ID") or os.getenv("MONETAG_REWARDED_ZONE_ID") or "").strip()
 MONETAG_SDK_URL=os.getenv("MONETAG_SDK_URL","//libtl.com/sdk.js").strip()
-AD_SMARTLINK_URL=os.getenv("AD_SMARTLINK_URL","https://omg10.com/4/11909123").strip()
+AD_SMARTLINK_URL=os.getenv("MONETAG_DIRECT_LINK",os.getenv("AD_SMARTLINK_URL","https://omg10.com/4/11909123")).strip()
 AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
 AD_GATE_SECONDS=max(0,int(os.getenv("AD_GATE_SECONDS","0")))
 AD_REQUIRED_COUNT=max(1,int(os.getenv("AD_REQUIRED_COUNT","1")))
@@ -1479,7 +1479,7 @@ def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
             ad_gates_col.update_one({"_id":existing.get("_id")},{"$set":{"status":"replaced","replaced_at":now}})
         except Exception: pass
     token=secrets.token_urlsafe(24).replace("-","").replace("_","")[:40]
-    ad_gates_col.insert_one({"token":token,"user_id":uid,"chat_id":int(chat_id),"bot_id":bid,"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","ad_views":0,"required_ads":_ad_required_count(),"gate_seconds":_ad_gate_seconds(),"created_at":now})
+    ad_gates_col.insert_one({"token":token,"user_id":uid,"chat_id":int(chat_id),"bot_id":bid,"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","ad_views":0,"required_ads":_ad_required_count(),"gate_seconds":0,"telegram_user_verified":False,"created_at":now})
     try:
         msg=bot_obj.send_message(chat_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token,premium_url))
         ad_gates_col.update_one({"token":token},{"$set":{"message_id":int(msg.message_id)}})
@@ -1680,42 +1680,103 @@ def _validate_webapp_init_data(init_data):
         print("Mini App initData validation failed:",repr(e)); return False, None
 
 class _AdGateHandler(BaseHTTPRequestHandler):
-    def log_message(self,fmt,*args): return
+    def log_message(self,fmt,*args):
+        return
+
     def _send(self,code,body,ctype="text/html; charset=utf-8"):
         if isinstance(body,str): body=body.encode()
-        self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_response(code)
+        self.send_header("Content-Type",ctype)
+        self.send_header("Cache-Control","no-store, no-cache, must-revalidate")
+        self.send_header("Pragma","no-cache")
+        self.send_header("Content-Length",str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _web_user_for_token(self, token):
+        init_data=self.headers.get("X-Telegram-Init-Data","")
+        valid,web_uid=_validate_webapp_init_data(init_data)
+        if not valid: return None,None
+        row=ad_gates_col.find_one({"token":str(token)})
+        if not row or str(row.get("user_id"))!=str(web_uid): return None,row
+        return str(web_uid),row
+
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
-        if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
+        if path in {"/","/health"}:
+            self._send(200,b"ok","text/plain; charset=utf-8"); return
+
+        m=re.fullmatch(r"/ad/validate/([A-Za-z0-9]{16,64})",path)
+        if m:
+            token=m.group(1); uid,row=self._web_user_for_token(token)
+            if not uid or not row or str(row.get("status")) not in {"pending","opened"}:
+                self._send(403,"forbidden","text/plain; charset=utf-8"); return
+            if str(row.get("status"))=="pending":
+                ad_gates_col.update_one({"_id":row["_id"],"status":"pending"},{"$set":{
+                    "status":"opened","opened_at":datetime.now(timezone.utc),"telegram_user_verified":True
+                }})
+            self._send(200,"ok","text/plain; charset=utf-8"); return
+
         m=re.fullmatch(r"/ad/(?:open|app)/([A-Za-z0-9]{16,64})",path)
         if m:
-            token=m.group(1); row=ad_gates_col.find_one({"token":token,"status":{"$in":["pending","opened"]}})
-            if not row: self._send(410,"Ad session expired or already used."); return
-            if row.get("status")=="pending":
-                ad_gates_col.update_one({"_id":row["_id"],"status":"pending"},{"$set":{"status":"opened","opened_at":datetime.now(timezone.utc)}})
+            token=m.group(1)
+            row=ad_gates_col.find_one({"token":token,"status":{"$in":["pending","opened"]}})
+            if not row:
+                self._send(410,"Ad session expired or already used."); return
+            if not MONETAG_REWARDED_ZONE_ID:
+                self._send(503,"Monetag is not configured. Set MONETAG_ZONE_ID to the MAIN Rewarded Interstitial SDK zone ID."); return
             zone=html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)
             sdk=html.escape(MONETAG_SDK_URL,quote=True)
-            reward=f"/ad/reward/{token}"
-            if not MONETAG_REWARDED_ZONE_ID:
-                self._send(503,"Monetag is not configured. Set MONETAG_ZONE_ID to the MAIN Rewarded Interstitial SDK zone ID.")
-                return
-            body=f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b1220"><title>QuickDL Reward</title><script src="https://telegram.org/js/telegram-web-app.js"></script><script src="https://libtl.com/sdk.js" data-zone="{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}" data-sdk="show_{html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)}"></script><style>body{{margin:0;background:#0b1220;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}.box{{width:min(92vw,460px);padding:28px;border-radius:22px;background:#111b2e;text-align:center;box-sizing:border-box}}.timer{{font-size:42px;font-weight:800;margin:18px 0}}.small{{opacity:.78;font-size:14px;line-height:1.45}}.ok{{color:#79ff9a;font-weight:700}}.err{{color:#ff9b9b;font-weight:700}}button{{border:0;border-radius:14px;padding:14px 22px;font-size:17px;font-weight:700}}</style></head><body><div class="box"><h2>🎁 Continue Download</h2><div id="status">Preparing rewarded ad…</div><div id="timer" class="timer">5</div><div class="small">The rewarded ad opens immediately. Complete the rewarded ad to continue.</div><div id="retry" style="display:none;margin-top:16px"><button onclick="runAd()">▶️ Show Ad Again</button></div></div><script>const token={json.dumps(token)};const rewardUrl={json.dumps(reward)};const tg=window.Telegram&&window.Telegram.WebApp;if(tg){{tg.ready();tg.expand();}}let rewarded=false;const timer=document.getElementById('timer'),status=document.getElementById('status'),retry=document.getElementById('retry');function reward(){{if(rewarded)return;rewarded=true;status.innerHTML='<span class="ok">✅ Ad completed. Continuing…</span>';timer.textContent='✓';fetch(rewardUrl,{{method:'GET',cache:'no-store',credentials:'same-origin',headers:{{'X-Telegram-Init-Data':(tg&&tg.initData)||''}}}}).then(r=>r.text()).then(v=>{{if(String(v).trim()==='more'){{rewarded=false;status.textContent='Opening next rewarded ad…';timer.textContent='▶';setTimeout(runAd,50);return;}}setTimeout(()=>{{try{{if(tg)tg.close();}}catch(e){{}}}},150);}}).catch(()=>{{rewarded=false;failed();}});}}function failed(){{status.innerHTML='<span class="err">The ad could not be displayed. Please try again.</span>';timer.textContent='×';retry.style.display='block';}}async function waitForSdk(){{const fn='show_{MONETAG_REWARDED_ZONE_ID}';for(let i=0;i<80;i++){{if(typeof window[fn]==='function')return window[fn];await new Promise(r=>setTimeout(r,100));}}throw new Error('Monetag SDK did not load');}}async function runAd(){{if(rewarded)return;retry.style.display='none';status.textContent='Opening rewarded ad…';try{{const fn=await waitForSdk();await fn({{type:'preload',ymid:token}});await fn({{ymid:token}});reward();}}catch(e){{console.error('Monetag rewarded interstitial failed',e);failed();}}}}if({int(_ad_gate_seconds())}<=0){{runAd();}}else{{let left={int(_ad_gate_seconds())};timer.textContent=left;const ct=setInterval(()=>{{left--;timer.textContent=Math.max(0,left);if(left<=0){{clearInterval(ct);runAd();}}}},1000);}}</script></body></html>'''
+            body=f'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>QuickDL</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}"></script>
+<style>
+html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}
+body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}
+#status{{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);font-size:13px;opacity:.7;text-align:center;max-width:90vw}}
+#retry{{display:none;position:fixed;left:50%;bottom:50px;transform:translateX(-50%);border:0;border-radius:12px;padding:10px 16px;background:#2ea6ff;color:#fff;font-weight:700}}
+</style>
+</head>
+<body>
+<div id="status"></div><button id="retry" type="button">Try again</button>
+<script>
+(function(){{
+  const token={json.dumps(token)};
+  const validateUrl={json.dumps(f"/ad/validate/{token}")};
+  const rewardUrl={json.dumps(f"/ad/reward/{token}")};
+  const tg=window.Telegram&&window.Telegram.WebApp;
+  const status=document.getElementById("status"),retry=document.getElementById("retry");
+  let busy=false,completed=false;
+  if(tg){{tg.ready();tg.expand();}}
+  function headers(){{return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};}}
+  async function validate(){{if(!tg||!tg.initData)throw new Error("Telegram identity unavailable");const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});if(!r.ok)throw new Error("Telegram user could not be verified");}}
+  async function reward(eventData){{if(completed)return;const h=headers();h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});const r=await fetch(rewardUrl,{{cache:"no-store",headers:h}});if(!r.ok)throw new Error("Reward confirmation failed");completed=true;try{{if(tg)tg.close();}}catch(e){{}}}}
+  async function sdk(){{const n="show_{MONETAG_REWARDED_ZONE_ID}";for(let i=0;i<120;i++){{if(typeof window[n]==="function")return window[n];await new Promise(r=>setTimeout(r,100));}}throw new Error("Monetag SDK did not load");}}
+  async function run(){{if(busy||completed)return;busy=true;retry.style.display="none";status.textContent="";try{{await validate();const show=await sdk();const ymid=token;try{{await show({{type:"preload",ymid:ymid,requestVar:"download_gate"}});}}catch(e){{console.debug("Monetag preload failed",e);}}const eventData=await show({{ymid:ymid,requestVar:"download_gate"}});await reward(eventData);}}catch(e){{console.error("Monetag Rewarded Interstitial failed",e);busy=false;status.textContent="Ad unavailable. Please try again.";retry.style.display="block";}}}}
+  retry.addEventListener("click",run);run();
+}})();
+</script>
+</body>
+</html>'''
             self._send(200,body); return
+
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
-            init_data=self.headers.get("X-Telegram-Init-Data","")
-            valid, web_uid=_validate_webapp_init_data(init_data)
-            row=ad_gates_col.find_one({"token":m.group(1)})
-            if not valid or not row or str(row.get("user_id"))!=str(web_uid):
+            token=m.group(1); uid,row=self._web_user_for_token(token)
+            if not uid or not row or str(row.get("status")) not in {"opened","pending"}:
                 self._send(403,"forbidden","text/plain; charset=utf-8"); return
-            if _complete_ad_gate(m.group(1),source="reward"):
-                current=ad_gates_col.find_one({"token":m.group(1)}) or {}
-                self._send(200,"more" if str(current.get("status"))!="completed" else "ok","text/plain; charset=utf-8")
-            else: self._send(409,"not ready","text/plain; charset=utf-8")
+            if _complete_ad_gate(token,source="rewarded_interstitial"):
+                self._send(200,"ok","text/plain; charset=utf-8")
+            else:
+                self._send(409,"not ready","text/plain; charset=utf-8")
             return
-        m=re.fullmatch(r"/ad/complete/([A-Za-z0-9]{16,64})",path)
-        if m:
-            _complete_ad_gate(m.group(1),source="reward"); self._send(200,"ok","text/plain; charset=utf-8"); return
+
         m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
         if m:
             token=m.group(1)
@@ -1726,11 +1787,12 @@ class _AdGateHandler(BaseHTTPRequestHandler):
                     target=smart+sep+"subid="+urllib.parse.quote(token)
                     self.send_response(302); self.send_header("Location",target); self.send_header("Cache-Control","no-store"); self.end_headers()
                 else:
-                    self._send(503,"SmartLink is not configured.")
-            else: self._send(410,"Skip link expired or already used.")
+                    self._send(503,"Monetag Direct Link is not configured.")
+            else:
+                self._send(410,"Skip link expired or already used.")
             return
-        self._send(404,"Not found")
 
+        self._send(404,"Not found")
 
 def _start_ad_http_server():
     try:
@@ -11769,6 +11831,7 @@ def _creator_keyboard(uid):
     if _creation_open(): rows.append([{"text":"🤖 Create My Bot"}])
     rows += [
         [{"text":"🤖 My Bots"}],
+        [{"text":"🗑 Delete Bot"}],
         [{"text":"💎 Premium"},{"text":"💰 Balance"}],
         [{"text":"🆘 Help"}],
     ]
@@ -11787,6 +11850,7 @@ def _creator_admin_keyboard():
         [{"text":"✏️ Set Create Caption"}],
         [{"text":"📤 Send To Create Bot"}],
         [{"text":"🤖 See All Bots"},{"text":"📊 Bot Stats"}],
+        [{"text":"🧹 Clear crash bots"}],
         [{"text":"📢 Broadcast All Bot Users"}],
         [{"text":"👑 Broadcast Bot Admins"}],
         [{"text":"👤 Broadcast Bot Non-Admins"}],
@@ -12203,7 +12267,7 @@ _CREATOR_ADMIN_BUTTONS = {
     "🟢 Open Creation", "🔴 Close Creation",
     "🟢 Open Verify Create Bot", "🔴 Close Verify Create Bot",
     "🟢 Open Create Caption", "🔴 Close Create Caption", "✏️ Set Create Caption",
-    "📤 Send To Create Bot", "🤖 See All Bots", "📊 Bot Stats",
+    "📤 Send To Create Bot", "🤖 See All Bots", "📊 Bot Stats", "🧹 Clear crash bots",
     "📢 Broadcast All Bot Users", "📢 Broadcast All Bots",
     "👑 Broadcast Bot Admins", "👤 Broadcast Bot Non-Admins",
     "🏆 Top Songs", "🏆 Top Song Searchers", "📢 Broadcast Creator Users",
@@ -12234,6 +12298,8 @@ def _creator_admin_text(uid, chat_id, text):
         _creator_set_session(uid,{"state":"admin_send_create"}); _creator_send(chat_id,"📤 Send the announcement text. It will be sent to all known users with a <b>Create Now</b> button."); return
     if text=="🤖 See All Bots":
         _creator_admin_bots(chat_id); return
+    if text=="🧹 Clear crash bots":
+        _creator_clear_crash_bots(chat_id); return
     if text=="📊 Bot Stats":
         total=managed_bots_col.count_documents({}); active=managed_bots_col.count_documents({"active":True,"suspended":{"$ne":True}}); owners=len(managed_bots_col.distinct("owner_id")); users_count=sum(len(d.get("users") or []) for d in managed_bots_col.find({}, {"users":1}))
         _creator_send(chat_id,f"📊 <b>CREATOR BOT STATS</b>\n\n🤖 Bots: <b>{total}</b>\n🟢 Active: <b>{active}</b>\n👤 Owners: <b>{owners}</b>\n👥 Bot users recorded: <b>{users_count}</b>\n\nCreation: {'OPEN' if _creation_open() else 'CLOSED'}\nVerify: {'ON' if _creation_verify_required() else 'OFF'}\nCaption: {'ON' if _create_caption_open() else 'OFF'}",reply_markup=_creator_admin_keyboard()); return
@@ -12305,6 +12371,44 @@ def _creator_admin_text(uid, chat_id, text):
     if state=="admin_broadcast_creator":
         _creator_broadcast_creator_users(text); _creator_clear_session(uid); _creator_send(chat_id,"✅ Creator-user broadcast completed.",reply_markup=_creator_admin_keyboard()); return
     _creator_send(chat_id,"Use the admin buttons.",reply_markup=_creator_admin_keyboard())
+
+
+def _creator_clear_crash_bots(chat_id):
+    """Remove managed-bot records that are genuinely unavailable/crashed."""
+    removed=[]; kept=0; checked=0
+    for d in list(managed_bots_col.find({})):
+        bid=str(d.get("bot_id") or "")
+        if not bid: continue
+        checked += 1
+        token=_decrypt_managed_token(d)
+        bad=False; reason=""
+        if not token:
+            bad=True; reason="missing/decryptable token"
+        else:
+            try:
+                rr=requests.get(f"https://api.telegram.org/bot{token}/getMe",timeout=7)
+                body=rr.json() if rr.content else {}
+                if not body.get("ok"):
+                    bad=True; reason=str(body.get("description") or "Telegram rejected token")
+            except Exception:
+                kept += 1
+                continue
+        if bad:
+            _managed_bot_remove_from_system(bid)
+            removed.append(f"@{str(d.get('username') or bid).lstrip('@')} — {reason}")
+            continue
+        if d.get("active") is False or d.get("suspended") is True or d.get("error"):
+            try:
+                managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":True,"suspended":False,"error":None,"updated_at":datetime.now(timezone.utc)}})
+                fresh=managed_bots_col.find_one({"bot_id":bid})
+                if fresh: _managed_bot_start_instance(fresh)
+            except Exception as e:
+                print("Crash bot repair failed:",repr(e))
+        kept += 1
+    text="🧹 <b>CRASH / UNAVAILABLE BOTS CLEARED</b>\n\n"
+    text += f"🔎 Checked: <b>{checked}</b>\n🗑 Removed: <b>{len(removed)}</b>\n🟢 Kept: <b>{kept}</b>"
+    if removed: text += "\n\n" + "\n".join(f"• {html.escape(x)}" for x in removed[:50])
+    _creator_send(chat_id,text,reply_markup=_creator_admin_keyboard())
 
 
 def _creator_admin_bots(chat_id):
@@ -12486,7 +12590,7 @@ def _creator_sync_managed_token(bot_id, token, info=None, owner_id=None, notify=
     return mb
 
 
-def _creator_on_managed_update(update):
+def _creator_on_managed_update(update, suppress_notify=False):
     obj=(update.get("managed_bot") or {})
     info=obj.get("bot") or {}; owner=(obj.get("user") or {})
     bot_id=info.get("id"); owner_id=owner.get("id")
@@ -12494,7 +12598,7 @@ def _creator_on_managed_update(update):
     bid=str(bot_id); d=managed_bots_col.find_one({"bot_id":bid}) or {}
     token,err=_creator_fetch_managed_token(bot_id,attempts=5)
     if token:
-        _creator_sync_managed_token(bot_id,token,info=info,owner_id=owner_id,notify=True)
+        _creator_sync_managed_token(bot_id,token,info=info,owner_id=owner_id,notify=not suppress_notify)
         return
     # A ManagedBotUpdated event is also used for ownership changes. Never delete
     # the local bot just because the new token is briefly unavailable. The health
@@ -12646,8 +12750,31 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
+        uname=html.escape(str(d.get("username") or "unknown").lstrip("@"))
+        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
+        _creator_edit(chat_id,mid,
+            f"⚠️ <b>Confirm Bot Removal</b>\n\n🤖 <b>@{uname}</b>\n{typ}\n\n"
+            "This removes the bot from this system and stops its worker. The Telegram bot account itself is not deleted.",
+            reply_markup={"inline_keyboard":[
+                [{"text":"✅ Confirm Delete","callback_data":f"cbotdelconfirm:{bid}"}],
+                [{"text":"❌ Cancel","callback_data":f"cbotdelcancel:{bid}"}]
+            ]})
+        return
+    if data.startswith("cbotdelconfirm:"):
+        bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
+        if not d or str(d.get("owner_id"))!=uid:
+            _creator_answer(call.get("id"),"Not your bot.",True); return
         _managed_bot_remove_from_system(bid)
-        _creator_send(chat_id,"🗑 <b>Bot deleted from this system.</b>\n\nIts polling worker, database record and local management entry have been removed. Telegram itself does not provide a Bot API method for deleting the bot account permanently.",reply_markup=_creator_keyboard(uid)); return
+        _creator_answer(call.get("id"),"Bot removed")
+        _creator_edit(chat_id,mid,"🗑 <b>Bot removed</b>\n\nThe bot has been removed from your Creator system and its worker has been stopped.",reply_markup={"inline_keyboard":[[{"text":"🤖 My Bots","callback_data":"cmybots"}],[{"text":"🗑 Delete Another Bot","callback_data":"cdelete"}]]})
+        return
+    if data.startswith("cbotdelcancel:"):
+        _creator_answer(call.get("id"),"Cancelled")
+        _creator_my_bots_edit(uid,chat_id,mid)
+        return
+    if data=="cdelete":
+        _creator_delete_menu(uid,chat_id)
+        return
     if data.startswith("cpickbot:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid: _creator_answer(call.get("id"),"Not your bot.",True); return
@@ -13148,9 +13275,9 @@ def _creator_poll_loop():
             for upd in updates or []:
                 offset=int(upd.get("update_id",offset))+1
                 try:
-                    if upd.get("managed_bot"):
-                        _creator_on_managed_update(upd)
                     msg=upd.get("message") or {}
+                    if upd.get("managed_bot"):
+                        _creator_on_managed_update(upd, suppress_notify=bool(msg.get("managed_bot_created")))
                     if msg.get("managed_bot_created"):
                         _creator_on_managed_bot_created(msg)
                     if upd.get("callback_query"):
