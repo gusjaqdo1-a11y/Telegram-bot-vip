@@ -12269,18 +12269,7 @@ def _managed_premium_callback(call):
         kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton(f"✅ Pay ${price:.2f}",callback_data=f"mprempay:{months}"),InlineKeyboardButton("❌ Cancel",callback_data="mpremcancel"))
         bot.answer_callback_query(call.id)
         premium_image=_creator_premium_image(months)
-        premium_caption=f"💎 <b>{months} Month Premium</b>
-
-Price: {html.escape(money_text(uid,price))}
-Shared balance: {html.escape(money_text(uid,balance_usd_value(uid)))}
-
-🚫 No mandatory ads
-📦 Higher file-size access
-⚡ Priority processing
-🎵 Full music/MP3 downloads
-🛠️ Priority support
-
-Confirm purchase?"
+        premium_caption=f"💎 <b>{months} Month Premium</b>\n\nPrice: {html.escape(money_text(uid,price))}\nShared balance: {html.escape(money_text(uid,balance_usd_value(uid)))}\n\n🚫 No mandatory ads\n📦 Higher file-size access\n⚡ Priority processing\n🎵 Full music/MP3 downloads\n🛠️ Priority support\n\nConfirm purchase?"
         if premium_image: bot.send_photo(call.message.chat.id,premium_image,caption=premium_caption,reply_markup=kb,parse_mode="HTML")
         else: bot.send_message(call.message.chat.id,premium_caption,reply_markup=kb,parse_mode="HTML")
         return
