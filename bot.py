@@ -12002,7 +12002,33 @@ def _creator_handle_text(uid, chat_id, text):
     if state=="method":
         _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
         _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot.",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}); return
-    if state in {"token","name","username","ready"}:
+    if state=="token":
+        token=text.strip()
+        if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
+            _creator_send(chat_id,"❌ Invalid BotFather token format. Send the token again or press Cancel.",reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel"}]]}); return
+        try:
+            rr=requests.get(f"https://api.telegram.org/bot{token}/getMe",timeout=8)
+            body=rr.json() if rr.content else {}
+            if not body.get("ok") or not (body.get("result") or {}).get("is_bot"):
+                raise RuntimeError(body.get("description") or "Token is not valid")
+            me=body.get("result") or {}
+            username=str(me.get("username") or "").lstrip("@")
+            name=str(me.get("first_name") or "Downloader Bot")
+            if not username:
+                raise RuntimeError("This bot has no username")
+            enc=_encrypt_managed_token(token)
+            _creator_set_session(uid,{**_creator_session(uid),"state":"token_type","token_enc":enc,"username":username,"name":name,"updated_at":datetime.now(timezone.utc)})
+            _creator_send(chat_id,
+                f"🔑 <b>Token verified</b>\n\n🤖 @{html.escape(username)}\n📝 {html.escape(name)}\n\nChoose the downloader type:",
+                reply_markup={"inline_keyboard":[
+                    [{"text":"🎬 Video Downloader","callback_data":"tokentype:video"}],
+                    [{"text":"🎵 Music Downloader","callback_data":"tokentype:music"}],
+                    [{"text":"❌ Cancel","callback_data":"ccancel"}]
+                ]})
+        except Exception as e:
+            _creator_send(chat_id,f"❌ Could not verify this token.\n\n<code>{html.escape(str(e)[:300])}</code>\n\nSend the token again.",reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel"}]]})
+        return
+    if state in {"name","username","ready"}:
         _creator_clear_session(uid)
         _creator_start_create(uid,chat_id)
         return
