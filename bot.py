@@ -11941,10 +11941,10 @@ def _creator_finish_request(uid, chat_id):
                               "updated_at":datetime.now(timezone.utc)})
     _creator_send(chat_id,
         f"🤖 <b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b>\n\n"
-        "Telegram will open its official bot-creation screen.\n"
-        "No BotFather token is required here. You can keep the suggested name/username or edit them in Telegram.",
+        f"✨ <b>Suggested name:</b> {html.escape(name)}\n"
+        f"🔗 <b>Suggested username:</b> @{html.escape(username)}\n\n"
+        "Telegram will open its official bot-creation screen. The username is freshly generated for this request; Telegram performs the final availability check and you can edit it before creating.",
         reply_markup=_creator_request_keyboard(request_id,name,username))
-
 
 
 def _creator_handle_text(uid, chat_id, text):
