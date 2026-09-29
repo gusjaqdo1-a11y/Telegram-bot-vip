@@ -11793,16 +11793,30 @@ def _creator_admin_keyboard():
     ],"resize_keyboard":True,"is_persistent":True}
 
 
+def _creator_default_bot_suggestions(uid, bot_type):
+    """Safe suggestions for Telegram's native managed-bot creation screen."""
+    u = _creator_ensure_user(uid)
+    first = re.sub(r"[^A-Za-z0-9]+", "", str(u.get("first_name") or "User"))[:12] or "User"
+    suffix = str(uid)[-8:] or "1"
+    typ = "Music" if str(bot_type).lower()=="music" else "Video"
+    name = f"QuickDL {typ} Downloader"
+    username = f"QuickDL{first}{suffix}{typ}Bot"
+    username = re.sub(r"[^A-Za-z0-9_]", "", username)[:32]
+    if not username.lower().endswith("bot"):
+        username = (username[:29] + "Bot")[:32]
+    return name[:64], username[:32]
+
+
 def _creator_request_keyboard(request_id, name, username):
-    # This is intentionally raw JSON because older pyTelegramBotAPI releases do
-    # not know KeyboardButtonRequestManagedBot. Telegram clients render it natively.
+    # Native Telegram managed-bot creation. No BotFather token is requested.
     return {"keyboard":[[
-        {"text":"✅ Create @"+username,"request_managed_bot":{
+        {"text":"🚀 Create Bot with Telegram","request_managed_bot":{
             "request_id":int(request_id),
-            "suggested_name":name[:64],
-            "suggested_username":username[:32],
+            "suggested_name":str(name or "")[:64],
+            "suggested_username":str(username or "")[:32],
         }}
     ]],"resize_keyboard":True,"one_time_keyboard":True}
+
 
 
 def _creator_ensure_user(uid):
@@ -11865,30 +11879,33 @@ def _creator_start_create(uid, chat_id):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
-    _creator_set_session(uid,{"state":"method","updated_at":datetime.now(timezone.utc)})
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
     _creator_send(chat_id,
         "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
-        "Choose how you want to add it.\n\n"
-        "🚀 <b>Create with Telegram</b> — Telegram creates a managed bot and this Creator Bot automatically receives future token changes.\n"
-        "🔑 <b>Use Existing Token</b> — paste a BotFather token and connect an existing bot.",
+        "Choose the type of Downloader Bot you want to create.",
         reply_markup={"inline_keyboard":[
-            [{"text":"🚀 Create with Telegram","callback_data":"cmethod:managed"}],
-            [{"text":"🔑 Use Existing Token","callback_data":"cmethod:token"}],
+            [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+            [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
             [{"text":"❌ Cancel","callback_data":"ccancel"}]
         ]})
 
 
 def _creator_finish_request(uid, chat_id):
-    d=_creator_session(uid); name=str(d.get("name") or "").strip(); username=str(d.get("username") or "").strip().lstrip("@")
-    if not name or not username:
+    d=_creator_session(uid)
+    btype=str(d.get("bot_type") or "video").lower()
+    if btype not in {"video","music"}:
         _creator_start_create(uid,chat_id); return
     request_id=random.randint(1,2_000_000_000)
-    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"updated_at":datetime.now(timezone.utc)})
+    name,username=_creator_default_bot_suggestions(uid,btype)
+    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,
+                              "suggested_name":name,"suggested_username":username,
+                              "updated_at":datetime.now(timezone.utc)})
     _creator_send(chat_id,
-        f"<b>Step 3 of 3</b>\n\nName: <b>{html.escape(name)}</b>\nUsername: <b>@{html.escape(username)}</b>\n\n"
-        "Tap the button below. Telegram will open its official bot-creation screen.\n"
-        "You do <b>not</b> need to open @BotFather or paste a token.",
+        f"🤖 <b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b>\n\n"
+        "Telegram will open its official bot-creation screen.\n"
+        "No BotFather token is required here. You can keep the suggested name/username or edit them in Telegram.",
         reply_markup=_creator_request_keyboard(request_id,name,username))
+
 
 
 def _creator_handle_text(uid, chat_id, text):
@@ -11944,9 +11961,12 @@ def _creator_handle_text(uid, chat_id, text):
 
     sess=_creator_session(uid); state=sess.get("state")
     if state=="method":
-        _creator_send(chat_id,"Choose <b>🚀 Create with Telegram</b> or <b>🔑 Use Existing Token</b> using the buttons above."); return
-    if state=="token":
-        _creator_send(chat_id,"🔑 <b>Send the BotFather token</b>\n\nI will validate it securely. Do not send your token anywhere else. After validation you will choose Video or Music Downloader."); return
+        _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
+        _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot.",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}); return
+    if state in {"token","name","username","ready"}:
+        _creator_clear_session(uid)
+        _creator_start_create(uid,chat_id)
+        return
     if state=="type":
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="name":
@@ -12311,27 +12331,51 @@ def _creator_broadcast_creator_users(text_msg):
 
 
 def _creator_on_managed_bot_created(msg):
-    info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}
-    bot_id=info.get("id"); owner_id=((msg or {}).get("from") or {}).get("id")
-    if not bot_id or not owner_id: return
-    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or sess.get("username") or "").lstrip("@"); name=str(info.get("first_name") or sess.get("name") or "Downloader Bot"); bot_type=str(sess.get("bot_type") or "video").lower(); bot_type=bot_type if bot_type in {"video","music"} else "video"
-    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
-    if err:
-        _creator_send(owner_id,"❌ Telegram created the bot, but the Creator Bot could not fetch its management token. Please contact admin.")
-        print("getManagedBotToken error:",err); return
+    msg = msg or {}
+    info=((msg.get("managed_bot_created") or {}).get("bot") or {})
+    bot_id=info.get("id")
+    chat_id=((msg.get("chat") or {}).get("id"))
+    owner_id=((msg.get("from") or {}).get("id")) or chat_id
+    if not bot_id or not owner_id:
+        print("ManagedBotCreated missing bot/owner:",msg)
+        return
+    uid=str(owner_id)
+    sess=_creator_session(uid)
+    username=str(info.get("username") or "").lstrip("@")
+    name=str(info.get("first_name") or "Downloader Bot")
+    bot_type=str(sess.get("bot_type") or "video").lower()
+    bot_type=bot_type if bot_type in {"video","music"} else "video"
+
+    token,err=_creator_fetch_managed_token(bot_id,attempts=8)
+    if err or not token:
+        _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_id":str(bot_id),
+                                  "token_sync_error":str(err or "token unavailable")[:500],
+                                  "last_token_sync_attempt":datetime.now(timezone.utc)})
+        _creator_send(owner_id,
+            "⏳ <b>Bot creation received</b>\n\n"
+            f"🤖 @{html.escape(username or 'new bot')}\n\n"
+            "Telegram has created the managed bot. I am waiting for Telegram's token handoff; "
+            "the bot will be registered automatically and you do not need to send a token.")
+        print("getManagedBotToken initial fetch error:",err)
+        return
+
     doc={
         "bot_id":str(bot_id),"owner_id":uid,"token_enc":_encrypt_managed_token(token),
         "username":username,"name":name,"bot_type":bot_type,"active":True,"suspended":False,
-        "source":"managed","managed":True,"premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],
+        "source":"managed","managed":True,"premium_until":None,"wallet_linked":False,
+        "created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],
+        "token_sync_error":None,"last_token_sync_at":datetime.now(timezone.utc)
     }
     managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True)
     _creator_clear_session(uid)
-    d=managed_bots_col.find_one({"bot_id":str(bot_id)}); _managed_bot_start_instance(d)
+    d=managed_bots_col.find_one({"bot_id":str(bot_id)})
+    _managed_bot_start_instance(d)
     _creator_send(owner_id,
         f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
         "Your downloader bot is now running.\n\n"
         "💎 Premium uses your shared @Downloadvedioytibot balance.",
         reply_markup=_creator_keyboard(uid))
+
 
 
 def _creator_fetch_managed_token(bot_id, attempts=4):
@@ -12418,36 +12462,66 @@ def _creator_on_managed_update(update):
             f"Technical status: <code>{html.escape(str(err or 'token temporarily unavailable'))}</code>")
 
 
+def _managed_bot_mark_removed(doc, reason):
+    """Remove a managed bot only after Telegram repeatedly confirms it is gone."""
+    bid=str((doc or {}).get("bot_id") or "")
+    if not bid: return
+    owner=str((doc or {}).get("owner_id") or "")
+    username=str((doc or {}).get("username") or "unknown").lstrip("@")
+    _creator_stop_managed_instance(bid)
+    try:
+        managed_bots_col.delete_one({"bot_id":bid})
+    except Exception as e:
+        print("Managed bot record removal failed:",repr(e))
+        return
+    if owner:
+        _creator_send(int(owner),
+            f"🗑 <b>Managed Bot Removed</b>\n\n🤖 @{html.escape(username)}\n\n"
+            "Telegram is no longer returning this managed bot. It has been removed from <b>My Bots</b> and will not be recreated automatically.\n\n"
+            f"Reason: <code>{html.escape(str(reason)[:500])}</code>")
+
+
 def _managed_bot_token_health_worker():
-    """Safety net for managed-bot token rotations when an update was missed.
-    It is deliberately conservative: failures do not remove bots; a bot is only
-    marked unavailable after repeated Telegram-side invalidation."""
+    """Fast safety net for token changes and deletion detection.
+    Token revoke/rotation is recovered; a bot is removed only when Telegram
+    repeatedly reports that the managed bot itself no longer exists."""
     failures={}
     while True:
         try:
-            for d in list(managed_bots_col.find({"active":True,"source":{"$ne":"token"}})):
+            for d in list(managed_bots_col.find({"active":True,"source":"managed"})):
                 bid=str(d.get("bot_id") or "")
                 if not bid: continue
-                token,err=_creator_fetch_managed_token(bid,attempts=2)
+                token,err=_creator_fetch_managed_token(bid,attempts=1)
                 if token:
                     failures.pop(bid,None)
                     stored=_decrypt_managed_token(d)
                     if stored!=token or bid not in managed_bot_objects:
-                        _creator_sync_managed_token(bid,token,info={"username":d.get("username"),"first_name":d.get("name")},owner_id=d.get("owner_id"),notify=bool(stored and stored!=token))
+                        _creator_sync_managed_token(
+                            bid,token,
+                            info={"username":d.get("username"),"first_name":d.get("name")},
+                            owner_id=d.get("owner_id"),
+                            notify=bool(stored and stored!=token)
+                        )
                     continue
+                err_text=str(err or "token unavailable")
                 failures[bid]=failures.get(bid,0)+1
-                if failures[bid] >= 3:
-                    # Keep the record so the owner can still see the bot and so a
-                    # later Telegram recovery can restore it. Do not delete it.
-                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_sync_error":str(err or 'token unavailable')[:500],"last_token_sync_failure_at":datetime.now(timezone.utc)}})
-                    if failures[bid] == 3 and d.get("owner_id"):
-                        _creator_send(int(d.get("owner_id")),
-                            f"⚠️ <b>Managed Bot Connection Check</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n\n"
-                            "Telegram is currently not returning the managed-bot token. The bot has <b>not</b> been removed from My Bots. If you revoked the token, Telegram should send the new token update automatically; Creator Bot will keep retrying.\n\n"
-                            f"Status: <code>{html.escape(str(err or 'token unavailable'))}</code>")
+                managed_bots_col.update_one({"bot_id":bid},{"$set":{
+                    "token_sync_error":err_text[:500],
+                    "last_token_sync_attempt":datetime.now(timezone.utc),
+                    "token_sync_failures":failures[bid]
+                }})
+                low=err_text.lower()
+                definitive_missing=any(x in low for x in (
+                    "user not found","bot not found","managed bot not found",
+                    "chat not found","bad request: user not found"
+                ))
+                if definitive_missing and failures[bid] >= 2:
+                    _managed_bot_mark_removed(d,err_text)
+                    failures.pop(bid,None)
         except Exception as e:
             print("Managed token health worker error:",repr(e))
-        time.sleep(120)
+        time.sleep(30)
+
 
 
 def _creator_callback(call):
@@ -12470,14 +12544,16 @@ def _creator_callback(call):
         _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled"); _creator_send(chat_id,"❌ Creation cancelled.",reply_markup=_creator_keyboard(uid)); return
     if data.startswith("cmethod:"):
         method=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if sess.get("state")!="method" or method not in {"managed","token"}:
-            _creator_answer(call.get("id"),"Creation session expired.",True); return
-        if method=="managed":
-            _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
-            _creator_send(chat_id,"🤖 <b>Managed Bot</b>\n\nChoose the type of bot you want to create:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]})
-        else:
-            _creator_set_session(uid,{**sess,"state":"token","updated_at":datetime.now(timezone.utc)})
-            _creator_send(chat_id,"🔑 <b>Existing Bot Token</b>\n\nSend the BotFather token. It will be validated before anything is saved.")
+        if method!="managed":
+            _creator_answer(call.get("id"),"Existing-token creation is disabled. Use Telegram Managed Bot creation.",True); return
+        _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
+        _creator_edit(chat_id,mid,
+            "🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot:",
+            reply_markup={"inline_keyboard":[
+                [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+                [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+                [{"text":"❌ Cancel","callback_data":"ccancel"}]
+            ]})
         return
     if data.startswith("tokentype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
@@ -12497,9 +12573,14 @@ def _creator_callback(call):
         _creator_send(chat_id,f"✅ <b>Existing Bot Added</b>\n\n🤖 @{html.escape(username)}\n🎯 Type: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>\n📡 {status}\n\nThis bot was added by token, so BotFather token changes are not automatically delivered as Managed Bot updates.",reply_markup=_creator_keyboard(uid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"bot_type":btype,"state":"waiting_managed_bot","updated_at":datetime.now(timezone.utc)})
+        _creator_answer(call.get("id"),"")
+        try: _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":mid})
+        except Exception: pass
+        _creator_finish_request(uid,chat_id)
+        return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
@@ -12776,8 +12857,21 @@ def _managed_bot_start_instance(doc):
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
-                try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
-                except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
+                try:
+                    mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
+                except Exception as e:
+                    print(f"Managed bot {bid} stopped:",repr(e))
+                    try:
+                        new_token,new_err=_creator_fetch_managed_token(bid,attempts=2)
+                        if new_token:
+                            _creator_sync_managed_token(
+                                bid,new_token,
+                                info={"username":username,"first_name":meta.get("name")},
+                                owner_id=doc.get("owner_id"),
+                                notify=True
+                            )
+                    except Exception as recover_err:
+                        print(f"Managed bot {bid} token recovery failed:",repr(recover_err))
             th=threading.Thread(target=_run,daemon=True,name=f"managed-bot-{bid}"); managed_bot_threads[bid]=th; th.start(); return mb
         except Exception as e:
             print("Managed bot start failed:",repr(e)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500]}}); return None
