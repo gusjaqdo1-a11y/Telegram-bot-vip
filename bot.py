@@ -12249,17 +12249,7 @@ def _managed_premium_callback(call):
             link=str(body.get("result") or "")
             if not link: raise RuntimeError("empty invoice link")
             premium_image=_creator_premium_image(months)
-            premium_caption=f"💎 <b>Premium — {months} Month(s)</b>
-
-⭐ Price: <b>{stars} Stars</b>
-
-🚫 No mandatory ads
-📦 Higher file-size access
-⚡ Priority processing
-🎵 Full music/MP3 downloads
-🛠️ Priority support
-
-Payment is securely processed by <b>@Downloadvedioytibot</b>."
+            premium_caption=f"💎 <b>Premium — {months} Month(s)</b>\n\n⭐ Price: <b>{stars} Stars</b>\n\n🚫 No mandatory ads\n📦 Higher file-size access\n⚡ Priority processing\n🎵 Full music/MP3 downloads\n🛠️ Priority support\n\nPayment is securely processed by <b>@Downloadvedioytibot</b>."
             premium_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]])
             if premium_image: bot.send_photo(call.message.chat.id,premium_image,caption=premium_caption,reply_markup=premium_markup,parse_mode="HTML")
             else: bot.send_message(call.message.chat.id,premium_caption,reply_markup=premium_markup,parse_mode="HTML")
