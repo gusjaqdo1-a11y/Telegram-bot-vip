@@ -12570,17 +12570,25 @@ def _creator_callback(call):
         _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled"); _creator_send(chat_id,"❌ Creation cancelled.",reply_markup=_creator_keyboard(uid)); return
     if data.startswith("cmethod:"):
         method=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if method!="managed":
-            _creator_answer(call.get("id"),"Existing-token creation is disabled. Use Telegram Managed Bot creation.",True); return
-        _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
-        _creator_edit(chat_id,mid,
-            "🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot:",
-            reply_markup={"inline_keyboard":[
-                [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
-                [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
-                [{"text":"❌ Cancel","callback_data":"ccancel"}]
-            ]})
-        return
+        if method=="managed":
+            _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
+            _creator_edit(chat_id,mid,
+                "🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot:",
+                reply_markup={"inline_keyboard":[
+                    [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+                    [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+                    [{"text":"❌ Cancel","callback_data":"ccancel"}]
+                ]})
+            return
+        if method=="token":
+            _creator_set_session(uid,{**sess,"state":"token","updated_at":datetime.now(timezone.utc)})
+            _creator_edit(chat_id,mid,
+                "🔑 <b>USE EXISTING TOKEN</b>\n\n"
+                "Send the BotFather token for the bot you want to connect.\n\n"
+                "🔒 The token is stored encrypted and is never shown back in chat.",
+                reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel"}]]})
+            return
+        _creator_answer(call.get("id"),"Invalid creation method.",True); return
     if data.startswith("tokentype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
         if btype not in {"video","music"} or sess.get("state")!="token_type":
