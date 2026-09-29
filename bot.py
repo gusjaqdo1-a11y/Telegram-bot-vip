@@ -1441,7 +1441,7 @@ def _show_ad_premium_plans(bot_obj,call,token):
     except Exception as e: print("Ad premium menu edit failed:",repr(e))
 
 def _ad_gate_keyboard(token, premium_url=None):
-    """Three-action ad gate: Watch Ad opens a Telegram Mini App, Premium opens premium, Skip uses a one-time go.quickdl.site token."""
+    """Protected ad gate: Watch Ad opens the Telegram Mini App; Premium is the paid alternative. No skip/bypass is offered."""
     web_url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"
     kb=InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("👉 Watch ad", web_app=WebAppInfo(url=web_url)))
