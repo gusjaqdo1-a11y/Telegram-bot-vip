@@ -1340,6 +1340,25 @@ def set_setting(key, value):
     settings_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
 
+def _active_powered_text():
+    """Return Powered-by only for managed bots, never for the main downloader."""
+    meta=_ACTIVE_MANAGED_META.get() or {}
+    if not meta:
+        return ""
+    if not bool(get_setting("managed_powered_by_enabled", True)):
+        return ""
+    bid=str(meta.get("bot_id") or "")
+    if not bid or bid=="main":
+        return ""
+    try:
+        doc=managed_bots_col.find_one({"bot_id":bid}) or {}
+        if _managed_premium_active_doc(doc):
+            return ""
+    except Exception:
+        pass
+    username=str(meta.get("username") or "").strip().lstrip("@")
+    return f"Powered by:\n@{username}" if username else ""
+
 def _ad_bot_key(bot_id=None):
     return str(bot_id or "main")
 
