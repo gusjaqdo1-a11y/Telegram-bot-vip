@@ -12806,11 +12806,11 @@ def _managed_bot_start_instance(doc):
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
-                pre_stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",pre_stop)
-                # The worker/download path will start its own upload action. Stop this immediate
-                # acknowledgement heartbeat when the worker has been queued.
-                try: pass
-                finally: pre_stop.set()
+                # If the ad cooldown has expired, send the ad gate immediately.
+                # Do not start a typing heartbeat and do not probe YouTube first.
+                has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
+                if not has_priority and not _ad_enabled_for(uid,bid):
+                    if _send_ad_gate(mb,uid,m.chat.id,bid,"download",{"link":link,"quality":None},premium_url=_creator_bot_url()): return
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
@@ -12823,10 +12823,8 @@ def _managed_bot_start_instance(doc):
                             msg=premium_gate_message(uid,"youtube",duration)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
-                has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
-                if not has_priority and not _ad_enabled_for(uid,bid):
-                    if _send_ad_gate(mb,uid,m.chat.id,bid,"download",{"link":link,"quality":None},premium_url=_creator_bot_url()): return
                 ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,download_media,m.chat.id,link,None,None)
+
             def _music_convert(call):
                 _ctx(); token=call.data.split(":",1)[1]; data=music_pending.get(token)
                 if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This MUSIC button expired.",show_alert=True); return
