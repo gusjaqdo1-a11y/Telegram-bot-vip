@@ -178,7 +178,7 @@ AD_PUBLIC_BASE_URL=os.getenv("AD_PUBLIC_BASE_URL","https://go.quickdl.site").str
 MONETAG_SITE_ID=str(os.getenv("MONETAG_SITE_ID","")).strip()
 # IMPORTANT: this must be the MAIN Monetag SDK zone ID shown in the
 # Rewarded Interstitial integration code. Do not use a sub-zone ID here.
-MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_ZONE_ID") or os.getenv("MONETAG_REWARDED_ZONE_ID") or "").strip()
+MONETAG_REWARDED_ZONE_ID=str(os.getenv("MONETAG_ZONE_ID") or os.getenv("MONETAG_REWARDED_ZONE_ID") or "11912358").strip()
 MONETAG_SDK_URL=os.getenv("MONETAG_SDK_URL","//libtl.com/sdk.js").strip()
 AD_SMARTLINK_URL=os.getenv("MONETAG_DIRECT_LINK",os.getenv("AD_SMARTLINK_URL","https://omg10.com/4/11909123")).strip()
 AD_COOLDOWN_SECONDS=int(os.getenv("AD_COOLDOWN_SECONDS","5400"))
@@ -1728,130 +1728,37 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             zone=html.escape(MONETAG_REWARDED_ZONE_ID,quote=True)
             sdk=html.escape(MONETAG_SDK_URL,quote=True)
             body=f'''<!doctype html>
-<html lang="en">
-<head>
+<html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#000000">
-<title>QuickDL — Watch Ad</title>
+<title>QuickDL — Ad</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}"></script>
-<style>
-html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}
-body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}
-#status{{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);font-size:14px;line-height:1.35;opacity:.9;text-align:center;max-width:88vw}}
-#retry,#skip{{display:none;position:fixed;left:50%;transform:translateX(-50%);border:0;border-radius:14px;padding:12px 18px;font-weight:700;font-size:15px}}
-#retry{{bottom:66px;background:#2ea6ff;color:#fff}}
-#skip{{bottom:18px;background:#26313c;color:#fff}}
-</style>
-</head>
-<body>
-<div id="status">Preparing your ad…</div>
-<button id="retry" type="button">Try again</button>
-<button id="skip" type="button">Skip ad</button>
-<script>
-(function(){{
-  const token={json.dumps(token)};
-  const validateUrl={json.dumps(f"/ad/validate/{token}")};
-  const rewardUrl={json.dumps(f"/ad/reward/{token}")};
-  const skipUrl={json.dumps(f"/ad/skip/{token}")};
-  const tg=window.Telegram&&window.Telegram.WebApp;
-  const status=document.getElementById("status");
-  const retry=document.getElementById("retry");
-  const skip=document.getElementById("skip");
-  let busy=false,completed=false;
-
-  if(tg){{tg.ready();tg.expand();}}
-
-  function headers(){{
-    return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};
-  }}
-
-  async function validate(){{
-    if(!tg||!tg.initData) throw new Error("Telegram identity unavailable");
-    const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});
-    if(!r.ok) throw new Error("Telegram user could not be verified");
-  }}
-
-  async function reward(eventData){{
-    if(completed) return;
-    const h=headers();
-    h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});
-    const r=await fetch(rewardUrl,{{cache:"no-store",headers:h}});
-    if(!r.ok) throw new Error("Reward confirmation failed");
-    completed=true;
-    status.textContent="Ad completed. Returning to Telegram…";
-    try{{if(tg) tg.close();}}catch(e){{}}
-  }}
-
-  async function sdk(){{
-    const n="show_{MONETAG_REWARDED_ZONE_ID}";
-    for(let i=0;i<150;i++){{
-      if(typeof window[n]==="function") return window[n];
-      await new Promise(r=>setTimeout(r,100));
-    }}
-    throw new Error("Monetag SDK did not load");
-  }}
-
-  function showSkip(){{
-    skip.style.display="block";
-    skip.onclick=function(){{window.location.href=skipUrl;}};
-  }}
-
-  async function run(){{
-    if(busy||completed) return;
-    busy=true;
-    retry.style.display="none";
-    skip.style.display="none";
-    status.textContent="Loading ad…";
-    try{{
-      await validate();
-      const show=await sdk();
-      const ymid=token;
-
-      // Preload first for the fastest possible start.
-      try{{
-        await show({{type:"preload",ymid:ymid,requestVar:"download_gate",timeout:5,catchIfNoFeed:true}});
-      }}catch(e){{
-        // Continue to end() once; some SDK versions can recover during show.
-        console.debug("Monetag preload failed",e);
-      }}
-
-      status.textContent="Starting ad…";
-      const eventData=await show({{
-        type:"end",
-        ymid:ymid,
-        requestVar:"download_gate",
-        catchIfNoFeed:true
-      }});
-
-      // Monetag resolves with the confirmed event. Do not invent a reward when
-      // the SDK explicitly reports that no feed was available.
-      if(eventData && eventData.reward_event_type==="non_valued"){{
-        throw new Error("Ad completed without a valued event");
-      }}
-
-      await reward(eventData);
-    }}catch(e){{
-      console.error("Monetag Rewarded Interstitial failed",e);
-      busy=false;
-      status.textContent="Ad unavailable or not completed. You can retry or use Skip.";
-      retry.style.display="block";
-      showSkip();
-    }}
-  }}
-
-  retry.addEventListener("click",run);
-
-  // The Mini App is a per-request URL. Start the ad as soon as Telegram has
-  // supplied initData and the Monetag SDK has loaded.
-  run();
-}})();
-</script>
-</body>
-</html>'''
+<script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}" defer></script>
+<style>html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}#status{{font-size:14px;opacity:.82;text-align:center;max-width:86vw}}</style>
+</head><body><div id="status">Opening…</div>
+<script>(function(){{
+const token={json.dumps(token)};const validateUrl={json.dumps(f"/ad/validate/{token}")};const rewardUrl={json.dumps(f"/ad/reward/{token}")};const fallbackUrl={json.dumps(f"/ad/fallback/{token}")};
+const tg=window.Telegram&&window.Telegram.WebApp,status=document.getElementById("status");let finished=false;if(tg){{tg.ready();tg.expand();}}
+function headers(){{return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};}}
+async function complete(url,eventData){{if(finished)return;const h=headers();if(eventData!==undefined)h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});const r=await fetch(url,{{cache:"no-store",headers:h}});if(!r.ok)throw new Error("gate completion failed");finished=true;try{{if(tg)tg.close();}}catch(e){{}}}}
+async function validate(){{if(!tg||!tg.initData)throw new Error("Telegram identity unavailable");const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});if(!r.ok)throw new Error("Telegram user could not be verified");}}
+async function sdk(){{const n="show_{MONETAG_REWARDED_ZONE_ID}";for(let i=0;i<100;i++){{if(typeof window[n]==="function")return window[n];await new Promise(r=>setTimeout(r,100));}}throw new Error("Monetag SDK did not initialize");}}
+async function run(){{try{{await validate();const show=await sdk();const eventData=await show({{type:"end",ymid:token,requestVar:"download_gate",catchIfNoFeed:false}});if(eventData&&eventData.reward_event_type==="non_valued")throw new Error("no valued ad");await complete(rewardUrl,eventData);}}catch(e){{console.warn("Monetag unavailable; completing fallback",e);try{{await complete(fallbackUrl,{{reason:String(e&&e.message||e)}});}}catch(err){{console.error("Ad gate fallback failed",err);try{{if(tg)tg.close();}}catch(e2){{}}}}}}}}
+run();}})();</script></body></html>'''
             self._send(200,body); return
 
+        m=re.fullmatch(r"/ad/fallback/([A-Za-z0-9]{16,64})",path)
+        if m:
+            token=m.group(1); uid,row=self._web_user_for_token(token)
+            if not uid or not row or str(row.get("status")) not in {"pending","opened"}:
+                self._send(403,"forbidden","text/plain; charset=utf-8"); return
+            if _complete_ad_gate(token,source="sdk_fallback"):
+                try: ad_gates_col.update_one({"token":token},{"$set":{"fallback_reason":str(self.headers.get("X-Monetag-Event",""))[:1000]}})
+                except Exception: pass
+                self._send(200,"ok","text/plain; charset=utf-8")
+            else: self._send(409,"not ready","text/plain; charset=utf-8")
+            return
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
             token=m.group(1); uid,row=self._web_user_for_token(token)
@@ -11962,7 +11869,7 @@ def _creator_admin_keyboard():
         [{"text":"👤 Broadcast Bot Non-Admins"}],
         [{"text":"🏆 Top Songs"},{"text":"🏆 Top Song Searchers"}],
         [{"text":"📢 Broadcast Creator Users"}],
-        [{"text":"💎 Premium Prices"}],
+        [{"text":"💎 Premium Prices"},{"text":"🖼️ Premium Images"}],
         [{"text":"🚫 Remove Ads Prices"},{"text":"♻️ Reset Ads"}],
         [{"text":"🔢 Ads Per User"},{"text":"⏱️ Ad Seconds"}],
         [{"text":"📊 Ad Settings"}],
@@ -11971,6 +11878,26 @@ def _creator_admin_keyboard():
         [{"text":"🔙 USER MENU"}],
     ],"resize_keyboard":True,"is_persistent":True}
 
+
+def _creator_premium_image(months):
+    return str(get_setting(f"premium_plan_image_{str(months)}","") or "").strip()
+
+def _creator_send_photo(chat_id, photo, caption="", reply_markup=None):
+    payload={"chat_id":chat_id,"photo":str(photo),"caption":str(caption or ""),"parse_mode":"HTML"}
+    if reply_markup is not None: payload["reply_markup"]=reply_markup
+    return _creator_api("sendPhoto",payload)
+
+def _creator_premium_image_menu(uid,chat_id,mid=None):
+    if not _creator_admin(uid): _creator_send(chat_id,"🔐 <b>Admin only.</b>"); return
+    prices=get_premium_prices(); rows=[]
+    for months in ("1","3","9","12"):
+        state="🖼️ Set" if _creator_premium_image(months) else "⬜ Not set"
+        rows.append([{"text":f"🖼️ {months} Month — ${float(prices[months]):.2f} · {state}","callback_data":f"cimgplan:{months}"}])
+    rows.append([{ "text":"⬅️ Admin Panel","callback_data":"cimgback"}])
+    text=("🖼️ <b>PREMIUM PLAN IMAGES</b>\n\n"
+          "Upload one promotional image for each Premium period. The selected image is sent with that plan's payment link.")
+    if mid: _creator_edit(chat_id,mid,text,reply_markup={"inline_keyboard":rows})
+    else: _creator_send(chat_id,text,reply_markup={"inline_keyboard":rows})
 
 def _creator_default_bot_suggestions(uid, bot_type):
     """Generate a fresh, collision-resistant suggestion for each creation request.
@@ -12106,6 +12033,19 @@ def _creator_finish_request(uid, chat_id):
         "Telegram will open its official bot-creation screen. The username is freshly generated for this request; Telegram performs the final availability check and you can edit it before creating.",
         reply_markup=_creator_request_keyboard(request_id,name,username))
 
+
+def _creator_handle_photo(uid, chat_id, msg):
+    if not _creator_admin(uid): return False
+    sess=_creator_session(uid)
+    if sess.get("state")!="admin_premium_image_upload": return False
+    months=str(sess.get("premium_image_months") or ""); photos=msg.get("photo") or []
+    if months not in {"1","3","9","12"} or not photos: _creator_send(chat_id,"❌ Please send an image for the selected Premium period."); return True
+    file_id=str((photos[-1] or {}).get("file_id") or "")
+    if not file_id: _creator_send(chat_id,"❌ Telegram did not return a usable image."); return True
+    set_setting(f"premium_plan_image_{months}",file_id); _creator_clear_session(uid)
+    price=float(get_premium_prices()[months])
+    _creator_send_photo(chat_id,file_id,f"✅ <b>Premium image saved</b>\n\nPlan: <b>{months} month(s)</b>\nPrice: <b>${price:.2f}</b>",{"inline_keyboard":[[{"text":"🖼️ Premium Images","callback_data":"cimgmenu"}],[{"text":"👑 Admin Panel","callback_data":"cimgback"}]]})
+    return True
 
 def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
@@ -12303,8 +12243,13 @@ def _managed_premium_callback(call):
         rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
         payload=f"managed_premium_stars:{bid}:{months}:{stars}"
         try:
-            _main_bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)","Premium for your managed Downloader Bot. Pay securely with Telegram Stars through @Downloadvedioytibot.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
-            bot.answer_callback_query(call.id,'⭐ Payment invoice sent by @Downloadvedioytibot')
+            rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={"title":f"Downloader Premium — {months} month(s)","description":f"Premium for @{str(_managed_bot_doc(bid).get('username') or 'Downloader Bot')}. Payment is processed by @Downloadvedioytibot.","payload":payload,"currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]},timeout=20)
+            body=rr.json() if rr.content else {}
+            if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
+            link=str(body.get("result") or "")
+            if not link: raise RuntimeError("empty invoice link")
+            bot.send_message(call.message.chat.id,f"💎 <b>Premium — {months} Month(s)</b>\n\n⭐ Price: <b>{stars} Stars</b>\n\n🚫 No mandatory ads\n📦 Higher file-size access\n⚡ Priority processing\n🎵 Full music/MP3 downloads\n🛠️ Priority support\n\nPayment is securely processed by <b>@Downloadvedioytibot</b>.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]]),parse_mode="HTML")
+            bot.answer_callback_query(call.id,'⭐ Invoice link ready')
         except Exception as e:
             bot.answer_callback_query(call.id,'Could not create Stars invoice.',show_alert=True); print('Managed Stars invoice error:',repr(e))
         return
@@ -12386,6 +12331,8 @@ _CREATOR_ADMIN_BUTTONS = {
 
 
 def _creator_admin_text(uid, chat_id, text):
+    if text=="🖼️ Premium Images":
+        _creator_premium_image_menu(uid,chat_id); return
     if text=="🟢 Open Creation":
         set_setting("bot_creation_enabled",True); _creation_commands_refresh(); _creator_set_commands(); _refresh_all_user_menus("🤖 Bot creation is now OPEN."); _creator_send(chat_id,"🟢 <b>Creation OPEN</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="🔴 Close Creation":
@@ -12797,6 +12744,22 @@ def _creator_callback(call):
         _creator_my_bots_edit(uid,chat_id,mid); return
     if data=="cmypremium":
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
+    if data=="cimgback":
+        _creator_edit(chat_id,mid,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
+    if data=="cimgmenu":
+        _creator_premium_image_menu(uid,chat_id,mid); return
+    if data.startswith("cimgplan:"):
+        if not _creator_admin(uid): _creator_answer(call.get("id"),"Admin only.",True); return
+        months=data.split(":",1)[1]
+        if months not in {"1","3","9","12"}: _creator_answer(call.get("id"),"Invalid plan.",True); return
+        _creator_set_session(uid,{"state":"admin_premium_image_upload","premium_image_months":months,"updated_at":datetime.now(timezone.utc)})
+        _creator_send(chat_id,f"🖼️ <b>PREMIUM IMAGE — {months} MONTH(S)</b>\n\nSend the promotional image now.",reply_markup={"inline_keyboard":[[{"text":"🗑️ Remove Image","callback_data":f"cimgremove:{months}"}],[{"text":"⬅️ Premium Images","callback_data":"cimgmenu"}]]})
+        return
+    if data.startswith("cimgremove:"):
+        if not _creator_admin(uid): _creator_answer(call.get("id"),"Admin only.",True); return
+        months=data.split(":",1)[1]
+        if months in {"1","3","9","12"}: set_setting(f"premium_plan_image_{months}",""); _creator_clear_session(uid); _creator_premium_image_menu(uid,chat_id,mid)
+        return
     if data=="ccancel":
         _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled"); _creator_send(chat_id,"❌ Creation cancelled.",reply_markup=_creator_keyboard(uid)); return
     if data.startswith("cmethod:"):
@@ -12903,7 +12866,15 @@ def _creator_callback(call):
         try:
             rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]},timeout=20); body=rr.json()
             if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
-            _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":str(body.get('result') or '')}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
+            link=str(body.get("result") or "")
+            image=_creator_premium_image(months)
+            caption=(f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is securely processed by <b>@Downloadvedioytibot</b>.")
+            markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":link}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]}
+            if image:
+                _creator_send_photo(chat_id,image,caption,markup)
+                try: _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":mid})
+                except Exception: pass
+            else: _creator_edit(chat_id,mid,caption,reply_markup=markup)
             _creator_answer(call.get("id"),"Payment link ready")
         except Exception as e: print("Creator createInvoiceLink error:",repr(e)); _creator_answer(call.get("id"),"Could not create payment link.",True)
         return
@@ -12912,7 +12883,15 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
         pa=usd_to_asset(cur_code(uid),price)
         if available_asset_amount(uid)<pa: _creator_send(chat_id,f"❌ <b>Insufficient balance</b>\n\nNeed: {html.escape(format_asset(cur_code(uid),pa))}\nAvailable: {html.escape(format_asset(cur_code(uid),available_asset_amount(uid)))}\n\n{_premium_balance_help(uid)}"); return
-        _creator_edit(chat_id,mid,f"💰 <b>Wallet Premium</b>\n\nBot: @{html.escape(str(d.get('username') or 'unknown'))}\nPlan: {months} month(s)\nPrice: ${price:.2f}",reply_markup={"inline_keyboard":[[{"text":f"✅ Pay ${price:.2f}","callback_data":f"cprempay:{bid}:{months}"}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:wallet"}]]}); return
+        image=_creator_premium_image(months)
+        caption=(f"💎 <b>Premium — {months} Month(s)</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPrice: <b>${price:.2f}</b>\n\n🚫 No mandatory ads before downloads\n📦 Higher file-size access\n⚡ Priority processing\n🎵 Full music/MP3 downloads\n🛠️ Priority support")
+        markup={"inline_keyboard":[[{"text":f"✅ Pay ${price:.2f}","callback_data":f"cprempay:{bid}:{months}"}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:wallet"}]]}
+        if image:
+            _creator_send_photo(chat_id,image,caption,markup)
+            try: _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":mid})
+            except Exception: pass
+        else: _creator_edit(chat_id,mid,caption,reply_markup=markup)
+        return
     if data.startswith("cprempay:"):
         parts=data.split(":"); bid=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid}); price=get_premium_prices().get(months)
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
@@ -13388,6 +13367,9 @@ def _creator_poll_loop():
                         _creator_on_managed_bot_created(msg)
                     if upd.get("callback_query"):
                         _creator_callback(upd["callback_query"])
+                    if msg.get("photo"):
+                        uid_photo=str((msg.get("from") or {}).get("id") or ""); chat_photo=msg.get("chat",{}).get("id")
+                        if uid_photo and chat_photo: _creator_handle_photo(uid_photo,chat_photo,msg)
                     if msg.get("text") is not None:
                         uid=str((msg.get("from") or {}).get("id") or ""); chat=msg.get("chat",{}).get("id")
                         if uid and chat:
