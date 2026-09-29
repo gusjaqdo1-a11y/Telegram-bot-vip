@@ -1812,7 +1812,18 @@ run();
             token=m.group(1); uid,row=self._web_user_for_token(token)
             if not uid or not row or str(row.get("status")) not in {"opened","pending"}:
                 self._send(403,"forbidden","text/plain; charset=utf-8"); return
-            if _complete_ad_gate(token,source="rewarded_interstitial"):
+            # The frontend is not trusted by itself. Require the exact Monetag
+            # SDK result and only accept a monetized/valued event for this token.
+            raw_event=self.headers.get("X-Monetag-Event","")
+            try:
+                event=json.loads(raw_event) if raw_event else {}
+            except Exception:
+                event={}
+            reward_type=str(event.get("reward_event_type") or "").lower()
+            event_ymid=str(event.get("ymid") or "")
+            if reward_type!="valued" or (event_ymid and event_ymid!=str(token)):
+                self._send(409,"Monetag valued event not verified","text/plain; charset=utf-8"); return
+            if _complete_ad_gate(token,source="rewarded_interstitial_valued"):
                 self._send(200,"ok","text/plain; charset=utf-8")
             else:
                 self._send(409,"not ready","text/plain; charset=utf-8")
@@ -1833,7 +1844,7 @@ run();
                     print("Monetag postback store failed:",repr(e))
             self._send(200,"ok","text/plain; charset=utf-8"); return
 
-        m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{{16,64}})",path)
+        m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
         if m:
             # Legacy skip URLs are intentionally disabled. They must never
             # complete or dispatch a protected download.
