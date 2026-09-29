@@ -11778,7 +11778,7 @@ def _creator_keyboard(uid):
     rows=[]
     if _creation_open(): rows.append([{"text":"🤖 Create My Bot"}])
     rows += [
-        [{"text":"🤖 My Bots"},{"text":"🗑 Delete Bot"}],
+        [{"text":"🤖 My Bots"}],
         [{"text":"💎 Premium"},{"text":"💰 Balance"}],
         [{"text":"🆘 Help"}],
     ]
@@ -11917,16 +11917,17 @@ def _creator_start_create(uid, chat_id):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
-    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
+    _creator_set_session(uid,{"state":"method","updated_at":datetime.now(timezone.utc)})
     _creator_send(chat_id,
         "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
-        "Choose the type of Downloader Bot you want to create.",
+        "Choose how you want to add it.\n\n"
+        "🚀 <b>Create with Telegram</b> — Telegram creates a managed bot and this Creator Bot automatically receives future token changes.\n\n"
+        "🔑 <b>Use Existing Token</b> — paste a BotFather token and connect an existing bot.",
         reply_markup={"inline_keyboard":[
-            [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
-            [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+            [{"text":"🚀 Create with Telegram","callback_data":"cmethod:managed"}],
+            [{"text":"🔑 Use Existing Token","callback_data":"cmethod:token"}],
             [{"text":"❌ Cancel","callback_data":"ccancel"}]
         ]})
-
 
 def _creator_finish_request(uid, chat_id):
     d=_creator_session(uid)
