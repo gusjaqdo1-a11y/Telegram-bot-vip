@@ -12000,8 +12000,13 @@ def _creator_handle_text(uid, chat_id, text):
 
     sess=_creator_session(uid); state=sess.get("state")
     if state=="method":
-        _creator_set_session(uid,{**sess,"state":"type","updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of Downloader Bot.",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}); return
+        _creator_send(chat_id,
+            "Choose one of the creation methods above.",
+            reply_markup={"inline_keyboard":[
+                [{"text":"🚀 Create with Telegram","callback_data":"cmethod:managed"}],
+                [{"text":"🔑 Use Existing Token","callback_data":"cmethod:token"}],
+                [{"text":"❌ Cancel","callback_data":"ccancel"}]
+            ]}); return
     if state=="token":
         token=text.strip()
         if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
