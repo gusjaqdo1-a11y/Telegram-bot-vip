@@ -10472,18 +10472,10 @@ def _download_request_job(chat_id, link, quality, uid):
             kb.add(InlineKeyboardButton("🤖 Verify via Bot",url=f"https://t.me/Verifyd_bot?start=verify_{uid}"))
             bot.send_message(chat_id,"🔐 <b>Verification Required</b>\n\nPlease verify that you are not a robot before your download can be sent.",reply_markup=kb,parse_mode="HTML")
             return
-        if not has_priority and platform=="youtube" and not youtube_is_short(link) and not youtube_full_free_enabled() and not users.get(str(uid),{}).get("youtube_30m",False):
-            duration=None
-            try: duration=_youtube_duration_seconds(link)
-            except Exception: duration=None
-            if duration and duration > youtube_free_limit_minutes()*60:
-                kb=InlineKeyboardMarkup(row_width=2)
-                plans=get_premium_prices()
-                for months in ("1","3","9","12"):
-                    if months in plans:
-                        kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
-                kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
-                bot.send_message(chat_id,premium_gate_message(uid,"youtube",duration)+"\n\n<b>Premium stays active for the selected period. YouTube downloads are unlimited while Premium is active.</b>",reply_markup=kb,parse_mode="HTML")
+        # Ad gate first: never run a slow YouTube duration probe before showing
+        # the ad to a user whose cooldown has expired.
+        if not has_priority and not _ad_enabled_for(uid,"main"):
+            if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"):
                 return
         if premium_required_for_platform(platform,uid,link) and not has_priority:
             duration=None
@@ -10493,8 +10485,6 @@ def _download_request_job(chat_id, link, quality, uid):
             kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
             return
-        if not has_priority and not _ad_enabled_for(uid,"main"):
-            if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"): return
         download_media(chat_id,link,None,quality)
     except Exception as e:
         print("Download request worker failed:",repr(e))
