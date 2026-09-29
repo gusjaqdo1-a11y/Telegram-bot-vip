@@ -11813,17 +11813,36 @@ def _creator_admin_keyboard():
 
 
 def _creator_default_bot_suggestions(uid, bot_type):
-    """Safe suggestions for Telegram's native managed-bot creation screen."""
-    u = _creator_ensure_user(uid)
-    first = re.sub(r"[^A-Za-z0-9]+", "", str(u.get("first_name") or "User"))[:12] or "User"
-    suffix = str(uid)[-8:] or "1"
-    typ = "Music" if str(bot_type).lower()=="music" else "Video"
-    name = f"QuickDL {typ} Downloader"
-    username = f"QuickDL{first}{suffix}{typ}Bot"
-    username = re.sub(r"[^A-Za-z0-9_]", "", username)[:32]
-    if not username.lower().endswith("bot"):
-        username = (username[:29] + "Bot")[:32]
-    return name[:64], username[:32]
+    """Generate a fresh, collision-resistant suggestion for each creation request.
+
+    Telegram's client performs the authoritative username availability check before
+    creating the managed bot, so this generates a new candidate every time and
+    avoids usernames already used or recently suggested by this Creator.
+    """
+    u=_creator_ensure_user(uid)
+    first=re.sub(r"[^A-Za-z0-9]+","",str(u.get("first_name") or "Developer"))[:10] or "Developer"
+    typ="Music" if str(bot_type).lower()=="music" else "Video"
+    for _ in range(20):
+        suffix=f"{secrets.randbelow(100_000_000):08d}"
+        username=re.sub(r"[^A-Za-z0-9_]","",f"QuickDL{first}{suffix}{typ}Bot")[:32]
+        if len(username)<5 or not username.lower().endswith("bot"):
+            continue
+        if managed_bots_col.find_one({"username":{"$regex":f"^{re.escape(username)}$","$options":"i"}}):
+            continue
+        try:
+            cutoff=datetime.now(timezone.utc)-timedelta(minutes=15)
+            held=creator_sessions_col.find_one({
+                "suggested_username":{"$regex":f"^{re.escape(username)}$","$options":"i"},
+                "updated_at":{"$gt":cutoff},
+            })
+            if held and str(held.get("_id"))!=str(uid):
+                continue
+        except Exception:
+            pass
+        name=f"QuickDL {first} {suffix} {typ}"
+        return name[:64],username
+    suffix=str(secrets.randbelow(90000000)+10000000)
+    return f"QuickDL {typ} Downloader {suffix}"[:64],f"QuickDL{suffix}{typ}Bot"[:32]
 
 
 def _creator_request_keyboard(request_id, name, username):
