@@ -1443,11 +1443,9 @@ def _show_ad_premium_plans(bot_obj,call,token):
 def _ad_gate_keyboard(token, premium_url=None):
     """Three-action ad gate: Watch Ad opens a Telegram Mini App, Premium opens premium, Skip uses a one-time go.quickdl.site token."""
     web_url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"
-    skip_url=f"{AD_PUBLIC_BASE_URL}/ad/skip/{token}"
     kb=InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("👉 Watch ad", web_app=WebAppInfo(url=web_url)))
     kb.add(InlineKeyboardButton("💎 Premium", callback_data=f"adpremium:{token}"))
-    kb.add(InlineKeyboardButton("⏭️ Skip", url=skip_url))
     return kb
 
 def _delete_ad_gate_message(row, bot_obj=None):
@@ -1481,7 +1479,7 @@ def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
     token=secrets.token_urlsafe(24).replace("-","").replace("_","")[:40]
     ad_gates_col.insert_one({"token":token,"user_id":uid,"chat_id":int(chat_id),"bot_id":bid,"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","ad_views":0,"required_ads":_ad_required_count(),"gate_seconds":0,"telegram_user_verified":False,"created_at":now})
     try:
-        msg=bot_obj.send_message(chat_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token,premium_url))
+        msg=bot_obj.send_message(chat_id,"To continue, watch the ad or choose Premium. The download starts only after Monetag confirms a valued ad event.",reply_markup=_ad_gate_keyboard(token,premium_url))
         ad_gates_col.update_one({"token":token},{"$set":{"message_id":int(msg.message_id)}})
         return True
     except Exception as e:
@@ -1735,30 +1733,80 @@ class _AdGateHandler(BaseHTTPRequestHandler):
 <title>QuickDL — Ad</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="{sdk}" data-zone="{zone}" data-sdk="show_{zone}" defer></script>
-<style>html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}#status{{font-size:14px;opacity:.82;text-align:center;max-width:86vw}}</style>
+<style>html,body{{margin:0;width:100%;height:100%;background:#000;overflow:hidden}}body{{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;color:#fff}}#status{{font-size:14px;opacity:.82;text-align:center;max-width:86vw;padding:20px}}</style>
 </head><body><div id="status">Opening…</div>
 <script>(function(){{
-const token={json.dumps(token)};const validateUrl={json.dumps(f"/ad/validate/{token}")};const rewardUrl={json.dumps(f"/ad/reward/{token}")};const fallbackUrl={json.dumps(f"/ad/fallback/{token}")};
-const tg=window.Telegram&&window.Telegram.WebApp,status=document.getElementById("status");let finished=false;if(tg){{tg.ready();tg.expand();}}
-function headers(){{return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};}}
-async function complete(url,eventData){{if(finished)return;const h=headers();if(eventData!==undefined)h["X-Monetag-Event"]=JSON.stringify(eventData||{{}});const r=await fetch(url,{{cache:"no-store",headers:h}});if(!r.ok)throw new Error("gate completion failed");finished=true;try{{if(tg)tg.close();}}catch(e){{}}}}
-async function validate(){{if(!tg||!tg.initData)throw new Error("Telegram identity unavailable");const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});if(!r.ok)throw new Error("Telegram user could not be verified");}}
-async function sdk(){{const n="show_{MONETAG_REWARDED_ZONE_ID}";for(let i=0;i<100;i++){{if(typeof window[n]==="function")return window[n];await new Promise(r=>setTimeout(r,100));}}throw new Error("Monetag SDK did not initialize");}}
-async function run(){{try{{await validate();const show=await sdk();const eventData=await show({{type:"end",ymid:token,requestVar:"download_gate",catchIfNoFeed:false}});if(eventData&&eventData.reward_event_type==="non_valued")throw new Error("no valued ad");await complete(rewardUrl,eventData);}}catch(e){{console.warn("Monetag unavailable; completing fallback",e);try{{await complete(fallbackUrl,{{reason:String(e&&e.message||e)}});}}catch(err){{console.error("Ad gate fallback failed",err);try{{if(tg)tg.close();}}catch(e2){{}}}}}}}}
-run();}})();</script></body></html>'''
+const token={json.dumps(token)};
+const validateUrl={json.dumps(f"/ad/validate/{token}")};
+const rewardUrl={json.dumps(f"/ad/reward/{token}")};
+const tg=window.Telegram&&window.Telegram.WebApp;
+const status=document.getElementById("status");
+let finished=false,running=false;
+if(tg){{tg.ready();tg.expand();}}
+
+function headers(){{
+  return {{"X-Telegram-Init-Data":(tg&&tg.initData)||""}};
+}}
+
+async function validate(){{
+  if(!tg||!tg.initData) throw new Error("Telegram identity unavailable");
+  const r=await fetch(validateUrl,{{cache:"no-store",headers:headers()}});
+  if(!r.ok) throw new Error("Telegram user could not be verified");
+}}
+
+async function getSdk(){{
+  const name="show_{MONETAG_REWARDED_ZONE_ID}";
+  for(let i=0;i<120;i++){{
+    if(typeof window[name]==="function") return window[name];
+    await new Promise(r=>setTimeout(r,100));
+  }}
+  throw new Error("Monetag SDK did not initialize");
+}}
+
+async function rewardOnlyIfValued(eventData){{
+  const event=eventData||{{}};
+  const rewardType=String(event.reward_event_type||"").toLowerCase();
+  // NEVER unlock the download merely because the SDK promise resolved.
+  // Monetag distinguishes paid/valued events from non-valued events.
+  if(rewardType!=="valued"){{
+    throw new Error(rewardType==="non_valued" ? "Ad was not valued" : "No verified rewarded event");
+  }}
+  const h=headers();
+  h["X-Monetag-Event"]=JSON.stringify(event);
+  const r=await fetch(rewardUrl,{{cache:"no-store",headers:h}});
+  if(!r.ok) throw new Error("Verified ad completion was rejected");
+  finished=true;
+  status.textContent="Success. Continuing…";
+  try{{if(tg)tg.close();}}catch(e){{}}
+}}
+
+async function run(){{
+  try{{
+    await validate();
+    status.textContent="Loading ad…";
+    const show=await getSdk();
+    // Copy the proven working integration pattern from the older Mini App:
+    // Rewarded Interstitial / type=end, with a unique ymid and requestVar.
+    const eventData=await show({{
+      type:"end",
+      ymid:token,
+      requestVar:"download_gate",
+      catchIfNoFeed:true
+    }});
+    await rewardOnlyIfValued(eventData);
+  }}catch(e){{
+    console.warn("Monetag ad did not complete:",e);
+    status.textContent="Ad could not be completed. The download was not unlocked.";
+    // IMPORTANT: no fallback, no skip, and no automatic bot action.
+    // The protected Telegram action is dispatched only by /ad/reward after
+    // Monetag returns a verified valued event.
+    setTimeout(()=>{{try{{if(tg)tg.close();}}catch(x){{}}}},1200);
+  }}
+}}
+run();
+}})();</script></body></html>'''
             self._send(200,body); return
 
-        m=re.fullmatch(r"/ad/fallback/([A-Za-z0-9]{16,64})",path)
-        if m:
-            token=m.group(1); uid,row=self._web_user_for_token(token)
-            if not uid or not row or str(row.get("status")) not in {"pending","opened"}:
-                self._send(403,"forbidden","text/plain; charset=utf-8"); return
-            if _complete_ad_gate(token,source="sdk_fallback"):
-                try: ad_gates_col.update_one({"token":token},{"$set":{"fallback_reason":str(self.headers.get("X-Monetag-Event",""))[:1000]}})
-                except Exception: pass
-                self._send(200,"ok","text/plain; charset=utf-8")
-            else: self._send(409,"not ready","text/plain; charset=utf-8")
-            return
         m=re.fullmatch(r"/ad/reward/([A-Za-z0-9]{16,64})",path)
         if m:
             token=m.group(1); uid,row=self._web_user_for_token(token)
@@ -1785,20 +1833,11 @@ run();}})();</script></body></html>'''
                     print("Monetag postback store failed:",repr(e))
             self._send(200,"ok","text/plain; charset=utf-8"); return
 
-        m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{16,64})",path)
+        m=re.fullmatch(r"/ad/skip/([A-Za-z0-9]{{16,64}})",path)
         if m:
-            token=m.group(1)
-            if _skip_ad_gate(token):
-                smart=AD_SMARTLINK_URL
-                if smart:
-                    sep="&" if "?" in smart else "?"
-                    target=smart+sep+"subid="+urllib.parse.quote(token)
-                    self.send_response(302); self.send_header("Location",target); self.send_header("Cache-Control","no-store"); self.end_headers()
-                else:
-                    self._send(503,"Monetag Direct Link is not configured.")
-            else:
-                self._send(410,"Skip link expired or already used.")
-            return
+            # Legacy skip URLs are intentionally disabled. They must never
+            # complete or dispatch a protected download.
+            self._send(410,"Skipping an ad does not unlock this download.","text/plain; charset=utf-8"); return
 
         self._send(404,"Not found")
 
