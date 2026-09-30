@@ -1864,6 +1864,15 @@ def _dashboard_page(doc,error="",notice=""):
 <section class="glass hero">{img}<div><span class="badge">🟢 OWNER DASHBOARD</span><h1>{name}</h1><div class="muted">@{html.escape(username)} · {typ}</div><div class="muted"><a href="{html.escape(dash_url,quote=True)}">{html.escape(dash_url)}</a></div></div></section>
 <section class="glass card" style="margin-bottom:18px"><h2>🔐 Login Credentials</h2><div class="cred"><div class="pill"><small>Username</small><b>@{html.escape(username)}</b></div><div class="pill"><small>PIN</small><b>{html.escape(pin or "Unavailable")}</b></div></div><form method="post" action="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/regenerate-pin"><button class="switch" type="submit" style="margin-top:12px">🔄 Regenerate PIN</button></form></section>
 <div class="grid"><section class="glass card"><h2>🎛️ Bot Buttons</h2>{''.join(cards)}</section><section class="glass card"><h2>🌐 Platforms</h2>{''.join(pcs)}</section></div>
+<section class="grid" style="margin-top:18px">
+<section class="glass card"><h2>📊 Bot Statistics</h2><div class="cred">
+<div class="pill"><small>Users</small><b>{len(d.get("users") or [])}</b></div>
+<div class="pill"><small>Downloads</small><b>{int((d.get("stats") or {}).get("downloads",0) or 0)}</b></div>
+<div class="pill"><small>Song Searches</small><b>{int((d.get("stats") or {}).get("song_searches",0) or 0)}</b></div>
+<div class="pill"><small>Songs Downloaded</small><b>{int((d.get("stats") or {}).get("songs",0) or 0)}</b></div>
+</div></section>
+<section class="glass card"><h2>📢 Broadcast</h2><form method="post" action="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/broadcast"><textarea name="message" required placeholder="Write a message to your bot users..." style="width:100%;min-height:110px;padding:13px;border-radius:15px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2);color:#fff;box-sizing:border-box"></textarea><button class="switch on" type="submit" style="margin-top:12px">📢 Send to Bot Users</button></form></section>
+</section>
 <section class="glass card" style="margin-top:18px"><h2>🛡️ Main Admin Protection</h2><p class="muted">Main-admin/global controls remain authoritative. You can turn your own features OFF, but you cannot turn ON a feature that the main admin has closed.</p><div class="cred"><div class="pill"><small>Managed Ads</small><b>{'OPEN' if global_ads else 'CLOSED'}</b></div><div class="pill"><small>Bot Creation</small><b>{'OPEN' if global_create else 'CLOSED'}</b></div></div><p><a href="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/logout">↪ Logout</a></p></section>
 </main></body></html>'''
 
@@ -1884,7 +1893,7 @@ class _AdGateHandler(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
         path=urllib.parse.urlparse(self.path).path
-        dm=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]{20,64})/(login|toggle|regenerate-pin)",path)
+        dm=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]{20,64})/(login|toggle|regenerate-pin|broadcast)",path)
         if not dm: self._send(404,"Not found"); return
         slug=dm.group(1); action=dm.group(2); d=managed_bots_col.find_one({"dashboard_slug":slug})
         if not d or not d.get("active",True) or d.get("suspended"):
@@ -1919,6 +1928,18 @@ class _AdGateHandler(BaseHTTPRequestHandler):
             if not _managed_token_cipher(): upd["dashboard_pin"]=pin
             managed_bots_col.update_one({"bot_id":str(d.get("bot_id"))},{"$set":upd})
             self.send_response(303); self.send_header("Location",f"/dashboard/{slug}"); self.send_header("Set-Cookie","qd_dash_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"); self.end_headers(); return
+        if action=="broadcast":
+            message=str(form.get("message") or "").strip()
+            if not message: self._send(400,"Broadcast message is empty."); return
+            targets=list((d.get("users") or [])); sent=failed=0
+            mb=managed_bot_objects.get(str(d.get("bot_id"))) or _managed_bot_start_instance(d)
+            if not mb: self._send(503,"Bot is currently offline."); return
+            for target in targets:
+                try:
+                    mb.send_message(int(target),html.escape(message),parse_mode="HTML"); sent+=1
+                except Exception: failed+=1
+            body=_dashboard_page(d,notice=f"Broadcast sent: {sent} · Failed: {failed}")
+            self._send(200,body); return
 
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
@@ -13396,6 +13417,8 @@ def _managed_bot_start_instance(doc):
             def _help(m): _ctx(); _start(m)
             def _create(m):
                 _ctx(); url=_creator_bot_url()
+                if not _dashboard_effective_button(_ensure_bot_dashboard(_managed_bot_doc(bid) or doc),"create_bot"):
+                    mb.send_message(m.chat.id,"🔒 <b>Create Your Own Bot is disabled for this bot.</b>",parse_mode="HTML"); return
                 if not _creation_open(): mb.send_message(m.chat.id,"🔒 <b>Bot creation is currently closed.</b>",parse_mode="HTML"); return
                 if url: mb.send_message(m.chat.id,"🤖 <b>Create Your Own Bot</b>\n\nOpen the Creator Bot to choose Video Downloader or Music Downloader.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Creator Bot",url=url)]]),parse_mode="HTML")
             def _remove_ads_menu(m):
@@ -13406,6 +13429,9 @@ def _managed_bot_start_instance(doc):
 
             def _admin(m):
                 _ctx()
+                fresh=_ensure_bot_dashboard(_managed_bot_doc(bid) or doc)
+                if not _dashboard_effective_button(fresh,"admin_panel"):
+                    mb.send_message(m.chat.id,"🔒 <b>Admin Panel is disabled for this bot.</b>",parse_mode="HTML"); return
                 if str(doc.get("owner_id") or "")!=str(m.from_user.id): mb.send_message(m.chat.id,"🔐 <b>Owner only.</b>",parse_mode="HTML"); return
                 typ="🎵 Music Downloader" if btype=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(_managed_bot_doc(bid) or {}) else "🆓 Standard"
                 kb=InlineKeyboardMarkup(row_width=2); kb.add(InlineKeyboardButton("📊 Stats",callback_data=f"mstats:{bid}"),InlineKeyboardButton("📢 Broadcast",callback_data=f"mbroadcast:{bid}"))
@@ -13554,7 +13580,17 @@ def _managed_bot_start_instance(doc):
                 mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
-            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
+            def _premium_menu_button(m):
+                _ctx()
+                fresh=_ensure_bot_dashboard(_managed_bot_doc(bid) or doc)
+                if not _dashboard_effective_button(fresh,"premium"):
+                    mb.send_message(m.chat.id,"🔒 <b>Premium is disabled for this bot.</b>",parse_mode="HTML"); return
+                _managed_premium_menu(str(m.from_user.id),m.chat.id)
+            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help)
+            mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create)
+            mb.message_handler(func=lambda m:m.text=="💎 PREMIUM")(_premium_menu_button)
+            mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu)
+            mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             def _managed_premium_menu_cb(call):
