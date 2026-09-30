@@ -12841,7 +12841,7 @@ def _creator_on_managed_update(update):
                 _creator_restart_managed_bot(fresh)
                 owner=str(fresh.get("owner_id") or owner_id or "")
                 text=(f"🔄 <b>Bot Token Updated</b>\n\n"
-                      f"🤖 <b>@{html.escape(str(fresh.get('username') or username or 'unknown'))}</b>\n\n"
+                      f"🤖 <b>@{html.escape(str(fresh.get('username') or 'unknown'))}</b>\n\n"
                       "Telegram changed/revoked this managed bot's token. "
                       "Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n"
                       "✅ Your bot remains in <b>My Bots</b> and keeps the same settings and Dashboard.")
@@ -12875,11 +12875,11 @@ def _creator_on_managed_update(update):
         return
 
 def _creator_check_managed_bots():
-    """Fast fallback health check for managed bots.
-    Telegram's managed_bot update is the primary path; this catches transient
-    missed updates and bots changed outside the normal flow.
+    """Fast fallback health check for Telegram-managed bots.
+    The managed_bot update is the primary path; this catches transient missed
+    updates and bots changed outside the normal flow.
     """
-    for d in list(managed_bots_col.find({"active":True,"suspended":{"$ne":True}})):
+    for d in list(managed_bots_col.find({"active":True,"suspended":{"$ne":True},"$or":[{"managed":{"$exists":False}},{"managed":True}]})):
         bid=str(d.get("bot_id") or "")
         token=_decrypt_managed_token(d)
         if not bid or not token: continue
