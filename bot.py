@@ -12733,6 +12733,17 @@ def _creator_on_managed_bot_created(msg):
         reply_markup=_creator_keyboard(uid))
 
 
+def _creator_notify_admins(text_msg):
+    try:
+        ids={str(x) for x in (ADMIN_IDS or [])}; ids.add(str(PRIMARY_ADMIN_ID))
+        try: ids.update(str(x) for x in get_admin_ids())
+        except Exception: pass
+        for aid in ids:
+            if aid and aid!="None":
+                try: _main_bot.send_message(int(aid),text_msg,parse_mode="HTML")
+                except Exception: pass
+    except Exception: pass
+
 def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
     """Notify the owner and remove a managed bot from the Creator system.
 
