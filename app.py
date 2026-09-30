@@ -28,13 +28,9 @@ def download():
     return send_file(filename, as_attachment=True)
 
 
-if __name__ == "__main__":
-    app.run()
-
-
 # ================= CREATOR DASHBOARD =================
-// This dashboard is intentionally small and isolated from the existing
-// downloader endpoint above. It does not change /download behavior.
+# This dashboard is intentionally small and isolated from the existing
+# downloader endpoint above. It does not change /download behavior.
 import base64
 import hashlib
 import hmac
@@ -415,3 +411,7 @@ def creator_dashboard_avatar(doc):
         return Response(rr.content,content_type=rr.headers.get("content-type","image/jpeg"),headers={"Cache-Control":"private,max-age=300"})
     except Exception:
         return "",404
+
+
+if __name__ == "__main__":
+    app.run()
