@@ -14286,8 +14286,26 @@ def _media_capture_main(message):
     if target.startswith("creator:"):
         kind=target.split(":",1)[1]
         if kind in {"video","music","all"}:
-            set_setting(f"creator_type_media_{kind}",media); set_setting(f"pending_admin_media_{uid}","")
-            bot.send_message(message.chat.id,f"✅ Creator {kind} media saved.",reply_markup=admin_menu()); return
+            # Creator Bot file_ids are bot-specific, so copy the media through Creator Bot first.
+            try:
+                info=bot.get_file(media["file_id"]); raw=bot.download_file(info.file_path)
+                field="video" if media["type"]=="video" else "photo"; method="sendVideo" if field=="video" else "sendPhoto"
+                fname="creator_card.mp4" if field=="video" else "creator_card.jpg"; mime="video/mp4" if field=="video" else "image/jpeg"
+                rr=requests.post(f"{CREATOR_API_BASE}/{method}",data={"chat_id":int(message.from_user.id)},files={field:(fname,raw,mime)},timeout=90)
+                payload=rr.json() if rr.content else {}
+                if not payload.get("ok"): raise RuntimeError(payload.get("description") or "Creator media upload failed")
+                sent=payload.get("result") or {}
+                new_id=(sent.get("video") or {}).get("file_id") if field=="video" else ((sent.get("photo") or [])[-1].get("file_id") if sent.get("photo") else None)
+                if not new_id: raise RuntimeError("Creator media upload returned no file_id")
+                set_setting(f"creator_type_media_{kind}",{"type":media["type"],"file_id":new_id})
+                set_setting(f"pending_admin_media_{uid}","")
+                try:
+                    if sent.get("message_id"): _creator_api("deleteMessage",{"chat_id":int(message.from_user.id),"message_id":int(sent["message_id"])})
+                except Exception: pass
+                bot.send_message(message.chat.id,f"✅ Creator {kind} media saved and synced.",reply_markup=admin_menu()); return
+            except Exception as e:
+                print("Creator media sync failed:",repr(e))
+                bot.send_message(message.chat.id,"❌ Creator Bot could not receive the media. Open Creator Bot once with /start, then try again."); return
     bot.send_message(message.chat.id,"ℹ️ No media upload is pending.",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text=="🖼 PREMIUM / CREATOR MEDIA")
