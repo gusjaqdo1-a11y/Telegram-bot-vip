@@ -13061,7 +13061,7 @@ def _managed_bot_is_owner(bot_id, uid):
 def _managed_bot_start_instance(doc):
     token=_decrypt_managed_token(doc or {})
     if not token: return None
-    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music"} else "video"
+    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","all"} else "video"
     if doc.get("suspended"): return None
     with managed_bot_lock:
         if bid in managed_bot_objects: return managed_bot_objects[bid]
@@ -13071,10 +13071,11 @@ def _managed_bot_start_instance(doc):
             managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username,"bot_type":btype,"active":True,"updated_at":datetime.now(timezone.utc)}},upsert=False); managed_bot_objects[bid]=mb
             def _ctx(): _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta)
             def _menu(owner=False):
+                ds=_managed_dashboard(_managed_bot_doc(bid) or doc); btn=ds.get("buttons") or {}
                 kb=ReplyKeyboardMarkup(resize_keyboard=True)
-                if _creation_open(): kb.add("🤖 Create Your Own Bot")
-                kb.add("🚫 Remove Ads")
-                if owner: kb.add("👑 ADMIN PANEL")
+                if _creation_open() and btn.get("create",True): kb.add("🤖 Create Your Own Bot")
+                if btn.get("remove_ads",True): kb.add("🚫 Remove Ads")
+                if owner and btn.get("admin",True): kb.add("👑 ADMIN PANEL")
                 return kb
             def _start(m):
                 _ctx(); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); owner=str(doc.get("owner_id") or "")==str(m.from_user.id)
@@ -13143,7 +13144,10 @@ def _managed_bot_start_instance(doc):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
                 try:
-                    if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
+                    ds=_managed_dashboard(_managed_bot_doc(bid) or doc); platform=detect_platform(link)
+                    if platform and not ds.get("platforms",{}).get(platform,True):
+                        mb.send_message(m.chat.id,f"🚫 <b>{html.escape(str(platform).title())}</b> downloads are disabled by this bot owner.",parse_mode="HTML"); return
+                    if platform=="youtube" and ds.get("premium_enabled",True) and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
@@ -13239,8 +13243,8 @@ def _managed_bot_start_instance(doc):
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
-            if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
-            else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
+            if btype in {"music","all"}: mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
+            if btype in {"video","all"}: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
