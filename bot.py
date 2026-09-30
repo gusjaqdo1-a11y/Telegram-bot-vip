@@ -13686,7 +13686,7 @@ def admin_premium_media_plan(call):
     bot.answer_callback_query(call.id,"Send the media now")
     bot.send_message(call.message.chat.id,f"🖼 <b>Premium {months} month(s)</b>\n\nSend one photo or video now. It replaces the previous media for this plan.",parse_mode="HTML")
 
-@bot.message_handler(content_types=["photo","video"])
+@bot.message_handler(func=lambda m: bool(get_setting(f"premium_media_pending_{m.from_user.id}","")), content_types=["photo","video"])
 def admin_premium_media_receive(m):
     if not is_admin(m.from_user.id): return
     months=str(get_setting(f"premium_media_pending_{m.from_user.id}","") or "")
