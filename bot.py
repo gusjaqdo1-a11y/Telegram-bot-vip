@@ -1801,6 +1801,21 @@ class _AdGateHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
+        m=re.fullmatch(r"/dashboard/([0-9]+)/avatar",path)
+        if m:
+            d=managed_bots_col.find_one({"bot_id":m.group(1),"active":True,"suspended":{"$ne":True}})
+            token=_decrypt_managed_token(d or {}) if d else ""
+            if not token: self._send(404,"Avatar unavailable."); return
+            try:
+                data=requests.post(f"https://api.telegram.org/bot{token}/getUserProfilePhotos",json={"user_id":int(d.get("bot_id")),"limit":1},timeout=10).json()
+                photos=((data.get("result") or {}).get("photos") or [])
+                fid=(photos[0][-1].get("file_id") if photos and photos[0] else "")
+                info=requests.post(f"https://api.telegram.org/bot{token}/getFile",json={"file_id":fid},timeout=10).json()
+                fp=((info.get("result") or {}).get("file_path") or "")
+                if not fp: self._send(404,"Avatar unavailable."); return
+                img=requests.get(f"https://api.telegram.org/file/bot{token}/{fp}",timeout=20)
+                self._send(200,img.content,"image/jpeg"); return
+            except Exception: self._send(404,"Avatar unavailable."); return
         m=re.fullmatch(r"/dashboard/([0-9]+)/?",path)
         if m:
             bid=m.group(1); d=managed_bots_col.find_one({"bot_id":bid})
