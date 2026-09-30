@@ -11561,21 +11561,32 @@ def _save_invoice_photo_admin(message, kind, plan):
         "The new image will be used automatically for that plan's Telegram invoice.",
         parse_mode="HTML",reply_markup=admin_menu())
 
+def _save_invoice_photo_admin(message, kind, plan):
+    if not is_admin(message.from_user.id): return
+    allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
+    kind=str(kind); plan=str(plan)
+    if kind not in allowed or plan not in allowed[kind]:
+        bot.send_message(message.chat.id,"❌ Invalid invoice plan.",reply_markup=admin_menu()); return
+    if not getattr(message,"photo",None):
+        retry=bot.send_message(message.chat.id,"❌ <b>Send an image only.</b>\nNo caption is required.",parse_mode="HTML")
+        bot.register_next_step_handler(retry,lambda m,k=kind,p=plan:_save_invoice_photo_admin(m,k,p)); return
+    set_setting(f"{kind}_invoice_photo_{plan}",str(message.photo[-1].file_id))
+    label="Premium" if kind=="premium" else "Remove Ads"
+    bot.send_message(message.chat.id,f"✅ <b>{label} {plan}-month invoice image saved.</b>\n\nNo caption was required. The previous image was replaced.",parse_mode="HTML",reply_markup=admin_menu())
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("invimg_upload:"))
 def invoice_image_upload_cb(call):
     if not is_admin(call.from_user.id): return
     parts=str(call.data).split(":"); kind=parts[1] if len(parts)>1 else ""; plan=parts[2] if len(parts)>2 else ""
     allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
     if kind not in allowed or plan not in allowed[kind]:
-        bot.answer_callback_query(call.id,"Invalid invoice plan.",show_alert=True); return
+        bot.answer_callback_query(call.id,"Invalid type.",show_alert=True); return
     bot.answer_callback_query(call.id)
     msg=bot.send_message(call.message.chat.id,
-        f"📤 <b>Send the invoice image now</b>\n\n"
-        f"Plan: <b>{'Premium' if kind=='premium' else 'Remove Ads'} {plan} month(s)</b>\n"
+        f"📤 <b>Send invoice image</b>\n\nPlan: <b>{'Premium' if kind=='premium' else 'Remove Ads'} {plan} month(s)</b>\n"
         "🖼️ Send the photo directly. <b>No caption is required.</b>\n"
-        "If an old image exists, this one automatically replaces it.",
-        parse_mode="HTML")
-    bot.register_next_step_handler(msg,lambda m,_k=kind,_p=plan:_save_invoice_photo_admin(m,_k,_p))
+        "The new image automatically replaces the old one.",parse_mode="HTML")
+    bot.register_next_step_handler(msg,lambda m,k=kind,p=plan:_save_invoice_photo_admin(m,k,p))
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("invimg_delete:"))
 def invoice_image_delete_cb(call):
