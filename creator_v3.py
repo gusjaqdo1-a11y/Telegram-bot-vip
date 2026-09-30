@@ -34,10 +34,31 @@ def apply(core):
         if not admin(uid) or st.get("state")!="admin_creator_card": return
         kind=str(st.get("kind") or "video")
         if getattr(m,"photo",None):
-            fid=m.photo[-1].file_id; typ="photo"
+            source_id=m.photo[-1].file_id; typ="photo"; method="sendPhoto"; field="photo"
         elif getattr(m,"video",None):
-            fid=m.video.file_id; typ="video"
+            source_id=m.video.file_id; typ="video"; method="sendVideo"; field="video"
         else: return
+        # file_id values belong to the bot that received the upload. Re-upload the
+        # media through Creator Bot so its file_id is valid when Creator Bot sends it.
+        fid=source_id
+        try:
+            import requests
+            tok=str(core.CREATOR_BOT_TOKEN or "")
+            if tok:
+                f=requests.post("https://api.telegram.org/bot"+str(core.TOKEN)+"/getFile",json={"file_id":source_id},timeout=15).json()
+                path=(f.get("result") or {}).get("file_path")
+                if path:
+                    raw=requests.get("https://api.telegram.org/file/bot"+str(core.TOKEN)+"/"+path,timeout=30).content
+                    rr=requests.post("https://api.telegram.org/bot"+tok+"/"+method,
+                        files={field:("creator_card.bin",raw)},
+                        data={"chat_id":str(m.chat.id)},timeout=45)
+                    body=rr.json()
+                    if body.get("ok"):
+                        result=body.get("result") or {}
+                        fid=(result.get("photo") or [{}])[-1].get("file_id") if typ=="photo" else result.get("video",{}).get("file_id")
+                        fid=fid or source_id
+        except Exception as e:
+            print("Creator card media re-upload failed:",repr(e))
         core.set_setting("creator_card_"+kind,{"title":{"video":"🎬 VIDEO DOWNLOADER","music":"🎵 MUSIC DOWNLOADER","all":"💎 ALL-IN-ONE DOWNLOADER"}[kind],
             "text":{"video":"Videos & photos from supported platforms. Fast and simple.","music":"Search songs, download full audio, metadata and artwork.","all":"Video + music features in one managed Downloader Bot."}[kind],
             "image":fid,"media_type":typ,"updated_at":now().isoformat()})
