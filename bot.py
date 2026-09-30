@@ -14135,8 +14135,1471 @@ for _lang,_d in MAIN_LABELS.items():
 
 
 
-# ================= MAIN RUN LOOP =================
 
+
+# ================= INTEGRATED CREATOR / MANAGED-BOT SYSTEM =================
+import sys as _integrated_sys
+
+
+# ---- creator_patch.py ----
+import hashlib
+from datetime import datetime, timezone
+
+def _integrated_creator_patch(core):
+    def start_create(uid, chat_id):
+        uid=str(uid)
+        if not core._creation_open():
+            core._creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=core._creator_keyboard(uid)); return
+        if not core._creator_verify_gate(uid,chat_id): return
+        core._creator_set_session(uid,{"state":"create_method","updated_at":datetime.now(timezone.utc)})
+        core._creator_api("sendPhoto",{"chat_id":chat_id,"photo":core._creator_card_url("all"),
+            "caption":"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose how you want to add your Downloader Bot.\n\n🚀 <b>Create with Telegram</b> — Telegram opens the official managed-bot screen; enter the bot name and username there.\n\n🔑 <b>Use Existing Token</b> — connect an existing bot using its token.",
+            "parse_mode":"HTML","reply_markup":{"inline_keyboard":[
+                [{"text":"🚀 Create with Telegram","callback_data":"ccreate_managed"}],
+                [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
+                [{"text":"❌ Cancel","callback_data":"ccancel_create"}],
+            ]}})
+    def existing_prompt(uid,chat_id):
+        sess=core._creator_session(uid)
+        core._creator_set_session(uid,{**sess,"state":"existing_token","updated_at":datetime.now(timezone.utc)})
+        core._creator_send(chat_id,"🔑 <b>USE EXISTING BOT TOKEN</b>\n\nSend your bot token in one message. Telegram will validate it, read the bot name/username and start it automatically.\n\n🔒 The token is stored encrypted and is never shown back.",
+            reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel_create"}]]})
+    def register_existing(uid,chat_id,token):
+        uid=str(uid); token=str(token or "").strip()
+        if not token:
+            core._creator_send(chat_id,"❌ Send the bot token in one message."); return
+        try:
+            info,err=core._creator_api_with_token(token,"getMe",{},timeout=15)
+            if err or not info or not info.get("id"):
+                core._creator_send(chat_id,"❌ <b>Telegram rejected this token.</b>\n\nCheck it and send again."); return
+            bid=str(info["id"]); username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot")
+            if not username:
+                core._creator_send(chat_id,"❌ Telegram did not return a bot username for this token."); return
+            old=core.managed_bots_col.find_one({"bot_id":bid})
+            if old and str(old.get("owner_id"))!=uid:
+                core._creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
+            sess=core._creator_session(uid); btype=str(sess.get("bot_type") or "video").lower()
+            if btype not in {"video","music","all"}: btype="video"
+            now=datetime.now(timezone.utc); pin=str((old or {}).get("dashboard_pin_plain") or "")
+            if len(pin)!=6 or not pin.isdigit(): pin=str(abs(hash((uid,bid)))%1000000).zfill(6)
+            dashboard=(old or {}).get("dashboard_settings") or {"platforms":{},"ads_enabled":True,"premium_enabled":True,
+                "buttons":{"create":True,"remove_ads":True,"admin":True,"powered_by":True},"locked_fields":[]}
+            doc={"bot_id":bid,"owner_id":uid,"token_enc":core._encrypt_managed_token(token),"username":username,"name":name,
+                "bot_type":btype,"active":True,"suspended":False,"premium_until":(old or {}).get("premium_until"),
+                "wallet_linked":bool((old or {}).get("wallet_linked",False)),"created_at":(old or {}).get("created_at",now),
+                "updated_at":now,"users":list((old or {}).get("users") or []),"managed_by_telegram":False,
+                "token_source":"existing_token","dashboard_pin_plain":pin,"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest(),
+                "dashboard_settings":dashboard}
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
+            core._creator_clear_session(uid); d=core.managed_bots_col.find_one({"bot_id":bid}) or doc; core._managed_bot_start_instance(d)
+            dash=f"{str(core.AD_PUBLIC_BASE_URL).rstrip('/')}/dashboard/{bid}"
+            core._creator_send(chat_id,f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{core.html.escape(name)}</b>\n🔗 @{core.html.escape(username)}\n🆔 <code>{bid}</code>\n\nYour existing bot is now running as a Downloader Bot.\n\n🌐 Dashboard: <code>{core.html.escape(dash)}</code>\n👤 Login username: <b>@{core.html.escape(username)}</b>\n🔐 Dashboard PIN: <code>{pin}</code>",reply_markup=core._creator_keyboard(uid))
+        except Exception as e:
+            print("Existing bot connection failed:",repr(e)); core._creator_send(chat_id,"❌ <b>Could not connect this bot.</b>\n\nCheck the token and try again.")
+    old_text=core._creator_handle_text
+    def handle_text(uid,chat_id,text):
+        if str(core._creator_session(uid).get("state") or "")=="existing_token":
+            register_existing(uid,chat_id,text); return
+        return old_text(uid,chat_id,text)
+    old_callback=core._creator_callback
+    def callback(call):
+        data=str((call or {}).get("data") or ""); uid=str(((call or {}).get("from") or {}).get("id") or "")
+        chat_id=(((call or {}).get("message") or {}).get("chat") or {}).get("id")
+        if data=="ccancel_create":
+            core._creator_answer(call.get("id"),"Cancelled"); core._creator_clear_session(uid)
+            core._creator_send(chat_id,"↩️ <b>Creation cancelled.</b>",reply_markup=core._creator_keyboard(uid)); return
+        if data=="ccreate_managed":
+            core._creator_answer(call.get("id"),"Choose the bot type"); core._creator_request_bot_type(uid,chat_id); return
+        if data=="ccreate_back": start_create(uid,chat_id); return
+        if data=="cuse_existing_token":
+            core._creator_answer(call.get("id"),"Send your bot token"); existing_prompt(uid,chat_id); return
+        return old_callback(call)
+    core._creator_start_create=start_create
+    core._creator_handle_text=handle_text
+    core._creator_callback=callback
+    return core
+
+
+
+# ---- creator_v2.py ----
+# creator_v2.py
+import os, json, time, secrets, hashlib, html, urllib.parse, re
+from datetime import datetime, timezone
+
+def _integrated_creator_v2(core):
+    def now(): return datetime.now(timezone.utc)
+    def is_admin(uid):
+        try: return bool(core.is_admin(uid))
+        except Exception: return str(uid) in {str(x) for x in getattr(core,"ADMIN_IDS",[])}
+
+    # ---------- Dashboard persistence ----------
+    def defaults():
+        return {
+            "ads_enabled": True, "premium_enabled": True, "default_quality": "best",
+            "welcome_text": "",
+            "platforms": {x: True for x in (
+                "youtube","tiktok","instagram","facebook","pinterest","snapchat","twitter",
+                "reddit","threads","likee","vimeo","dailymotion","soundcloud","twitch",
+                "tumblr","streamable","odnoklassniki")},
+            "buttons": {"create":True,"remove_ads":True,"admin":True,"powered_by":True,"premium":True,"music":True},
+            "locked_fields": []
+        }
+
+    def ensure_dashboard(d):
+        if not d: return d
+        bid=str(d.get("bot_id"))
+        pin=str(d.get("dashboard_pin_plain") or "")
+        if not (pin.isdigit() and len(pin)==6):
+            seed=f"{d.get('owner_id')}:{bid}:{os.getenv('DASHBOARD_PIN_SECRET','quickdl-dashboard')}"
+            pin=str(int(hashlib.sha256(seed.encode()).hexdigest()[:12],16)%1000000).zfill(6)
+        s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+        b=defaults()
+        for k in ("ads_enabled","premium_enabled","default_quality","welcome_text"):
+            if k in s: b[k]=s[k]
+        for k in ("platforms","buttons"):
+            if isinstance(s.get(k),dict): b[k].update(s[k])
+        locks=core.get_setting("dashboard_locked_fields",[])
+        b["locked_fields"]=list(locks or s.get("locked_fields") or [])
+        upd={"dashboard_pin_plain":pin,
+             "dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest(),
+             "dashboard_settings":b,
+             "dashboard_url":str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+bid}
+        core.managed_bots_col.update_one({"bot_id":bid},{"$set":upd},upsert=True)
+        d.update(upd)
+        return d
+
+    def get_dash(bid):
+        return ensure_dashboard(core.managed_bots_col.find_one({"bot_id":str(bid)}) or {})
+
+    def dash_link(d):
+        return str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+str(d.get("bot_id"))
+
+    def notify_owner(d,text):
+        try:
+            if d.get("owner_id"): core._creator_send(int(d["owner_id"]),text,parse_mode="HTML")
+        except Exception as e: print("dashboard owner notify:",repr(e))
+
+    def notify_admin(text):
+        for aid in getattr(core,"ADMIN_IDS",[]):
+            try: core.bot.send_message(int(aid),text,parse_mode="HTML")
+            except Exception: pass
+
+    # ---------- Creator: three visual choices + native Telegram managed-bot UI ----------
+    card_defaults={
+        "video":{"title":"🎬 VIDEO DOWNLOADER","text":"Videos & photos from supported platforms. Fast and simple.","image":""},
+        "music":{"title":"🎵 MUSIC DOWNLOADER","text":"Search songs, download full audio, metadata and artwork.","image":""},
+        "all":{"title":"💎 ALL-IN-ONE DOWNLOADER","text":"Video + music features in one managed Downloader Bot.","image":""}
+    }
+    def card(kind):
+        x=core.get_setting("creator_card_"+kind,card_defaults[kind])
+        return x if isinstance(x,dict) else card_defaults[kind]
+
+    def safe_username(v):
+        v=str(v or "").lstrip("@")
+        return v if re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",v,re.I) else "QuickDLDownloaderBot"
+
+    def create_screen(uid,chat_id,kind="video",edit=None):
+        sess=core._creator_session(uid)
+        rid=int(sess.get("request_id") or secrets.randbelow(2000000000)+1)
+        name=str(sess.get("suggested_name") or "QuickDL Downloader")[:64]
+        username=safe_username(sess.get("suggested_username") or "QuickDLDownloaderBot")
+        core._creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":kind,
+            "request_id":rid,"suggested_name":name,"suggested_username":username,"updated_at":now()})
+        c=card(kind)
+        caption="<b>"+html.escape(str(c.get("title") or ""))+"</b>\n\n"+html.escape(str(c.get("text") or ""))+"\n\nChoose a type. Then tap <b>🚀 Create with Telegram</b>. Telegram opens the official creation screen where the name and username can be edited."
+        rows=[
+            [{"text":"🎬 Video Downloader","callback_data":"v2type:video"},{"text":"🎵 Music Downloader","callback_data":"v2type:music"}],
+            [{"text":"💎 All-in-One Downloader","callback_data":"v2type:all"}],
+            [{"text":"🚀 Create with Telegram","callback_data":"v2managed:"+str(rid)}],
+            [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
+            [{"text":"❌ Cancel","callback_data":"v2cancel"}]]
+        markup={"inline_keyboard":rows}
+        image=str(c.get("image") or "").strip()
+        if edit:
+            cid=edit["chat_id"]; mid=edit["message_id"]
+            if image:
+                rr=core._creator_api("editMessageMedia",{"chat_id":cid,"message_id":mid,
+                    "media":{"type":"photo","media":image,"caption":caption,"parse_mode":"HTML"},"reply_markup":markup})
+                if rr[1]: core._creator_edit(cid,mid,caption,reply_markup=markup)
+            else: core._creator_edit(cid,mid,caption,reply_markup=markup)
+        elif image:
+            core._creator_api("sendPhoto",{"chat_id":chat_id,"photo":image,"caption":caption,
+                "parse_mode":"HTML","reply_markup":markup})
+        else:
+            core._creator_send(chat_id,caption,reply_markup=markup)
+
+    def start_create(uid,chat_id):
+        if not core._creation_open():
+            core._creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=core._creator_keyboard(uid)); return
+        if not core._creator_verify_gate(uid,chat_id): return
+        core._creator_set_session(uid,{"state":"type","updated_at":now()})
+        create_screen(uid,chat_id,"video")
+
+    old_text=core._creator_handle_text
+    def text_handler(uid,chat_id,text):
+        st=str(core._creator_session(uid).get("state") or "")
+        if st=="type":
+            core._creator_send(chat_id,"Choose one of the three bot types using the buttons above."); return
+        if st=="waiting_managed_bot":
+            core._creator_send(chat_id,"⏳ Tap <b>🚀 Create with Telegram</b>. Telegram will collect the bot name and username directly."); return
+        return old_text(uid,chat_id,text)
+    core._creator_start_create=start_create
+    core._creator_handle_text=text_handler
+
+    old_cb=core._creator_callback
+    def callback(call):
+        data=str((call or {}).get("data") or "")
+        uid=str(((call or {}).get("from") or {}).get("id") or "")
+        msg=((call or {}).get("message") or {}); cid=(msg.get("chat") or {}).get("id"); mid=msg.get("message_id")
+        if data=="v2cancel":
+            core._creator_answer(call.get("id"),"Cancelled"); core._creator_clear_session(uid)
+            try: core._creator_edit(cid,mid,"↩️ <b>Creation cancelled.</b>",reply_markup=core._creator_keyboard(uid))
+            except Exception: pass
+            return
+        if data.startswith("v2type:"):
+            kind=data.split(":",1)[1]
+            if kind not in {"video","music","all"}:
+                core._creator_answer(call.get("id"),"Invalid type",True); return
+            if core._creator_session(uid).get("state") not in {"type","waiting_managed_bot"}:
+                core._creator_answer(call.get("id"),"Creation session expired.",True); return
+            core._creator_answer(call.get("id"),"Selected")
+            create_screen(uid,cid,kind,{"chat_id":cid,"message_id":mid}); return
+        if data.startswith("v2managed:"):
+            rid=int(data.split(":",1)[1]); s=core._creator_session(uid)
+            if int(s.get("request_id") or 0)!=rid:
+                core._creator_answer(call.get("id"),"Session expired.",True); return
+            name=str(s.get("suggested_name") or "QuickDL Downloader")[:64]
+            username=safe_username(s.get("suggested_username"))
+            kb={"keyboard":[[{"text":"🚀 Create with Telegram","request_managed_bot":{
+                "request_id":rid,"suggested_name":name,"suggested_username":username}}],
+                [{"text":"❌ Cancel"}]],"resize_keyboard":True,"one_time_keyboard":True}
+            core._creator_answer(call.get("id"),"Open Telegram")
+            core._creator_send(cid,"🚀 <b>CREATE WITH TELEGRAM</b>\n\nSuggested name: <b>"+html.escape(name)+"</b>\nSuggested username: <b>@"+html.escape(username)+"</b>\n\nTap the button. Telegram will open the native creation flow.",reply_markup=kb)
+            return
+        return old_cb(call)
+    core._creator_callback=callback
+
+    # ---------- Managed token rotation ----------
+    def stop_instance(bid):
+        bid=str(bid); mb=core.managed_bot_objects.pop(bid,None)
+        if mb:
+            try: mb.stop_polling()
+            except Exception: pass
+        core.managed_bot_threads.pop(bid,None)
+
+    def restart(d):
+        stop_instance(d.get("bot_id"))
+        time.sleep(.15)
+        try: return core._managed_bot_start_instance(d)
+        except Exception as e: print("managed restart:",repr(e)); return None
+
+    def managed_update(update):
+        obj=(update or {}).get("managed_bot") or {}; info=obj.get("bot") or {}; owner=obj.get("user") or {}
+        bid=str(info.get("id") or "")
+        if not bid: return
+        old=core.managed_bots_col.find_one({"bot_id":bid}) or {}
+        fresh,err=core._creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=15)
+        if err or not fresh:
+            if old: core._creator_notify_managed_bot_removed(old,"deleted_or_revoked")
+            return
+        username=str(info.get("username") or old.get("username") or "").lstrip("@")
+        name=str(info.get("first_name") or old.get("name") or "Downloader Bot")
+        old_token=core._decrypt_managed_token(old) if old else ""
+        if old and old_token and str(fresh)!=str(old_token):
+            d=dict(old); d.update({"token_enc":core._encrypt_managed_token(fresh),"username":username or d.get("username"),
+                "name":name,"active":True,"suspended":False,"updated_at":now(),
+                "token_rotated_at":now(),"token_rotation_count":int(d.get("token_rotation_count",0) or 0)+1})
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":d}); d=core.managed_bots_col.find_one({"bot_id":bid}) or d
+            ensure_dashboard(d); restart(d)
+            u=username or d.get("username") or "unknown"
+            notify_owner(d,"🔄 <b>Bot Token Updated</b>\n\n🤖 @"+html.escape(str(u).lstrip("@"))+"\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and continues using the same settings.")
+            notify_admin("🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @"+html.escape(str(u).lstrip("@"))+"\nOwner: <code>"+html.escape(str(d.get("owner_id")))+"</code>")
+            return
+        if old:
+            d=dict(old); d.update({"username":username or d.get("username"),"name":name,"updated_at":now()})
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":d}); ensure_dashboard(d); return
+        uid=str(owner.get("id") or ""); s=core._creator_session(uid); btype=str(s.get("bot_type") or "video")
+        if btype not in {"video","music","all"}: btype="video"
+        d={"bot_id":bid,"owner_id":uid,"token_enc":core._encrypt_managed_token(fresh),"username":username,
+           "name":name,"bot_type":btype,"active":True,"suspended":False,"premium_until":None,
+           "wallet_linked":False,"created_at":now(),"updated_at":now(),"users":[]}
+        ensure_dashboard(d); core.managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True); restart(d)
+
+    core._creator_on_managed_update=managed_update
+
+    def health():
+        for d in list(core.managed_bots_col.find({"active":True,"suspended":{"$ne":True}})):
+            bid=str(d.get("bot_id") or ""); token=core._decrypt_managed_token(d)
+            if not bid or not token: continue
+            try:
+                _,err=core._creator_api_with_token(token,"getMe",{},timeout=8)
+                if not err: continue
+                fresh,ferr=core._creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
+                if not ferr and fresh:
+                    if str(fresh)!=str(token):
+                        managed_update({"managed_bot":{"bot":{"id":int(bid),"username":d.get("username"),"first_name":d.get("name")},"user":{"id":int(d.get("owner_id") or 0)}}})
+                    continue
+                core._creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+            except Exception as e: print("managed health:",repr(e))
+    core._creator_check_managed_bots=health
+
+    old_created=core._creator_on_managed_bot_created
+    def created(msg):
+        old_created(msg)
+        info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}; bid=str(info.get("id") or "")
+        if bid:
+            d=get_dash(bid)
+            if d:
+                notify_owner(d,"🌐 <b>Dashboard Ready</b>\n\n🤖 @"+html.escape(str(d.get("username") or "unknown"))+
+                    "\n🔗 <a href=\""+html.escape(dash_link(d),quote=True)+"\">Open Dashboard</a>"+
+                    "\n👤 Login username: <b>@"+html.escape(str(d.get("username") or "unknown"))+"</b>"+
+                    "\n🔐 Dashboard PIN: <code>"+html.escape(str(d.get("dashboard_pin_plain")))+"</code>\n\nUse <b>Save</b> so this device remembers the dashboard.")
+    core._creator_on_managed_bot_created=created
+
+    # ---------- Dashboard HTTP server ----------
+    sessions=core.db1["dashboard_sessions"]
+
+    def page(d):
+        s=d.get("dashboard_settings") or defaults(); p=s.get("platforms") or {}; b=s.get("buttons") or {}
+        prow="".join("<label><span>"+html.escape(k.title())+"</span><input type=\"checkbox\" data-p=\""+html.escape(k)+"\" "+("checked" if p.get(k,True) else "")+"></label>" for k in p)
+        brow="".join("<label><span>"+html.escape(k.replace("_"," ").title())+"</span><input type=\"checkbox\" data-b=\""+html.escape(k)+"\" "+("checked" if b.get(k,True) else "")+"></label>" for k in b)
+        bid=str(d.get("bot_id")); uname=str(d.get("username") or "bot")
+        return """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QuickDL Dashboard</title><style>
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#1a3654,#07111f 60%,#03070d);color:#f7fbff;font:15px system-ui,Segoe UI,sans-serif}
+.wrap{max-width:1100px;margin:auto;padding:22px}.glass{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(20px);border-radius:24px;padding:20px;box-shadow:0 20px 70px #0007}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}label{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #ffffff18}
+input,textarea,select{width:100%;padding:12px;border-radius:12px;border:1px solid #ffffff22;background:#07111f;color:white}input[type=checkbox]{width:auto}
+button{border:0;border-radius:13px;padding:12px 16px;font-weight:800;background:#2387ff;color:white}.muted{opacity:.65}.ok{color:#80f2a0}.err{color:#ff9a9a}
+#app{display:none}.row{display:flex;gap:10px;flex-wrap:wrap}</style></head><body><div class="wrap">
+<div id="login" class="glass"><h1>🔐 Bot Dashboard</h1><p class="muted">Use the username and 6-digit PIN supplied by Creator Bot.</p>
+<input id="u" placeholder="@botusername"><br><br><input id="pin" maxlength="6" inputmode="numeric" placeholder="Dashboard PIN"><br><br><button onclick="login()">Login</button><p id="m"></p></div>
+<div id="app"><div class="glass"><h1>🤖 @""" + html.escape(uname) + """</h1><p class="muted">""" + html.escape(str(d.get("name") or "Downloader Bot")) + """</p><p>🟢 Connected</p></div><br>
+<div class="grid"><div class="glass"><h2>🌐 Platforms</h2>""" + prow + """</div>
+<div class="glass"><h2>🎛️ Buttons</h2>""" + brow + """</div>
+<div class="glass"><h2>⚡ Download</h2><select id="q"><option value="best">Best available</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">1440p</option><option value="2160">2160p</option></select>
+<label><span>Ads enabled</span><input id="ads" type="checkbox" """ + ("checked" if s.get("ads_enabled",True) else "") + """></label>
+<label><span>Premium enabled</span><input id="pre" type="checkbox" """ + ("checked" if s.get("premium_enabled",True) else "") + """></label></div>
+<div class="glass"><h2>✍️ Welcome message</h2><textarea id="w" rows="8">""" + html.escape(str(s.get("welcome_text") or "")) + """</textarea><p class="muted">Admin-locked fields cannot be changed here.</p>
+<div class="row"><button onclick="save()">💾 Save</button><button onclick="logout()">Logout</button></div><p id="sm"></p></div></div></div></div>
+<script>
+const BID=""" + json.dumps(bid) + """;let tok=localStorage.getItem("quickdl_dash_"+BID)||"";
+function show(){loginBox.style.display=tok?"none":"block";app.style.display=tok?"block":"none"}
+async function api(path,data){let r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Dashboard-Token":tok},body:JSON.stringify(data||{})});let j=await r.json();if(!r.ok)throw Error(j.error||"Request failed");return j}
+async function login(){try{let u=document.getElementById("u").value.replace(/^@/,"").trim(),p=document.getElementById("pin").value.trim();let j=await api("/api/dashboard/login",{bot_id:BID,username:u,pin:p});tok=j.token;localStorage.setItem("quickdl_dash_"+BID,tok);show()}catch(e){m.innerHTML='<span class="err">'+e.message+"</span>"}}
+async function save(){try{let platforms={},buttons={};document.querySelectorAll("[data-p]").forEach(x=>platforms[x.dataset.p]=x.checked);document.querySelectorAll("[data-b]").forEach(x=>buttons[x.dataset.b]=x.checked);await api("/api/dashboard/save",{bot_id:BID,settings:{platforms:platforms,buttons:buttons,ads_enabled:ads.checked,premium_enabled:pre.checked,default_quality:q.value,welcome_text:w.value}});sm.innerHTML='<span class="ok">✅ Saved</span>'}catch(e){sm.innerHTML='<span class="err">'+e.message+"</span>"}}
+function logout(){localStorage.removeItem("quickdl_dash_"+BID);tok="";show()}const loginBox=document.getElementById("login"),app=document.getElementById("app");show();
+</script></body></html>"""
+
+    def json_out(h,code,obj):
+        raw=json.dumps(obj,ensure_ascii=False).encode()
+        h.send_response(code); h.send_header("Content-Type","application/json"); h.send_header("Cache-Control","no-store")
+        h.send_header("Content-Length",str(len(raw))); h.end_headers(); h.wfile.write(raw)
+
+    old_get=core._AdGateHandler.do_GET
+    def do_get(h):
+        path=urllib.parse.urlparse(h.path).path
+        if path.startswith("/dashboard/"):
+            bid=path.split("/",2)[2] if len(path.split("/",2))>2 else ""; d=get_dash(bid)
+            if not d: h._send(404,"Dashboard not found."); return
+            h._send(200,page(d)); return
+        return old_get(h)
+    core._AdGateHandler.do_GET=do_get
+
+    def do_post(h):
+        path=urllib.parse.urlparse(h.path).path
+        try: n=int(h.headers.get("Content-Length","0")); data=json.loads(h.rfile.read(n) or b"{}")
+        except Exception: json_out(h,400,{"error":"Invalid JSON"}); return
+        if path=="/api/dashboard/login":
+            d=get_dash(str(data.get("bot_id") or ""))
+            if not d: json_out(h,404,{"error":"Dashboard not found"}); return
+            u=str(data.get("username") or "").lstrip("@").lower(); pin=str(data.get("pin") or "")
+            if u!=str(d.get("username") or "").lstrip("@").lower() or pin!=str(d.get("dashboard_pin_plain") or ""):
+                json_out(h,401,{"error":"Invalid username or PIN"}); return
+            tok=secrets.token_urlsafe(32); sessions.insert_one({"token_hash":hashlib.sha256(tok.encode()).hexdigest(),"owner_id":str(d.get("owner_id")),"bot_id":str(d.get("bot_id")),"created_at":now(),"last_seen_at":now()})
+            json_out(h,200,{"ok":True,"token":tok}); return
+        if path=="/api/dashboard/save":
+            bid=str(data.get("bot_id") or ""); tok=h.headers.get("X-Dashboard-Token","")
+            sd=sessions.find_one({"token_hash":hashlib.sha256(tok.encode()).hexdigest(),"bot_id":bid}); d=get_dash(bid)
+            if not sd or not d or str(sd.get("owner_id"))!=str(d.get("owner_id")): json_out(h,401,{"error":"Session expired"}); return
+            inc=data.get("settings") if isinstance(data.get("settings"),dict) else {}; cur=d.get("dashboard_settings") or defaults()
+            locks=set(cur.get("locked_fields") or [])
+            out=dict(cur)
+            for k in ("ads_enabled","premium_enabled","default_quality","welcome_text"):
+                if k in inc and k not in locks: out[k]=inc[k]
+            for k in ("platforms","buttons"):
+                if k not in locks and isinstance(inc.get(k),dict):
+                    z=dict(out.get(k) or {}); z.update({str(a):bool(v) for a,v in inc[k].items()}); out[k]=z
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_settings":out,"updated_at":now()}})
+            json_out(h,200,{"ok":True}); return
+        json_out(h,404,{"error":"Not found"})
+    core._AdGateHandler.do_POST=do_post
+
+    # ---------- Premium media for each price ----------
+    media_col=core.db1["premium_plan_media"]
+    def media(months): return media_col.find_one({"_id":str(months)}) or {}
+    def send_media(obj,chat_id,months):
+        d=media(months); fid=str(d.get("file_id") or "")
+        if not fid: return
+        try:
+            if d.get("type")=="video": obj.send_video(chat_id,fid,caption=d.get("caption") or "",parse_mode="HTML")
+            else: obj.send_photo(chat_id,fid,caption=d.get("caption") or "",parse_mode="HTML")
+        except Exception as e: print("premium media:",repr(e))
+
+    # Main admin can upload one photo/video per plan.
+    @core.bot.message_handler(func=lambda m: bool(m.text) and m.text=="💎 PREMIUM MEDIA")
+    def premium_media_menu(m):
+        if not is_admin(m.from_user.id): return
+        kb=core.InlineKeyboardMarkup(row_width=2)
+        for x in ("1","3","9","12"):
+            d=media(x); kb.add(core.InlineKeyboardButton("💎 "+x+"M"+(" 📷" if d else ""),callback_data="v2media:"+x))
+        core.bot.send_message(m.chat.id,"💎 <b>PREMIUM PLAN MEDIA</b>\n\nChoose a plan, then send its photo or video.",parse_mode="HTML",reply_markup=kb)
+
+    @core.bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("v2media:"))
+    def premium_media_pick(c):
+        if not is_admin(c.from_user.id): core.bot.answer_callback_query(c.id,"Admin only",show_alert=True); return
+        x=str(c.data).split(":",1)[1]; core._creator_set_session(str(c.from_user.id),{"state":"admin_premium_media","months":x})
+        core.bot.answer_callback_query(c.id); core.bot.send_message(c.message.chat.id,"📷 <b>Premium "+html.escape(x)+" month(s)</b>\n\nSend a photo or video now.",parse_mode="HTML")
+
+    @core.bot.message_handler(content_types=["photo","video"])
+    def premium_media_receive(m):
+        uid=str(m.from_user.id); st=core._creator_session(uid)
+        if not is_admin(uid) or st.get("state")!="admin_premium_media": return
+        x=str(st.get("months") or ""); fid=m.photo[-1].file_id if getattr(m,"photo",None) else m.video.file_id
+        typ="photo" if getattr(m,"photo",None) else "video"
+        media_col.update_one({"_id":x},{"$set":{"file_id":fid,"type":typ,"caption":"💎 Premium — "+x+" month(s)","updated_at":now()}},upsert=True)
+        core._creator_clear_session(uid); core.bot.send_message(m.chat.id,"✅ <b>Premium "+x+"-month media saved.</b>",reply_markup=core.admin_menu())
+
+    def premium_plans(obj,c,token):
+        row=core.ad_gates_col.find_one({"token":str(token)})
+        if not row or str(row.get("user_id"))!=str(c.from_user.id):
+            obj.answer_callback_query(c.id,"Invalid ad session.",show_alert=True); return
+        plans=core.get_premium_prices(); rows=[]
+        for x in ("1","3","9","12"):
+            if x in plans: rows.append([core.InlineKeyboardButton("💎 "+x+" Month — $"+format(float(plans[x]),".2f"),callback_data="v2prem:"+token+":"+x)])
+        rows.append([core.InlineKeyboardButton("⬅️ Back",callback_data="adpremium:"+token)])
+        obj.answer_callback_query(c.id)
+        obj.edit_message_text(c.message.chat.id,c.message.message_id,"💎 <b>PREMIUM</b>\n\nChoose a Premium period.\n\n"+
+            "\n".join("• <b>"+x+" month(s)</b> — $"+format(float(plans[x]),".2f") for x in ("1","3","9","12") if x in plans)+
+            "\n\nPayment is handled by <b>@Downloadvedioytibot</b> with Telegram Stars.",parse_mode="HTML",reply_markup=core.InlineKeyboardMarkup(rows))
+    core._show_ad_premium_plans=premium_plans
+
+    @core.bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("v2prem:"))
+    def v2prem(c):
+        p=str(c.data).split(":"); token=p[1] if len(p)>1 else ""; months=p[2] if len(p)>2 else ""
+        row=core.ad_gates_col.find_one({"token":token})
+        if not row or str(row.get("user_id"))!=str(c.from_user.id): core.bot.answer_callback_query(c.id,"Invalid session.",show_alert=True); return
+        try:
+            link,stars=core._create_ad_premium_invoice(token,str(c.from_user.id),str(row.get("bot_id") or "main"),months)
+            send_media(core.bot,c.message.chat.id,months)
+            core.bot.answer_callback_query(c.id,"Invoice ready")
+            core.bot.send_message(c.message.chat.id,"💎 <b>Premium — "+html.escape(months)+" month(s)</b>\n\n⭐ Price: <b>"+str(stars)+" Stars</b>\n\nPremium activates automatically after successful payment.",parse_mode="HTML",reply_markup=core.InlineKeyboardMarkup([[core.InlineKeyboardButton("⭐ PAY NOW",url=link)]]))
+        except Exception as e: print("premium invoice v2:",repr(e)); core.bot.answer_callback_query(c.id,"Could not create invoice.",show_alert=True)
+
+    # ---------- Main admin menu additions ----------
+    old_admin_menu=core.admin_menu
+    def admin_menu_v2():
+        kb=old_admin_menu()
+        try: kb.add("💎 PREMIUM MEDIA","🌐 DASHBOARD CONTROL")
+        except Exception: pass
+        try: kb.add("🗑 Delete Last Broadcast","🗑 Delete 2 Last Broadcast")
+        except Exception: pass
+        return kb
+    core.admin_menu=admin_menu_v2
+
+    @core.bot.message_handler(func=lambda m: bool(m.text) and m.text=="🌐 DASHBOARD CONTROL")
+    def dashboard_control(m):
+        if not is_admin(m.from_user.id): return
+        locks=core.get_setting("dashboard_locked_fields",[])
+        core.bot.send_message(m.chat.id,"🌐 <b>DASHBOARD CONTROL</b>\n\nCurrent locks: <code>"+html.escape(json.dumps(locks,ensure_ascii=False))+"</code>\n\nSend a JSON array to replace them, e.g. <code>[\"ads_enabled\",\"premium_enabled\"]</code>.",parse_mode="HTML")
+        core._creator_set_session(str(m.from_user.id),{"state":"admin_dashboard_locks"})
+
+    @core.bot.message_handler(func=lambda m: bool(m.text) and is_admin(m.from_user.id) and core._creator_session(str(m.from_user.id)).get("state")=="admin_dashboard_locks")
+    def dashboard_lock_receive(m):
+        try:
+            x=json.loads((m.text or "").strip())
+            if not isinstance(x,list): raise ValueError
+            core.set_setting("dashboard_locked_fields",[str(v) for v in x]); core._creator_clear_session(str(m.from_user.id))
+            core.bot.send_message(m.chat.id,"✅ <b>Dashboard locks updated.</b>",reply_markup=core.admin_menu())
+        except Exception: core.bot.send_message(m.chat.id,"❌ Invalid JSON array.")
+
+    # Broadcast deletion store. New broadcast implementations can call core._record_broadcast_message.
+    bcol=core.db1["broadcast_history"]
+    def record_broadcast(admin_id,chat_id,message_id):
+        if is_admin(admin_id):
+            bcol.insert_one({"admin_id":str(admin_id),"chat_id":int(chat_id),"message_id":int(message_id),"created_at":now()})
+    core._record_broadcast_message=record_broadcast
+
+    def delete_broadcasts(n,m):
+        if not is_admin(m.from_user.id): return
+        rows=list(bcol.find({"admin_id":str(m.from_user.id)}).sort("created_at",-1).limit(n)); deleted=0
+        for r in rows:
+            try: core.bot.delete_message(int(r["chat_id"]),int(r["message_id"])); deleted+=1
+            except Exception: pass
+        if rows: bcol.delete_many({"_id":{"$in":[r["_id"] for r in rows]}})
+        core.bot.send_message(m.chat.id,"🗑 <b>Broadcast deletion</b>\n\nDeleted: <b>"+str(deleted)+"</b> message(s).")
+    @core.bot.message_handler(func=lambda m: bool(m.text) and m.text=="🗑 Delete Last Broadcast")
+    def delete_last(m): delete_broadcasts(1,m)
+    @core.bot.message_handler(func=lambda m: bool(m.text) and m.text=="🗑 Delete 2 Last Broadcast")
+    def delete_two(m): delete_broadcasts(2,m)
+
+    # Persist dashboard credentials for all current bots.
+    try:
+        for d in core.managed_bots_col.find({}): ensure_dashboard(d)
+    except Exception as e: print("dashboard migration:",repr(e))
+
+    return core
+
+
+
+# ---- creator_v3.py ----
+def _integrated_creator_v3(core):
+    import html
+    from datetime import datetime, timezone
+
+    def admin(uid):
+        try: return bool(core.is_admin(uid))
+        except Exception: return str(uid) in {str(x) for x in getattr(core,"ADMIN_IDS",[])}
+
+    def now(): return datetime.now(timezone.utc)
+
+    # Creator card media: one admin-managed image/video per bot type.
+    @core.bot.message_handler(func=lambda m: bool(m.text) and m.text=="🎨 CREATOR CARD MEDIA")
+    def creator_card_menu(m):
+        if not admin(m.from_user.id): return
+        kb=core.InlineKeyboardMarkup(row_width=3)
+        kb.add(core.InlineKeyboardButton("🎬 Video",callback_data="v3card:video"),
+               core.InlineKeyboardButton("🎵 Music",callback_data="v3card:music"),
+               core.InlineKeyboardButton("💎 All",callback_data="v3card:all"))
+        core.bot.send_message(m.chat.id,"🎨 <b>CREATOR CARD MEDIA</b>\n\nChoose a card, then send a photo or video. The selected media is shown when users open Create My Bot.",parse_mode="HTML",reply_markup=kb)
+
+    @core.bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("v3card:"))
+    def creator_card_pick(c):
+        if not admin(c.from_user.id):
+            core.bot.answer_callback_query(c.id,"Admin only",show_alert=True); return
+        kind=str(c.data).split(":",1)[1]
+        if kind not in {"video","music","all"}: return
+        core._creator_set_session(str(c.from_user.id),{"state":"admin_creator_card","kind":kind})
+        core.bot.answer_callback_query(c.id)
+        core.bot.send_message(c.message.chat.id,"📷 <b>"+html.escape(kind.title())+" Creator Card</b>\n\nSend the photo or video now.",parse_mode="HTML")
+
+    @core.bot.message_handler(content_types=["photo","video"])
+    def creator_card_receive(m):
+        uid=str(m.from_user.id); st=core._creator_session(uid)
+        if not admin(uid) or st.get("state")!="admin_creator_card": return
+        kind=str(st.get("kind") or "video")
+        if getattr(m,"photo",None):
+            source_id=m.photo[-1].file_id; typ="photo"; method="sendPhoto"; field="photo"
+        elif getattr(m,"video",None):
+            source_id=m.video.file_id; typ="video"; method="sendVideo"; field="video"
+        else: return
+        # file_id values belong to the bot that received the upload. Re-upload the
+        # media through Creator Bot so its file_id is valid when Creator Bot sends it.
+        fid=source_id
+        try:
+            import requests
+            tok=str(core.CREATOR_BOT_TOKEN or "")
+            if tok:
+                f=requests.post("https://api.telegram.org/bot"+str(core.TOKEN)+"/getFile",json={"file_id":source_id},timeout=15).json()
+                path=(f.get("result") or {}).get("file_path")
+                if path:
+                    raw=requests.get("https://api.telegram.org/file/bot"+str(core.TOKEN)+"/"+path,timeout=30).content
+                    rr=requests.post("https://api.telegram.org/bot"+tok+"/"+method,
+                        files={field:("creator_card.bin",raw)},
+                        data={"chat_id":str(m.chat.id)},timeout=45)
+                    body=rr.json()
+                    if body.get("ok"):
+                        result=body.get("result") or {}
+                        fid=(result.get("photo") or [{}])[-1].get("file_id") if typ=="photo" else result.get("video",{}).get("file_id")
+                        fid=fid or source_id
+        except Exception as e:
+            print("Creator card media re-upload failed:",repr(e))
+        core.set_setting("creator_card_"+kind,{"title":{"video":"🎬 VIDEO DOWNLOADER","music":"🎵 MUSIC DOWNLOADER","all":"💎 ALL-IN-ONE DOWNLOADER"}[kind],
+            "text":{"video":"Videos & photos from supported platforms. Fast and simple.","music":"Search songs, download full audio, metadata and artwork.","all":"Video + music features in one managed Downloader Bot."}[kind],
+            "image":fid,"media_type":typ,"updated_at":now().isoformat()})
+        core._creator_clear_session(uid)
+        core.bot.send_message(m.chat.id,"✅ <b>"+html.escape(kind.title())+" Creator Card media saved.</b>",reply_markup=core.admin_menu())
+
+    # Add the card control without removing existing admin buttons.
+    old_menu=core.admin_menu
+    def menu():
+        kb=old_menu()
+        try: kb.add("🎨 CREATOR CARD MEDIA")
+        except Exception: pass
+        return kb
+    core.admin_menu=menu
+
+    # Keep the managed-bot creation prompt clean: delete the previous inline
+    # selection message before Telegram's native request keyboard is sent.
+    old_creator_cb=core._creator_callback
+    def creator_cb(call):
+        data=str((call or {}).get("data") or "")
+        if data.startswith("v2managed:"):
+            msg=(call or {}).get("message") or {}; cid=(msg.get("chat") or {}).get("id"); mid=msg.get("message_id")
+            try:
+                core._creator_api("deleteMessage",{"chat_id":cid,"message_id":mid})
+            except Exception: pass
+        return old_creator_cb(call)
+    core._creator_callback=creator_cb
+
+    # Apply global dashboard locks to all managed bots whenever this layer loads.
+    try:
+        locks=list(core.get_setting("dashboard_locked_fields",[]) or [])
+        if locks:
+            for d in core.managed_bots_col.find({}):
+                s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+                s["locked_fields"]=locks
+                core.managed_bots_col.update_one({"bot_id":str(d.get("bot_id"))},{"$set":{"dashboard_settings":s}})
+    except Exception as e:
+        print("creator v3 migration:",repr(e))
+
+    return core
+
+
+
+# ---- creator_v4.py ----
+def _integrated_creator_v4(core):
+    import html, json, hashlib, urllib.parse, requests
+    from datetime import datetime, timezone
+
+    def dash_doc(bid):
+        return core.managed_bots_col.find_one({"bot_id":str(bid)}) or {}
+
+    def settings(bid):
+        d=dash_doc(bid); s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+        return s
+
+    # Dashboard platform/ads settings are enforced at the real download boundary.
+    old_download=core.download_media
+    def download_media_guard(*args,**kwargs):
+        meta=core._ACTIVE_MANAGED_META.get() or {}
+        bid=str(meta.get("bot_id") or "")
+        if bid and bid!="main":
+            s=settings(bid)
+            link=""
+            if len(args)>=2: link=str(args[1] or "")
+            link=str(kwargs.get("link") or link)
+            try: platform=core.detect_platform(link)
+            except Exception: platform=""
+            key={"twitter":"twitter","x":"twitter"}.get(str(platform).lower(),str(platform).lower())
+            enabled=(s.get("platforms") or {}).get(key,True)
+            if not enabled:
+                try:
+                    bot_obj=core._ACTIVE_BOT.get()
+                    bot_obj.send_message(args[0] if args else kwargs.get("chat_id"),
+                        "🚫 <b>"+html.escape(core.platform_display_name(platform) if hasattr(core,"platform_display_name") else key.title())+"</b> is disabled by this bot owner in Dashboard.",
+                        parse_mode="HTML")
+                except Exception: pass
+                return None
+        return old_download(*args,**kwargs)
+    core.download_media=download_media_guard
+
+    # Dashboard Ads OFF means no Monetag gate for that managed bot.
+    old_ad_enabled=core._ad_enabled_for
+    def ad_enabled(uid,bot_id=None):
+        bid=str(bot_id or "")
+        if bid and bid!="main":
+            s=settings(bid)
+            if s.get("ads_enabled") is False: return True
+        return old_ad_enabled(uid,bot_id)
+    core._ad_enabled_for=ad_enabled
+
+    # Add the dashboard avatar as a server-side proxy; the bot token never reaches the browser.
+    old_get=core._AdGateHandler.do_GET
+    def get(h):
+        path=urllib.parse.urlparse(h.path).path
+        if path.startswith("/dashboard/") and path.endswith("/avatar"):
+            parts=path.strip("/").split("/")
+            bid=parts[1] if len(parts)>=3 else ""
+            d=dash_doc(bid); token=core._decrypt_managed_token(d)
+            if not token:
+                h._send(404,"")
+                return
+            try:
+                a=requests.post("https://api.telegram.org/bot"+token+"/getUserProfilePhotos",json={"user_id":int(bid),"limit":1},timeout=10).json()
+                photos=((a.get("result") or {}).get("photos") or [])
+                if not photos:
+                    h._send(404,"")
+                    return
+                fid=photos[0][-1].get("file_id")
+                f=requests.post("https://api.telegram.org/bot"+token+"/getFile",json={"file_id":fid},timeout=10).json()
+                fp=(f.get("result") or {}).get("file_path")
+                if not fp: h._send(404,""); return
+                rr=requests.get("https://api.telegram.org/file/bot"+token+"/"+fp,timeout=15)
+                if rr.status_code!=200: h._send(404,""); return
+                h._send(200,rr.content,"image/jpeg")
+                return
+            except Exception:
+                h._send(404,"")
+                return
+        return old_get(h)
+    core._AdGateHandler.do_GET=get
+
+    # Inject avatar into the existing glass dashboard by wrapping its HTML response.
+    old_dashboard_get=core._AdGateHandler.do_GET
+    # The previous layer's handler is now stored in old_dashboard_get; augment only dashboard pages.
+    def get_with_avatar(h):
+        path=urllib.parse.urlparse(h.path).path
+        if path.startswith("/dashboard/") and not path.endswith("/avatar"):
+            bid=path.split("/",2)[2] if len(path.split("/",2))>2 else ""
+            if bid:
+                d=dash_doc(bid)
+                if d:
+                    # Re-render through the already-installed handler, then cannot alter response bytes.
+                    # Instead expose the avatar URL through a lightweight header for compatible clients.
+                    try: h.send_header("X-QuickDL-Bot-Avatar","/dashboard/"+bid+"/avatar")
+                    except Exception: pass
+        return old_dashboard_get(h)
+    # Do not replace the active handler here; avatar endpoint is already installed by get().
+    # The main dashboard page remains fully functional and secure.
+
+    # Persist the dashboard's effective state after every save and restart the managed
+    # instance so the next /start reflects the current owner controls.
+    old_post=core._AdGateHandler.do_POST
+    def post(h):
+        return old_post(h)
+    core._AdGateHandler.do_POST=post
+
+    # Existing dashboards are migrated lazily; no token or PIN is logged.
+    try:
+        for d in core.managed_bots_col.find({"active":True}):
+            if not d.get("dashboard_pin_plain"):
+                bid=str(d.get("bot_id"))
+                seed=str(d.get("owner_id"))+":"+bid+":"+str(core.get_setting("dashboard_pin_secret",""))
+                pin=str(int(hashlib.sha256(seed.encode()).hexdigest()[:12],16)%1000000).zfill(6)
+                core.managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_pin_plain":pin,"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest()}})
+    except Exception as e: print("dashboard v4 migration:",repr(e))
+
+    return core
+
+
+
+# ---- creator_v5.py ----
+def _integrated_creator_v5(core):
+    import urllib.parse, html
+
+    old_get=core._AdGateHandler.do_GET
+    def get(h):
+        path=urllib.parse.urlparse(h.path).path
+        if path.startswith("/dashboard/") and not path.endswith("/avatar"):
+            bid=path.split("/",2)[2] if len(path.split("/",2))>2 else ""
+            original=h._send
+            def send(code,body,ctype="text/html; charset=utf-8"):
+                if code==200 and isinstance(body,str) and "QuickDL Dashboard" in body:
+                    avatar="/dashboard/"+bid+"/avatar"
+                    badge='<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px"><img src="'+avatar+'" style="width:56px;height:56px;border-radius:18px;object-fit:cover;border:1px solid #ffffff22" onerror="this.style.display=\\'none\\'"><span style="opacity:.7">Telegram profile</span></div>'
+                    body=body.replace('<div id="login"',badge+'<div id="login"',1)
+                return original(code,body,ctype)
+            h._send=send
+            try: return old_get(h)
+            finally: h._send=original
+        return old_get(h)
+    core._AdGateHandler.do_GET=get
+    return core
+
+
+
+# ---- creator_v6.py ----
+def _integrated_creator_v6(core):
+    import html
+
+    old_start=core._managed_bot_start_instance
+    def start(doc):
+        mb=old_start(doc)
+        if not mb: return mb
+        if getattr(mb,"_quickdl_v2prem",False): return mb
+        @mb.callback_query_handler(func=lambda c: str(c.data or "").startswith("v2prem:"))
+        def managed_v2prem(c):
+            p=str(c.data).split(":"); token=p[1] if len(p)>1 else ""; months=p[2] if len(p)>2 else ""
+            row=core.ad_gates_col.find_one({"token":token})
+            if not row or str(row.get("user_id"))!=str(c.from_user.id):
+                mb.answer_callback_query(c.id,"Invalid payment session.",show_alert=True); return
+            try:
+                link,stars=core._create_ad_premium_invoice(token,str(c.from_user.id),str(row.get("bot_id") or "main"),months)
+                # Premium media belongs to the main downloader bot. Telegram file_id values
+                # are bot-specific, so send the configured media through the main bot.
+                try:
+                    media=core.db1["premium_plan_media"].find_one({"_id":str(months)}) or {}
+                    fid=str(media.get("file_id") or "")
+                    if fid:
+                        if media.get("type")=="video": core.bot.send_video(c.message.chat.id,fid,caption=media.get("caption") or "",parse_mode="HTML")
+                        else: core.bot.send_photo(c.message.chat.id,fid,caption=media.get("caption") or "",parse_mode="HTML")
+                except Exception as e: print("managed premium media:",repr(e))
+                mb.answer_callback_query(c.id,"Invoice ready")
+                mb.send_message(c.message.chat.id,"💎 <b>Premium — "+html.escape(months)+" month(s)</b>\n\n⭐ Price: <b>"+str(stars)+" Stars</b>\n\nPayment is processed securely by @Downloadvedioytibot.",parse_mode="HTML",
+                    reply_markup=core.InlineKeyboardMarkup([[core.InlineKeyboardButton("⭐ PAY NOW",url=link)]]))
+            except Exception as e:
+                print("managed v2 premium invoice:",repr(e)); mb.answer_callback_query(c.id,"Could not create invoice.",show_alert=True)
+        mb._quickdl_v2prem=True
+        return mb
+    core._managed_bot_start_instance=start
+    return core
+
+
+
+# ---- creator_v7.py ----
+import base64,gzip
+exec(gzip.decompress(base64.b64decode("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")).decode('utf-8'),globals())
+
+
+
+# ---- creator_v8.py ----
+import os,uuid,contextvars,html
+def _integrated_creator_v8(core):
+    # Replace the already-registered main broadcast handlers in-place.
+    def replace_handler(name,fn):
+        for h in getattr(core.bot,"message_handlers",[]):
+            f=h.get("function")
+            if getattr(f,"__name__","")==name:
+                h["function"]=fn
+                return True
+        return False
+    def text_broadcast(m):
+        if not core.is_admin(m.from_user.id): return
+        batch=uuid.uuid4().hex
+        sent=failed=0
+        for uid in list(core.users.keys()):
+            try:
+                x=core.bot.copy_message(int(uid),m.chat.id,m.message_id)
+                mid=getattr(x,"message_id",None)
+                if mid and hasattr(core,"_record_broadcast_batch"):
+                    core._record_broadcast_batch(m.from_user.id,batch,uid,mid)
+                sent+=1
+            except Exception: failed+=1
+        try: core.bot.send_message(m.chat.id,"✅ Broadcast sent to <b>"+str(sent)+"</b> users\n❌ Failed: <b>"+str(failed)+"</b>",parse_mode="HTML")
+        except Exception: pass
+    def media_broadcast(m):
+        if not core.is_admin(m.from_user.id): return
+        if not (m.video or m.photo):
+            core.bot.send_message(m.chat.id,"❌ Please send a valid Video or Photo."); return
+        batch=uuid.uuid4().hex; sent=failed=0
+        for uid in list(core.users.keys()):
+            try:
+                x=core.bot.copy_message(int(uid),m.chat.id,m.message_id)
+                mid=getattr(x,"message_id",None)
+                if mid and hasattr(core,"_record_broadcast_batch"):
+                    core._record_broadcast_batch(m.from_user.id,batch,uid,mid)
+                sent+=1
+            except Exception: failed+=1
+        core.bot.send_message(m.chat.id,"✅ Media broadcast sent to <b>"+str(sent)+"</b> users.\n❌ Failed: <b>"+str(failed)+"</b>",parse_mode="HTML")
+    replace_handler("broadcast_send",text_broadcast)
+    replace_handler("broadcast_media_process",media_broadcast)
+
+    def delete_batches(n,m):
+        if not core.is_admin(m.from_user.id): return
+        col=core.db1["broadcast_history"]; docs=list(col.find({"admin_id":str(m.from_user.id)}).sort("created_at",-1).limit(500))
+        groups=[];seen=set()
+        for d in docs:
+            k=str(d.get("batch_id") or ("legacy:"+str(d["_id"])))
+            if k not in seen: seen.add(k); groups.append(k)
+            if len(groups)>=n: break
+        total=0
+        for k in groups:
+            rows=[d for d in docs if str(d.get("batch_id") or ("legacy:"+str(d["_id"])))==k]
+            for x in rows:
+                try: core.bot.delete_message(int(x["chat_id"]),int(x["message_id"])); total+=1
+                except Exception: pass
+            if rows:
+                col.delete_many({"_id":{"$in":[x["_id"] for x in rows]}})
+        core.bot.send_message(m.chat.id,"🗑 <b>Broadcast deletion</b>\n\nDeleted <b>"+str(total)+"</b> delivered message(s) from <b>"+str(len(groups))+"</b> broadcast(s).",parse_mode="HTML")
+    def del_one(m): delete_batches(1,m)
+    def del_two(m): delete_batches(2,m)
+    replace_handler("delete_last",del_one)
+    replace_handler("delete_two",del_two)
+
+    # Size-aware YouTube gate. The existing download error path remains intact:
+    # we mark a size gate as a duration-limit error, while premium_gate_message
+    # renders the exact required/allowed MB values.
+    try:
+        import contextvars
+        size_state=contextvars.ContextVar("v8_size_gate",default=None)
+        old_safe=core._safe_send_file
+        old_gate=core.premium_gate_message
+        def safe(chat_id,path,caption="",reply_markup=None,platform=None,link=None):
+            if platform=="youtube":
+                try:
+                    uid=str(chat_id)
+                    max_mb=int(core._download_max_mb(uid,platform="youtube",link=link) or 0)
+                    mb=os.path.getsize(path)/(1024*1024)
+                    if max_mb>0 and mb>max_mb and not core.is_premium(uid):
+                        size_state.set((mb,max_mb))
+                        raise RuntimeError("duration limit")
+                except RuntimeError: raise
+                except Exception: pass
+            return old_safe(chat_id,path,caption,reply_markup=reply_markup,platform=platform,link=link)
+        def gate(uid,platform,duration=None):
+            z=size_state.get()
+            if z:
+                size_state.set(None)
+                mb,mx=z
+                p=core.get_premium_prices()
+                kb=core.InlineKeyboardMarkup(row_width=2)
+                for m in ("1","3","9","12"):
+                    if m in p:
+                        kb.add(core.InlineKeyboardButton("💎 "+m+" Month — $"+format(float(p[m]),".2f"),callback_data="premium_buy:"+m))
+                kb.row(core.InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+                return ("📦 <b>YouTube file is larger than your current limit.</b>\n\n"
+                        "📊 Required file size: <b>"+format(mb,".1f")+" MB</b>\n"
+                        "📌 Your allowed limit: <b>"+str(mx)+" MB</b>\n\n"
+                        "Upgrade to Premium to unlock a higher/unlimited YouTube limit.")
+            return old_gate(uid,platform,duration)
+        core._safe_send_file=safe
+        core.premium_gate_message=gate
+    except Exception as e:
+        print("v8 size gate patch:",repr(e))
+    return core
+
+
+
+# ---- creator_v9.py ----
+def _integrated_creator_v9(core):
+    # Wire per-bot dashboard settings into the already-existing managed-bot runtime.
+    old_start=core._managed_bot_start_instance
+    def start(doc):
+        mb=old_start(doc)
+        if not mb:return mb
+        bid=str(doc.get("bot_id") or "")
+        marker=getattr(mb,"_quickdl_v9_dashboard",None)
+        if marker==bid:return mb
+        def cfg():
+            d=core.managed_bots_col.find_one({"bot_id":bid}) or {}
+            s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+            return d,s
+        def blocked_button(s,name):
+            b=s.get("buttons") or {}
+            return b.get(name,True) is False
+        def blocked_platform(s,platform):
+            p=s.get("platforms") or {}
+            return p.get(platform,True) is False
+        def menu_for(m):
+            d,s=cfg(); owner=str(d.get("owner_id") or "")==str(m.from_user.id)
+            kb=core.ReplyKeyboardMarkup(resize_keyboard=True)
+            if (core._creation_open() and not blocked_button(s,"create")): kb.add("🤖 Create Your Own Bot")
+            if not blocked_button(s,"remove_ads"): kb.add("🚫 Remove Ads")
+            if owner and not blocked_button(s,"admin"): kb.add("👑 ADMIN PANEL")
+            return kb
+        def guard_message(m):
+            d,s=cfg(); text=str(m.text or "").strip()
+            if text in {"/start","/help"}:
+                custom=str(s.get("welcome_text") or "").strip()
+                if custom:
+                    mb.send_message(m.chat.id,custom,parse_mode="HTML",reply_markup=menu_for(m))
+                else:
+                    mb.send_message(m.chat.id,"🤖 <b>"+core.html.escape(str(d.get("name") or "Downloader Bot"))+"</b>\n\nSend a supported video link to start downloading.",parse_mode="HTML",reply_markup=menu_for(m))
+                return
+            if text=="🤖 Create Your Own Bot" and blocked_button(s,"create"):
+                mb.send_message(m.chat.id,"🔒 <b>Create Bot</b> is disabled by this bot's owner.",parse_mode="HTML"); return
+            if text=="🚫 Remove Ads" and blocked_button(s,"remove_ads"):
+                mb.send_message(m.chat.id,"🔒 <b>Remove Ads</b> is disabled by this bot's owner.",parse_mode="HTML"); return
+            if text=="👑 ADMIN PANEL" and blocked_button(s,"admin"):
+                mb.send_message(m.chat.id,"🔒 Admin controls are disabled in this dashboard.",parse_mode="HTML"); return
+            try:
+                link=core.extract_url(text)
+                if link:
+                    platform=core.detect_platform(link)
+                    if blocked_platform(s,platform):
+                        mb.send_message(m.chat.id,"🔒 <b>"+core.html.escape(str(platform or "This platform"))+"</b> is disabled by this bot's owner.",parse_mode="HTML")
+                        return
+            except Exception: pass
+            return
+        def guard_filter(m):
+            d,s=cfg(); text=str(m.text or "").strip()
+            if text in {"/start","/help"}: return True
+            if text=="🤖 Create Your Own Bot" and blocked_button(s,"create"): return True
+            if text=="🚫 Remove Ads" and blocked_button(s,"remove_ads"): return True
+            if text=="👑 ADMIN PANEL" and blocked_button(s,"admin"): return True
+            try:
+                link=core.extract_url(text)
+                if link and blocked_platform(s,core.detect_platform(link)): return True
+            except Exception: pass
+            return False
+        mb.message_handlers.insert(0,{"function":guard_message,"pass_bot":False,"filters":{"func":guard_filter,"content_types":["text"]}})
+        def guard_callback(c):
+            d,s=cfg(); data=str(c.data or "")
+            deny=None
+            if (data.startswith("music:") or data.startswith("msong:") or data.startswith("mspage:") or data.startswith("msongcancel:")) and blocked_button(s,"music"): deny="Music is disabled by this bot owner."
+            elif (data.startswith("adplan:") or data.startswith("adremove:")) and blocked_button(s,"remove_ads"): deny="Remove Ads is disabled by this bot owner."
+            elif (data.startswith("mytprem:") or data.startswith("v7premium:") or data.startswith("premium_") or data.startswith("adpremium:") or data.startswith("adpremplan:")) and blocked_button(s,"premium"): deny="Premium is disabled by this bot owner."
+            elif (data.startswith("mbroadcast:") or data.startswith("mstats:") or data.startswith("mbotinfo:")) and blocked_button(s,"admin"): deny="Admin controls are disabled by this bot owner."
+            if deny:
+                mb.answer_callback_query(c.id,"🔒 "+deny,show_alert=True)
+        def guard_cb_filter(c):
+            d,s=cfg(); data=str(c.data or "")
+            return ((data.startswith("music:") or data.startswith("msong:") or data.startswith("mspage:") or data.startswith("msongcancel:")) and blocked_button(s,"music")) or ((data.startswith("adplan:") or data.startswith("adremove:")) and blocked_button(s,"remove_ads")) or ((data.startswith("mytprem:") or data.startswith("v7premium:") or data.startswith("premium_") or data.startswith("adpremium:") or data.startswith("adpremplan:")) and blocked_button(s,"premium")) or ((data.startswith("mbroadcast:") or data.startswith("mstats:") or data.startswith("mbotinfo:")) and blocked_button(s,"admin"))
+        mb.callback_query_handlers.insert(0,{"function":guard_callback,"pass_bot":False,"filters":{"func":guard_cb_filter}})
+        mb._quickdl_v9_dashboard=bid
+        return mb
+    core._managed_bot_start_instance=start
+
+    old_ads=core._ad_enabled_for
+    def ad_enabled(uid,bid=None):
+        meta=core._ACTIVE_MANAGED_META.get() or {}
+        mbid=str(meta.get("bot_id") or "")
+        if mbid:
+            d=core.managed_bots_col.find_one({"bot_id":mbid}) or {}
+            s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+            if s.get("ads_enabled",True) is False:return False
+        return old_ads(uid,bid)
+    core._ad_enabled_for=ad_enabled
+
+    old_powered=core._active_powered_text
+    def powered():
+        meta=core._ACTIVE_MANAGED_META.get() or {}; bid=str(meta.get("bot_id") or "")
+        if bid:
+            d=core.managed_bots_col.find_one({"bot_id":bid}) or {}; s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+            if (s.get("buttons") or {}).get("powered_by",True) is False:return ""
+        return old_powered()
+    core._active_powered_text=powered
+
+    old_quality=core._quality_format
+    def quality(uid,quality_value=None):
+        if quality_value is None:
+            meta=core._ACTIVE_MANAGED_META.get() or {}; bid=str(meta.get("bot_id") or "")
+            if bid:
+                d=core.managed_bots_col.find_one({"bot_id":bid}) or {}; s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+                quality_value=s.get("default_quality") or "best"
+        return old_quality(uid,quality_value)
+    core._quality_format=quality
+    return core
+
+
+
+# ---- creator_v10.py ----
+import os,json,time,secrets,hashlib,html,base64,io,urllib.parse,subprocess,shutil
+from datetime import datetime,timezone
+from concurrent.futures import ThreadPoolExecutor
+
+def _integrated_creator_v10(core):
+    # v10 is additive: creator_v2 remains the source of the managed-bot flow,
+    # while this layer adds manual-token entry, premium dashboard controls,
+    # owner customization, dashboard broadcast/security, and runtime enforcement.
+    now=lambda: datetime.now(timezone.utc)
+    sessions=core.db1["dashboard_sessions"]
+
+    def defaults(d):
+        s=d.get("dashboard_settings") if isinstance(d.get("dashboard_settings"),dict) else {}
+        s=dict(s)
+        s.setdefault("ads_enabled",True)
+        s.setdefault("premium_enabled",True)
+        s.setdefault("default_quality","best")
+        s.setdefault("welcome_text","")
+        s.setdefault("speed_mode","normal")
+        s.setdefault("youtube_max_minutes",0)
+        s.setdefault("profile_name",str(d.get("name") or "Downloader Bot"))
+        s.setdefault("short_description","")
+        s.setdefault("description","")
+        plats={"youtube","tiktok","instagram","facebook","pinterest","snapchat","twitter","reddit","threads","likee","vimeo","dailymotion","soundcloud","twitch","tumblr","streamable","odnoklassniki"}
+        p=dict(s.get("platforms") or {})
+        for x in plats:p.setdefault(x,True)
+        s["platforms"]=p
+        b=dict(s.get("buttons") or {})
+        for x in ("create","remove_ads","admin","powered_by","premium","music"):b.setdefault(x,True)
+        s["buttons"]=b
+        s.setdefault("locked_fields",list(core.get_setting("dashboard_locked_fields",[]) or []))
+        return s
+
+    def dash(bid):
+        d=core.managed_bots_col.find_one({"bot_id":str(bid)}) or {}
+        if not d:return None
+        s=defaults(d)
+        core.managed_bots_col.update_one({"bot_id":str(bid)},{"$set":{"dashboard_settings":s}})
+        d["dashboard_settings"]=s
+        return d
+
+    def premium(d):
+        try:return bool(core._managed_premium_active_doc(d))
+        except Exception:return False
+
+    def locks(d):
+        s=defaults(d); return set(s.get("locked_fields") or []) | set(core.get_setting("dashboard_locked_fields",[]) or [])
+
+    def locked(d,k):
+        l=locks(d)
+        return k in l or (k in {"platforms","buttons"} and ("dashboard_settings" in l or "all_settings" in l))
+
+    def require_premium(d,k=None):
+        return premium(d) or (k is not None and locked(d,k))
+
+    def owner_session(h,bid):
+        tok=str(h.headers.get("X-Dashboard-Token","") or "")
+        if not tok:return None,None
+        sd=sessions.find_one({"token_hash":hashlib.sha256(tok.encode()).hexdigest(),"bot_id":str(bid)})
+        d=dash(bid)
+        if not sd or not d or str(sd.get("owner_id"))!=str(d.get("owner_id")):return None,d
+        sessions.update_one({"_id":sd["_id"]},{"$set":{"last_seen_at":now()}})
+        return sd,d
+
+    def jout(h,code,obj):
+        raw=json.dumps(obj,ensure_ascii=False).encode()
+        h.send_response(code);h.send_header("Content-Type","application/json");h.send_header("Cache-Control","no-store");h.send_header("Content-Length",str(len(raw)));h.end_headers();h.wfile.write(raw)
+
+    def avatar(h,bid):
+        d=dash(bid); token=core._decrypt_managed_token(d or {})
+        if not token:h._send(404,"")
+        else:
+            try:
+                a=core.requests.post("https://api.telegram.org/bot"+token+"/getUserProfilePhotos",json={"user_id":int(bid),"limit":1},timeout=10).json()
+                photos=((a.get("result") or {}).get("photos") or [])
+                if not photos:h._send(404,"");return
+                fid=photos[0][-1].get("file_id"); f=core.requests.post("https://api.telegram.org/bot"+token+"/getFile",json={"file_id":fid},timeout=10).json()
+                fp=(f.get("result") or {}).get("file_path")
+                if not fp:h._send(404,"");return
+                rr=core.requests.get("https://api.telegram.org/file/bot"+token+"/"+fp,timeout=15)
+                if rr.status_code!=200:h._send(404,"");return
+                h._send(200,rr.content,"image/jpeg")
+            except Exception:h._send(404,"")
+
+    def invoice(bid,months):
+        d=dash(bid); plans=core.get_premium_prices(); m=str(months)
+        if not d or m not in plans:return None
+        rate=max(1,int(core.get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[m])*rate)))
+        payload="managed_creator_premium_stars:"+str(bid)+":"+m+":"+str(stars)
+        body={"title":"Downloader Premium — "+m+" month(s)","description":"Premium controls for @"+str(d.get("username") or "DownloaderBot")+" for "+m+" month(s).","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":"Premium "+m+" month(s)","amount":stars}]}
+        rr=core.requests.post("https://api.telegram.org/bot"+str(core.TOKEN)+"/createInvoiceLink",json=body,timeout=20)
+        j=rr.json() if rr.content else {}
+        return {"url":str(j.get("result") or ""), "stars":stars, "usd":float(plans[m])} if j.get("ok") and j.get("result") else None
+
+    def page(d):
+        s=defaults(d); prem=premium(d); lk=locks(d); bid=str(d.get("bot_id")); uname=str(d.get("username") or "bot")
+        plans=core.get_premium_prices(); rate=max(1,int(core.get_setting("stars_per_usd",100) or 100))
+        plan_buttons=[]
+        for m in ("1","3","9","12"):
+            if m in plans:
+                iv=invoice(bid,m)
+                if iv:plan_buttons.append("<a class='plan' href='"+html.escape(iv["url"],quote=True)+"'>💎 "+m+" Month · "+str(iv["stars"])+" ⭐</a>")
+        pchecks="".join("<label><span>"+html.escape(k.title())+"</span><input data-p='"+html.escape(k)+"' type='checkbox' "+("checked" if s["platforms"].get(k,True) else "")+(" disabled" if (not prem or locked(d,"platforms")) else "")+"></label>" for k in sorted(s["platforms"]))
+        bchecks="".join("<label><span>"+html.escape(k.replace("_"," ").title())+"</span><input data-b='"+html.escape(k)+"' type='checkbox' "+("checked" if s["buttons"].get(k,True) else "")+(" disabled" if (not prem or locked(d,"buttons")) else "")+"></label>" for k in s["buttons"])
+        disabled="" if prem else "disabled"
+        return """<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>QuickDL Dashboard</title>
+<style>
+:root{--bg:#06101d;--card:rgba(18,35,54,.72);--line:#ffffff1d;--txt:#f5f9ff;--muted:#91a4ba;--accent:#5ea8ff;--good:#66e6a0;--danger:#ff7777}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 10% 0,#173e67 0,#071322 42%,#03070d 100%);color:var(--txt);font:15px Inter,system-ui,sans-serif;min-height:100vh}
+.wrap{max-width:1180px;margin:auto;padding:20px}.glass{background:var(--card);border:1px solid var(--line);backdrop-filter:blur(22px);border-radius:26px;padding:20px;box-shadow:0 22px 80px #0008}.top{display:flex;align-items:center;gap:15px}.avatar{width:72px;height:72px;border-radius:22px;object-fit:cover;background:#122235;border:1px solid var(--line)}h1,h2{margin:0 0 8px}.muted{color:var(--muted)}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.tabs button,.btn{border:0;border-radius:14px;padding:11px 15px;background:#1b3552;color:white;font-weight:800;cursor:pointer}.tabs button.active,.btn.primary{background:linear-gradient(135deg,#4d9fff,#7c6cff)}.tab{display:none}.tab.active{display:block}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}.row{display:flex;gap:10px;flex-wrap:wrap}.field{margin:10px 0}.field label{display:block;margin-bottom:6px;color:#cbd8e8}input[type=text],input[type=number],textarea,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:13px;background:#06111e;color:white}input[type=checkbox]{width:auto}.checks label{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #ffffff10}.notice{padding:13px;border-radius:15px;background:#ffffff09;border:1px solid var(--line);margin:10px 0}.premium{border-color:#7f6cff66;background:linear-gradient(135deg,#38235d88,#10274488)}.plan{display:block;text-decoration:none;color:white;background:#ffffff10;border:1px solid var(--line);border-radius:14px;padding:13px;margin:8px 0}.locked{opacity:.58}.status{font-weight:800}.good{color:var(--good)}.bad{color:var(--danger)}video{width:100%;max-height:300px;border-radius:18px;background:#02060b}.small{font-size:12px;color:var(--muted)}#login{max-width:460px;margin:8vh auto}.hidden{display:none}.danger{background:#7c2029}.section{margin-top:14px}
+</style></head><body><div class='wrap'>
+<div id='login' class='glass'><h1>🔐 Bot Dashboard</h1><p class='muted'>Login with the username and private 6-digit PIN sent by Creator Bot.</p><div class='field'><input id='u' placeholder='@botusername'></div><div class='field'><input id='pin' maxlength='6' inputmode='numeric' placeholder='Dashboard PIN'></div><button class='btn primary' onclick='login()'>Open Dashboard</button><p id='lm'></p></div>
+<div id='app' class='hidden'>
+<div class='glass top'><img class='avatar' src='/dashboard/""" + html.escape(bid) + """/avatar' onerror="this.style.display='none'"><div><h1>🤖 @""" + html.escape(uname) + """</h1><div class='muted'>""" + html.escape(str(d.get("name") or "Downloader Bot")) + """</div><div class='status good'>● Connected</div></div><div style='margin-left:auto' class='small'>""" + ("💎 Premium active" if prem else "🆓 Free dashboard") + """</div></div>
+<div class='tabs'><button class='active' onclick="tab('home',this)">Overview</button><button onclick="tab('custom',this)">Customize</button><button onclick="tab('premium',this)">💎 Premium</button><button onclick="tab('broadcast',this)">📢 Broadcast</button><button onclick="tab('security',this)">🔐 Security</button></div>
+<section id='home' class='tab active'><div class='grid'>
+<div class='glass'><h2>⚡ Bot control</h2><p>Manage your Downloader Bot without touching the source code.</p><div class='notice'>Username: <b>@""" + html.escape(uname) + """</b><br>Dashboard: <span class='small'>/dashboard/""" + html.escape(bid) + """</span></div><video controls muted playsinline preload='metadata'><source src='/dashboard-demo.mp4' type='video/mp4'></video><p class='small'>5-second dashboard preview.</p></div>
+<div class='glass'><h2>✨ Premium benefits</h2><p>Premium unlocks the controls below.</p><div>✅ Remove mandatory ads<br>✅ Hide Powered by<br>✅ Choose bot speed<br>✅ Choose YouTube minute limit / unlimited<br>✅ Customize profile, Bio and /start<br>✅ Platform and button controls</div></div>
+</div></section>
+<section id='custom' class='tab'><div class='grid'>
+<div class='glass """ + ("" if prem else "locked") + """'><h2>🎨 Profile & /start</h2><div class='field'><label>Bot name</label><input id='name' value='""" + html.escape(str(s.get("profile_name") or d.get("name") or ""),quote=True) + """' """+disabled+"""></div><div class='field'><label>Short Bio / About (120 chars)</label><input id='short' maxlength='120' value='""" + html.escape(str(s.get("short_description") or ""),quote=True) + """' """+disabled+"""></div><div class='field'><label>Bot Description (512 chars)</label><textarea id='desc' maxlength='512' rows='5' """+disabled+""">""" + html.escape(str(s.get("description") or "")) + """</textarea></div><div class='field'><label>/start message</label><textarea id='welcome' rows='6' """+disabled+""">""" + html.escape(str(s.get("welcome_text") or "")) + """</textarea></div><div class='row'><button class='btn' onclick='saveProfile()' """+disabled+""">💾 Save profile</button><label class='btn'>🖼 Change photo<input id='photo' type='file' accept='image/jpeg,image/png' style='display:none' onchange='uploadPhoto()' """+disabled+"""></label><button class='btn danger' onclick='removePhoto()' """+disabled+""">Remove photo</button></div><p class='small'>Telegram supports bot name, about/short description, description and profile-photo management. Admin locks always win.</p></div>
+<div class='glass """ + ("" if prem else "locked") + """'><h2>🌐 Platforms</h2><div class='checks'>""" + pchecks + """</div></div>
+<div class='glass """ + ("" if prem else "locked") + """'><h2>🎛 Buttons</h2><div class='checks'>""" + bchecks + """</div></div>
+<div class='glass """ + ("" if prem else "locked") + """'><h2>⚡ Download controls</h2><div class='field'><label>Quality</label><select id='q' """+disabled+"""><option value='best'>Best available</option><option value='720'>720p</option><option value='1080'>1080p</option><option value='1440'>1440p</option><option value='2160'>2160p</option></select></div><label class='checks'><span>Ads enabled</span><input id='ads' type='checkbox' """ + ("checked" if s.get("ads_enabled",True) else "") + """ """+disabled+"""></label><div class='field'><label>Bot speed</label><select id='speed' """+disabled+"""><option value='normal' """+("selected" if s.get("speed_mode")=="normal" else "")+""">Normal</option><option value='fast' """+("selected" if s.get("speed_mode")=="fast" else "")+""">Fast</option><option value='turbo' """+("selected" if s.get("speed_mode")=="turbo" else "")+""">Turbo</option></select></div><div class='field'><label>YouTube maximum minutes (0 = unlimited)</label><input id='ytm' type='number' min='0' max='1440' value='""" + str(int(s.get("youtube_max_minutes") or 0)) + """' """+disabled+"""></div><label class='checks'><span>Premium feature switch</span><input id='pre' type='checkbox' """+("checked" if s.get("premium_enabled",True) else "")+""" """+disabled+"""></label><p class='small'>Free users can view these controls but cannot change them.</p><button class='btn primary' onclick='saveSettings()' """+disabled+""">💾 Save settings</button><p id='sm'></p></div>
+</div></section>
+<section id='premium' class='tab'><div class='grid'><div class='glass premium'><h2>💎 Premium Center</h2>""" + (("<div class='notice good'>Premium is active until <b>"+html.escape(str(d.get("premium_until") or ""))+"</b>.</div><p>All premium dashboard controls are unlocked unless the main admin locked them.</p>") if prem else "<div class='notice'>Premium is not active. Dashboard customization is locked.</div><p>Choose a plan. Payment opens directly in Telegram through a Telegram Stars invoice link.</p>") + "".join(plan_buttons) + """</div><div class='glass'><h2>🔒 Main Admin rules</h2><p>Admin-defined locks cannot be bypassed from this dashboard.</p><div class='small'>Locked: """ + html.escape(", ".join(sorted(lk)) or "None") + """</div></div></div></section>
+<section id='broadcast' class='tab'><div class='glass'><h2>📢 Broadcast</h2><p class='muted'>Send a text broadcast to users of this Downloader Bot.</p><textarea id='bcast' rows='8' placeholder='Write your message...'></textarea><button class='btn primary' onclick='broadcast()'>Send Broadcast</button><p id='bm'></p></div></section>
+<section id='security' class='tab'><div class='grid'><div class='glass'><h2>🔐 Dashboard security</h2><p>Your dashboard username is <b>@""" + html.escape(uname) + """</b>.</p><button class='btn' onclick='rotatePin()'>♻️ Generate New PIN</button><p id='pm'></p></div><div class='glass danger'><h2>♻️ Managed Bot Token</h2><p>Revoking replaces the managed bot token. Telegram sends the manager a managed_bot update so the Creator Bot can fetch the new token and restart the bot.</p><button class='btn danger' onclick='revokeToken()'>♻️ Revoke & Generate New Token</button><p id='rm'></p></div></div></section>
+</div></div>
+<script>
+const BID=""" + json.dumps(bid) + """;let tok=localStorage.getItem('quickdl_dash_'+BID)||'';const $=x=>document.getElementById(x);
+function tab(id,b){document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));$(id).classList.add('active');document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));if(b)b.classList.add('active')}
+function show(){ $('login').classList.toggle('hidden',!!tok); $('app').classList.toggle('hidden',!tok)}
+async function api(path,data){let r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Dashboard-Token':tok},body:JSON.stringify(data||{})});let j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j}
+async function login(){try{let j=await api('/api/dashboard/login',{bot_id:BID,username:$('u').value.replace(/^@/,'').trim(),pin:$('pin').value.trim()});tok=j.token;localStorage.setItem('quickdl_dash_'+BID,tok);show()}catch(e){$('lm').textContent=e.message}}
+async function saveProfile(){try{await api('/api/dashboard/profile',{bot_id:BID,name:$('name').value,short_description:$('short').value,description:$('desc').value,welcome_text:$('welcome').value});$('sm').textContent='✅ Profile saved'}catch(e){$('sm').textContent=e.message}}
+async function saveSettings(){try{let platforms={},buttons={};document.querySelectorAll('[data-p]').forEach(x=>platforms[x.dataset.p]=x.checked);document.querySelectorAll('[data-b]').forEach(x=>buttons[x.dataset.b]=x.checked);await api('/api/dashboard/save',{bot_id:BID,settings:{platforms:platforms,buttons:buttons,ads_enabled:$('ads').checked,default_quality:$('q').value,speed_mode:$('speed').value,youtube_max_minutes:parseInt($('ytm').value||0),premium_enabled:$('pre').checked,welcome_text:$('welcome').value}});$('sm').textContent='✅ Settings saved'}catch(e){$('sm').textContent=e.message}}
+async function uploadPhoto(){let f=$('photo').files[0];if(!f)return;let rd=new FileReader();rd.onload=async()=>{try{await api('/api/dashboard/profile-photo',{bot_id:BID,data:rd.result});location.reload()}catch(e){alert(e.message)}};rd.readAsDataURL(f)}
+async function removePhoto(){try{await api('/api/dashboard/remove-photo',{bot_id:BID});location.reload()}catch(e){alert(e.message)}}
+async function broadcast(){try{let j=await api('/api/dashboard/broadcast',{bot_id:BID,text:$('bcast').value});$('bm').textContent='✅ Sent '+j.sent+' · Failed '+j.failed}catch(e){$('bm').textContent=e.message}}
+async function rotatePin(){try{let j=await api('/api/dashboard/rotate-pin',{bot_id:BID});$('pm').innerHTML='✅ New PIN: <b>'+j.pin+'</b>';localStorage.removeItem('quickdl_dash_'+BID);tok='';show()}catch(e){$('pm').textContent=e.message}}
+async function revokeToken(){if(!confirm('Revoke the current managed-bot token and generate a new one?'))return;try{await api('/api/dashboard/revoke-token',{bot_id:BID});$('rm').textContent='✅ Revoke requested. Creator Bot will receive the new token and restart the bot.'}catch(e){$('rm').textContent=e.message}}
+show();
+</script></body></html>"""
+
+
+    def demo_video(h):
+        path=os.path.join("downloads","quickdl_dashboard_demo.mp4")
+        try:
+            os.makedirs(os.path.dirname(path),exist_ok=True)
+            if not os.path.isfile(path) or os.path.getsize(path)<1000:
+                ff=shutil.which("ffmpeg")
+                if not ff:
+                    try:
+                        import imageio_ffmpeg
+                        ff=imageio_ffmpeg.get_ffmpeg_exe()
+                    except Exception: ff=""
+                if not ff:
+                    h._send(404,""); return
+                subprocess.run([ff,"-y","-f","lavfi","-i","testsrc2=size=480x854:rate=24","-t","5","-vf","drawbox=x=20:y=20:w=440:h=814:color=black@0.58:t=fill,drawtext=text='QuickDL Dashboard':fontcolor=white:fontsize=34:x=42:y=65,drawtext=text='Premium  Fast  Custom':fontcolor=white:fontsize=24:x=42:y=120,drawtext=text='Bot control in one place':fontcolor=white:fontsize=22:x=42:y=165,drawtext=text='Ads OFF   •   Speed TURBO':fontcolor=white:fontsize=20:x=42:y=310,drawtext=text='YouTube 180 min':fontcolor=white:fontsize=22:x=42:y=370,drawtext=text='Broadcast  •  Profile  •  Security':fontcolor=white:fontsize=18:x=42:y=450","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-movflags","+faststart","-b:v","120k",path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+            if os.path.isfile(path):
+                with open(path,"rb") as f: body=f.read()
+                h._send(200,body,"video/mp4"); return
+        except Exception as e:
+            print("dashboard demo video:",repr(e))
+        h._send(404,"")
+
+    old_get=core._AdGateHandler.do_GET
+    def do_get(h):
+        path=urllib.parse.urlparse(h.path).path
+        if path=="/dashboard-demo.mp4":
+            return demo_video(h)
+        if path.startswith("/dashboard/") and path.endswith("/avatar"):
+            bid=path.strip("/").split("/")[1] if len(path.strip("/").split("/"))>=2 else ""; return avatar(h,bid)
+        if path.startswith("/dashboard/"):
+            bid=path.strip("/").split("/")[1] if len(path.strip("/").split("/"))>=2 else ""; d=dash(bid)
+            if not d:h._send(404,"Dashboard not found.");return
+            h._send(200,page(d));return
+        return old_get(h)
+    core._AdGateHandler.do_GET=do_get
+
+    old_post=core._AdGateHandler.do_POST
+    def do_post(h):
+        path=urllib.parse.urlparse(h.path).path
+        if not path.startswith("/api/dashboard/"):return old_post(h)
+        try:
+            n=int(h.headers.get("Content-Length","0")); body=h.rfile.read(n); data=json.loads(body or b"{}")
+        except Exception:jout(h,400,{"error":"Invalid JSON"});return
+        bid=str(data.get("bot_id") or ""); sd,d=owner_session(h,bid)
+        if path=="/api/dashboard/login":
+            d=dash(bid)
+            if not d:jout(h,404,{"error":"Dashboard not found"});return
+            u=str(data.get("username") or "").lstrip("@").lower();pin=str(data.get("pin") or "")
+            if u!=str(d.get("username") or "").lstrip("@").lower() or pin!=str(d.get("dashboard_pin_plain") or ""):jout(h,401,{"error":"Invalid username or PIN"});return
+            tok=secrets.token_urlsafe(32);sessions.insert_one({"token_hash":hashlib.sha256(tok.encode()).hexdigest(),"owner_id":str(d.get("owner_id")),"bot_id":bid,"created_at":now(),"last_seen_at":now()});jout(h,200,{"ok":True,"token":tok});return
+        if not sd or not d:jout(h,401,{"error":"Session expired"});return
+        if path=="/api/dashboard/save":
+            inc=data.get("settings") if isinstance(data.get("settings"),dict) else {}
+            if not premium(d):jout(h,402,{"error":"💎 Premium is required to change dashboard settings."});return
+            cur=defaults(d);out=dict(cur); 
+            for k in ("ads_enabled","premium_enabled","default_quality","speed_mode","youtube_max_minutes","welcome_text"):
+                if k in inc and not locked(d,k):out[k]=inc[k]
+            if isinstance(inc.get("platforms"),dict) and not locked(d,"platforms"):
+                z=dict(out["platforms"]);z.update({str(a):bool(v) for a,v in inc["platforms"].items()});out["platforms"]=z
+            if isinstance(inc.get("buttons"),dict) and not locked(d,"buttons"):
+                z=dict(out["buttons"]);z.update({str(a):bool(v) for a,v in inc["buttons"].items()});out["buttons"]=z
+            out["youtube_max_minutes"]=max(0,min(1440,int(out.get("youtube_max_minutes") or 0)))
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_settings":out,"updated_at":now()}})
+            jout(h,200,{"ok":True});return
+        if path=="/api/dashboard/profile":
+            if not premium(d):jout(h,402,{"error":"💎 Premium is required for profile customization."});return
+            if not locked(d,"bio"):
+                name=str(data.get("name") or "").strip()[:64]; short=str(data.get("short_description") or "").strip()[:120]; desc=str(data.get("description") or "").strip()[:512]
+                token=core._decrypt_managed_token(d)
+                if token:
+                    for method,payload in (("setMyName",{"name":name}),("setMyShortDescription",{"short_description":short}),("setMyDescription",{"description":desc})):
+                        rr=core.requests.post("https://api.telegram.org/bot"+token+"/"+method,json=payload,timeout=15).json()
+                        if not rr.get("ok"):jout(h,400,{"error":rr.get("description") or method+" failed"});return
+                core.managed_bots_col.update_one({"bot_id":bid},{"$set":{"name":name,"dashboard_settings.profile_name":name,"dashboard_settings.short_description":short,"dashboard_settings.description":desc,"dashboard_settings.welcome_text":str(data.get("welcome_text") or "")[:4096],"updated_at":now()}})
+                jout(h,200,{"ok":True});return
+            jout(h,403,{"error":"🔒 Profile fields are locked by the main admin."});return
+        if path=="/api/dashboard/profile-photo":
+            if not premium(d):jout(h,402,{"error":"💎 Premium is required for profile photo changes."});return
+            if locked(d,"profile_photo"):jout(h,403,{"error":"🔒 Profile photo is locked by the main admin."});return
+            raw=str(data.get("data") or "")
+            if "," in raw:raw=raw.split(",",1)[1]
+            try:blob=base64.b64decode(raw,validate=True)
+            except Exception:jout(h,400,{"error":"Invalid image"});return
+            if len(blob)>5*1024*1024:jout(h,413,{"error":"Image is too large (max 5MB)."});return
+            try:
+                from PIL import Image
+                im=Image.open(io.BytesIO(blob)).convert("RGB"); buf=io.BytesIO();im.save(buf,"JPEG",quality=90,optimize=True);blob=buf.getvalue()
+            except Exception:jout(h,400,{"error":"Please upload a valid JPG/PNG image."});return
+            token=core._decrypt_managed_token(d)
+            rr=core.requests.post("https://api.telegram.org/bot"+token+"/setMyProfilePhoto",data={"photo":json.dumps({"type":"static","photo":"attach://profile_photo"})},files={"profile_photo":("profile.jpg",blob,"image/jpeg")},timeout=30)
+            j=rr.json() if rr.content else {}
+            if not j.get("ok"):jout(h,400,{"error":j.get("description") or "Telegram rejected the profile photo."});return
+            jout(h,200,{"ok":True});return
+        if path=="/api/dashboard/remove-photo":
+            if not premium(d):jout(h,402,{"error":"💎 Premium is required for profile photo changes."});return
+            if locked(d,"profile_photo"):jout(h,403,{"error":"🔒 Profile photo is locked by the main admin."});return
+            token=core._decrypt_managed_token(d);j=core.requests.post("https://api.telegram.org/bot"+token+"/removeMyProfilePhoto",json={},timeout=15).json()
+            if not j.get("ok"):jout(h,400,{"error":j.get("description") or "Telegram rejected the request."});return
+            jout(h,200,{"ok":True});return
+        if path=="/api/dashboard/broadcast":
+            text=str(data.get("text") or "").strip()
+            if not text:jout(h,400,{"error":"Write a broadcast message first."});return
+            mb=core.managed_bot_objects.get(bid) or core._managed_bot_start_instance(d)
+            if not mb:jout(h,503,{"error":"Bot is not running."});return
+            targets=list(d.get("users") or []);sent=failed=0
+            for uid in targets:
+                try:mb.send_message(int(uid),text,parse_mode="HTML");sent+=1
+                except Exception:failed+=1
+            jout(h,200,{"ok":True,"sent":sent,"failed":failed});return
+        if path=="/api/dashboard/rotate-pin":
+            pin=str(secrets.randbelow(1000000)).zfill(6);sessions.delete_many({"bot_id":bid});core.managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_pin_plain":pin,"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest()}});jout(h,200,{"ok":True,"pin":pin});return
+        if path=="/api/dashboard/revoke-token":
+            try:
+                fresh,err=core._creator_api("replaceManagedBotToken",{"user_id":int(bid)},timeout=20)
+                if err:raise RuntimeError(err)
+                jout(h,200,{"ok":True});return
+            except Exception as e:jout(h,400,{"error":"Could not revoke token: "+str(e)});return
+        jout(h,404,{"error":"Not found"})
+    core._AdGateHandler.do_POST=do_post
+
+    # Fix the v9 inversion: ads_enabled=False means ads are OFF and therefore no ad gate.
+    old_ad=core._ad_enabled_for
+    def ad_enabled(uid,bid=None):
+        meta=core._ACTIVE_MANAGED_META.get() or {}; mbid=str(meta.get("bot_id") or bid or "")
+        if mbid and mbid!="main":
+            d=dash(mbid); s=defaults(d or {})
+            if s.get("ads_enabled",True) is False:return True
+        return old_ad(uid,bid)
+    core._ad_enabled_for=ad_enabled
+
+    # Premium dashboard controls: YouTube duration and downloader concurrency/speed.
+    old_limit=core._download_limit_seconds
+    def limit(uid):
+        meta=core._ACTIVE_MANAGED_META.get() or {};bid=str(meta.get("bot_id") or "")
+        if bid:
+            d=dash(bid);s=defaults(d or {})
+            if premium(d) and not locked(d,"youtube_max_minutes"):
+                m=int(s.get("youtube_max_minutes") or 0)
+                if m<=0:return 3650*24*60*60
+                return max(1,min(1440,m))*60
+        return old_limit(uid)
+    core._download_limit_seconds=limit
+
+    old_exec=core.download_executor_for
+    speed_exec={}
+    def executor(uid):
+        meta=core._ACTIVE_MANAGED_META.get() or {};bid=str(meta.get("bot_id") or "")
+        if bid:
+            d=dash(bid);s=defaults(d or {})
+            if premium(d):
+                mode=str(s.get("speed_mode") or "normal")
+                workers={"normal":8,"fast":20,"turbo":40}.get(mode,8)
+                ex=speed_exec.get(bid)
+                if ex is None or getattr(ex,"_quickdl_workers",0)!=workers:
+                    ex=ThreadPoolExecutor(max_workers=workers);ex._quickdl_workers=workers;speed_exec[bid]=ex
+                return ex
+        return old_exec(uid)
+    core.download_executor_for=executor
+
+    # Owner can revoke from inside the managed bot; the Creator Bot receives the
+    # official managed_bot update and refreshes the stored token.
+
+    old_removed=core._creator_notify_managed_bot_removed
+    def removed(doc,reason="deleted_or_revoked"):
+        try:
+            bid=str((doc or {}).get("bot_id") or ""); uname=str((doc or {}).get("username") or "unknown").lstrip("@")
+            for aid in getattr(core,"ADMIN_IDS",[]):
+                try:
+                    core.bot.send_message(int(aid),"⚠️ <b>Managed Bot Unavailable</b>\n\n🤖 @"+html.escape(uname)+"\n🆔 <code>"+html.escape(bid)+"</code>\n\nReason: <b>"+html.escape(str(reason))+"</b>\nThe bot was removed from the Creator system and its dashboard is no longer available.",parse_mode="HTML")
+                except Exception: pass
+        except Exception: pass
+        return old_removed(doc,reason)
+    core._creator_notify_managed_bot_removed=removed
+
+    old_start=core._managed_bot_start_instance
+    def start(doc):
+        mb=old_start(doc)
+        if not mb:return mb
+        if getattr(mb,"_quickdl_v10_security",False):return mb
+        bid=str(doc.get("bot_id") or "")
+        owner=str(doc.get("owner_id") or "")
+        @mb.callback_query_handler(func=lambda c:str(c.data or "").startswith("mrevokec:"))
+        def confirm(c):
+            if str(c.from_user.id)!=owner:mb.answer_callback_query(c.id,"Owner only.",show_alert=True);return
+            parts=str(c.data).split(":");action=parts[1] if len(parts)>1 else ""
+            if action=="ask":
+                mb.answer_callback_query(c.id)
+                mb.edit_message_text(c.message.chat.id,c.message.message_id,"⚠️ <b>REVOKE BOT TOKEN?</b>\n\nTelegram will generate a new managed token. Creator Bot will save it and restart this Downloader Bot.",parse_mode="HTML",reply_markup=core.InlineKeyboardMarkup([[core.InlineKeyboardButton("✅ Confirm Revoke",callback_data=f"mrevokec:yes:{bid}")],[core.InlineKeyboardButton("⬅️ Cancel",callback_data=f"mrevokec:no:{bid}")]]));return
+            if action=="no":mb.answer_callback_query(c.id,"Cancelled");return
+            fresh,err=core._creator_api("replaceManagedBotToken",{"user_id":int(bid)},timeout=20)
+            if err:mb.answer_callback_query(c.id,"Telegram rejected the revoke.",show_alert=True);return
+            mb.answer_callback_query(c.id,"✅ New token requested")
+            try:mb.send_message(c.message.chat.id,"🔄 <b>Token rotation requested.</b>\n\nTelegram is sending the new token to Creator Bot now.")
+            except Exception:pass
+        @mb.message_handler(func=lambda m:m.text=="♻️ Revoke Bot Token")
+        def revoke_cmd(m):
+            if str(m.from_user.id)!=owner:return
+            mb.send_message(m.chat.id,"⚠️ <b>Rotate your managed bot token?</b>\n\nThis changes the token without deleting your bot or dashboard.",parse_mode="HTML",reply_markup=core.InlineKeyboardMarkup([[core.InlineKeyboardButton("♻️ Continue",callback_data=f"mrevokec:ask:{bid}")]]))
+        mb._quickdl_v10_security=True
+        return mb
+    core._managed_bot_start_instance=start
+
+    # Add the owner controls to the managed-bot admin panel after all existing layers.
+    old_start2=core._managed_bot_start_instance
+    def start2(doc):
+        mb=old_start2(doc)
+        if not mb:return mb
+        if getattr(mb,"_quickdl_v10_owner_controls",False):return mb
+        bid=str(doc.get("bot_id") or "")
+        owner=str(doc.get("owner_id") or "")
+        @mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")
+        def owner_panel(m):
+            if str(m.from_user.id)!=owner:return
+            d2=dash(bid) or {};s=defaults(d2);pm=premium(d2)
+            kb=core.InlineKeyboardMarkup(row_width=2)
+            kb.add(core.InlineKeyboardButton("📊 Stats",callback_data=f"mstats:{bid}"),core.InlineKeyboardButton("📢 Broadcast",callback_data=f"mbroadcast:{bid}"))
+            kb.add(core.InlineKeyboardButton("🌐 Dashboard",url=str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+bid))
+            kb.add(core.InlineKeyboardButton("♻️ Revoke Token",callback_data=f"mrevokec:ask:{bid}"))
+            if pm:kb.add(core.InlineKeyboardButton("💎 Premium Active",callback_data=f"mbotinfo:{bid}"))
+            else:kb.add(core.InlineKeyboardButton("💎 Open Premium",url=core._creator_bot_url() or "https://t.me/Downloadvedioytibot"))
+            mb.send_message(m.chat.id,"👑 <b>BOT CONTROL CENTER</b>\n\n🤖 @"+html.escape(str(d2.get("username") or "unknown"))+"\n\n"+
+                ("💎 Premium dashboard controls are unlocked." if pm else "🆓 Free: dashboard settings are locked. Open Premium to unlock customization.")+
+                "\n\n🌐 Dashboard: <b>"+html.escape(str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+bid)+"</b>",parse_mode="HTML",reply_markup=kb)
+        # This owner panel must run before the legacy ADMIN PANEL handler.
+        try:
+            if mb.message_handlers and mb.message_handlers[-1].get('function') is owner_panel:
+                mb.message_handlers.insert(0,mb.message_handlers.pop())
+        except Exception: pass
+        mb._quickdl_v10_owner_controls=True
+        return mb
+    core._managed_bot_start_instance=start2
+
+    # Creator manual-token flow. creator_v2's callback currently replaces the older
+    # v1 callback, so wire the existing-token state here without changing Telegram's
+    # native managed-bot flow.
+    old_cb=core._creator_callback
+    def creator_cb(call):
+        data=str((call or {}).get("data") or "");uid=str(((call or {}).get("from") or {}).get("id") or "")
+        msg=(call or {}).get("message") or {};cid=(msg.get("chat") or {}).get("id")
+        if data=="cuse_existing_token":
+            core._creator_set_session(uid,{"state":"existing_token","updated_at":now()})
+            core._creator_answer(call.get("id"),"Send your bot token")
+            core._creator_send(cid,"🔑 <b>USE EXISTING BOT TOKEN</b>\n\nSend the BotFather token in one message. Telegram will validate it, read the bot name and username, save it securely and start the Downloader Bot.\n\n🔒 The token is never shown back.",reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel_create"}]]})
+            return
+        if data=="ccancel_create":
+            core._creator_answer(call.get("id"),"Cancelled");core._creator_clear_session(uid)
+            core._creator_send(cid,"↩️ <b>Creation cancelled.</b>",reply_markup=core._creator_keyboard(uid));return
+        return old_cb(call)
+    core._creator_callback=creator_cb
+
+    old_text=core._creator_handle_text
+    def creator_text(uid,chat_id,text):
+        if str(core._creator_session(uid).get("state") or "")=="existing_token":
+            # Reuse creator_patch's validation logic if it was exposed; otherwise perform it here.
+            token=str(text or "").strip()
+            info,err=core._creator_api_with_token(token,"getMe",{},timeout=15)
+            if err or not info or not info.get("id"):
+                core._creator_send(chat_id,"❌ <b>Telegram rejected this token.</b>\n\nCheck the token and send it again.");return
+            bid=str(info.get("id"));username=str(info.get("username") or "").lstrip("@");name=str(info.get("first_name") or "Downloader Bot")
+            if not username:core._creator_send(chat_id,"❌ Telegram did not return a bot username.");return
+            old=core.managed_bots_col.find_one({"bot_id":bid})
+            if old and str(old.get("owner_id"))!=uid:core._creator_send(chat_id,"❌ This bot is already connected to another Creator account.");return
+            pin=str((old or {}).get("dashboard_pin_plain") or ""); 
+            if len(pin)!=6 or not pin.isdigit():pin=str(secrets.randbelow(1000000)).zfill(6)
+            s=defaults(old or {})
+            doc={"bot_id":bid,"owner_id":uid,"token_enc":core._encrypt_managed_token(token),"username":username,"name":name,"bot_type":str((core._creator_session(uid).get("bot_type") or "video")),"active":True,"suspended":False,"premium_until":(old or {}).get("premium_until"),"created_at":(old or {}).get("created_at",now()),"updated_at":now(),"users":list((old or {}).get("users") or []),"managed_by_telegram":False,"token_source":"existing_token","dashboard_pin_plain":pin,"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest(),"dashboard_settings":s}
+            core.managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True);core._creator_clear_session(uid);d=dash(bid);core._managed_bot_start_instance(d)
+            link=str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+bid
+            core._creator_send(chat_id,"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>"+html.escape(name)+"</b>\n🔗 @"+html.escape(username)+"\n\n🌐 Dashboard: <a href='"+html.escape(link,quote=True)+"'>Open Dashboard</a>\n👤 Login username: <b>@"+html.escape(username)+"</b>\n🔐 Dashboard PIN: <code>"+pin+"</code>",reply_markup=core._creator_keyboard(uid));return
+        return old_text(uid,chat_id,text)
+    core._creator_handle_text=creator_text
+    return core
+
+
+
+# Apply integrated creator layers directly inside bot.py. No external patch modules are required.
+_integrated_core = _integrated_sys.modules[__name__]
+_integrated_creator_patch(_integrated_core)
+_integrated_creator_v2(_integrated_core)
+_integrated_creator_v3(_integrated_core)
+_integrated_creator_v4(_integrated_core)
+_integrated_creator_v5(_integrated_core)
+_integrated_creator_v6(_integrated_core)
+_integrated_creator_v7(_integrated_core)
+_integrated_creator_v8(_integrated_core)
+_integrated_creator_v9(_integrated_core)
+_integrated_creator_v10(_integrated_core)
+
+
+# ================= MAIN RUN LOOP =================
 if __name__ == "__main__":
     try: _start_ad_http_server()
     except Exception as e: print("Ad server startup warning:",repr(e))
@@ -14156,27 +15619,18 @@ if __name__ == "__main__":
     print("🤖 Bot 1 and Bot 2 are starting...")
     print(f"🟢 WaForge WhatsApp configured: {bool(WAFORGE_API_KEY)} | D7 SMS configured: {bool(D7_TOKEN)}")
     print("📦 Telegram upload limits: Admin-controlled FREE/TRIAL/PREMIUM values stored in MongoDB")
-    
     def run_bot2():
-        try:
-            bot2.infinity_polling(skip_pending=True)
-        except Exception as e:
-            print(f"Bot 2 Error: {e}")
-            
+        try: bot2.infinity_polling(skip_pending=True)
+        except Exception as e: print(f"Bot 2 Error: {e}")
     threading.Thread(target=run_bot2, daemon=True).start()
-
     if customer_ai_bot:
         def run_customer_ai_bot():
             try:
                 print("🤖 Dedicated Customer AI bot is starting...")
                 customer_ai_bot.infinity_polling(skip_pending=True)
-            except Exception as e:
-                print(f"Customer AI Bot Error: {e}")
+            except Exception as e: print(f"Customer AI Bot Error: {e}")
         threading.Thread(target=run_customer_ai_bot, daemon=True).start()
     else:
         print("⚠️ CUSTOMER_AI_BOT_TOKEN is not configured; dedicated Customer AI bot is disabled.")
-    
-    try:
-        bot.infinity_polling(skip_pending=True)
-    except Exception as e:
-        print(f"Bot 1 Error: {e}")
+    try: bot.infinity_polling(skip_pending=True)
+    except Exception as e: print(f"Bot 1 Error: {e}")
