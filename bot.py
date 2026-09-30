@@ -13279,7 +13279,16 @@ def _ad_premium_plan_managed_cb(mb,call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); mb.answer_callback_query(call.id,"Invoice ready")
-        mb.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        ad_text=f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>."
+        ad_kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]])
+        pm=_quickdl_extensions._premium_media(months)
+        if pm and pm.get("file_id"):
+            if pm.get("type")=="video": mb.send_video(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
+            else: mb.send_photo(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
+            try: mb.delete_message(call.message.chat.id,call.message.message_id)
+            except Exception: pass
+        else:
+            mb.edit_message_text(call.message.chat.id,call.message.message_id,ad_text,parse_mode="HTML",reply_markup=ad_kb)
     except Exception as e: print("Managed ad Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 def _ad_premium_back_managed_cb(mb,call):
@@ -13336,6 +13345,12 @@ def _creator_poll_loop():
                     if upd.get("managed_bot"):
                         _creator_on_managed_update(upd)
                     msg=upd.get("message") or {}
+                    if msg.get("photo") or msg.get("video"):
+                        try:
+                            if _quickdl_extensions._creator_ext_handle_raw_media(msg):
+                                continue
+                        except Exception as e:
+                            print("Creator media extension error:",repr(e))
                     if msg.get("managed_bot_created"):
                         _creator_on_managed_bot_created(msg)
                     if upd.get("callback_query"):
@@ -14187,6 +14202,9 @@ for _lang,_d in MAIN_LABELS.items():
 
 
 
+
+import quickdl_extensions as _quickdl_extensions
+_quickdl_extensions.install(globals())
 
 # ================= MAIN RUN LOOP =================
 
