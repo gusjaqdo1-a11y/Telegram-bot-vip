@@ -12821,8 +12821,22 @@ def _creator_check_managed_bots():
             fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
             if not ferr and fresh:
                 if str(fresh)!=str(token):
-                    _creator_notify_managed_bot_removed(d,"token_revoked")
-                # Same token but temporary getMe failure: leave it alone.
+                    try:
+                        old_obj=managed_bot_objects.pop(bid,None)
+                        if old_obj:
+                            try: old_obj.stop_polling()
+                            except Exception: pass
+                        managed_bot_threads.pop(bid,None)
+                        managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":_encrypt_managed_token(fresh),"active":True,"suspended":False,"token_updated_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc)}})
+                        fresh_doc=managed_bots_col.find_one({"bot_id":bid}); _managed_bot_start_instance(fresh_doc)
+                        owner=str(d.get("owner_id") or "")
+                        uname=str(d.get("username") or "unknown").lstrip("@")
+                        if owner:
+                            _creator_send(int(owner),f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(uname)}\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in <b>My Bots</b> and continues using the same settings.",reply_markup=_creator_keyboard(owner))
+                        for aid in get_admin_ids():
+                            try: bot.send_message(int(aid),f"🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @{html.escape(uname)}\n👤 Owner: <code>{html.escape(owner)}</code>\n\nNew token saved and worker restarted.",parse_mode="HTML")
+                            except Exception: pass
+                    except Exception as e: print("Managed token health rotation failed:",repr(e))
                 continue
             _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
         except Exception as e:
@@ -13064,7 +13078,7 @@ def _managed_bot_start_instance(doc):
             def _managed_youtube_premium_cb(call):
                 _ctx()
                 parts=str(call.data).split(":"); months=parts[2] if len(parts)>2 else ""
-                plans=get_premium_prices(); price=plans.get(months)
+                plans=_managed_plan_prices(bid); price=plans.get(months)
                 if price is None:
                     mb.answer_callback_query(call.id,"Invalid Premium plan.",show_alert=True); return
                 try:
@@ -13320,7 +13334,7 @@ def _ad_premium_plan_managed_cb(mb,call):
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); mb.answer_callback_query(call.id,"Invoice ready")
         ad_text=f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>."
         ad_kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]])
-        pm=_quickdl_extensions._premium_media(months)
+        pm=get_premium_media(months)
         if pm and pm.get("file_id"):
             if pm.get("type")=="video": mb.send_video(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
             else: mb.send_photo(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
@@ -13384,12 +13398,6 @@ def _creator_poll_loop():
                     if upd.get("managed_bot"):
                         _creator_on_managed_update(upd)
                     msg=upd.get("message") or {}
-                    if msg.get("photo") or msg.get("video"):
-                        try:
-                            if _quickdl_extensions._creator_ext_handle_raw_media(msg):
-                                continue
-                        except Exception as e:
-                            print("Creator media extension error:",repr(e))
                     if msg.get("managed_bot_created"):
                         _creator_on_managed_bot_created(msg)
                     if upd.get("callback_query"):
@@ -14315,14 +14323,18 @@ def _enhanced_creator_start_create(uid,chat_id):
         [{"text":"🌐 Video + Music","callback_data":"ctype:all"}],
     ]})
 
-def _enhanced_creator_callback(update):
-    data=str((update or {}).get("callback_query",{}).get("data") or "")
-    if not data.startswith("ctype:"): return _original_creator_callback(update)
-    call=(update or {}).get("callback_query") or {}; uid=str((call.get("from") or {}).get("id") or ""); chat=(call.get("message") or {}).get("chat",{}).get("id")
+def _enhanced_creator_callback(call):
+    data=str((call or {}).get("data") or "")
+    if not data.startswith("ctype:"):
+        return _original_creator_callback(call)
+    uid=str((call.get("from") or {}).get("id") or "")
+    chat=(call.get("message") or {}).get("chat",{}).get("id")
     kind=data.split(":",1)[1].lower()
-    if kind not in {"video","music","all"}: _creator_answer(call.get("id"),"Invalid bot type.",True); return
+    if kind not in {"video","music","all"}:
+        _creator_answer(call.get("id"),"Invalid bot type.",True); return
     sess=_creator_session(uid)
-    if sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired. Press Create My Bot again.",True); return
+    if sess.get("state")!="type":
+        _creator_answer(call.get("id"),"Creation session expired. Press Create My Bot again.",True); return
     bot_type="video" if kind in {"video","all"} else "music"
     suggested_name={"video":"QuickDL Video","music":"QuickDL Music","all":"QuickDL Downloader"}[kind]
     suggested_username=f"quickdl_{uid[-8:]}_bot"[:32]
@@ -14411,6 +14423,51 @@ def _install_dashboard_routes():
     _AdGateHandler.do_GET=dashboard_get; _AdGateHandler.do_POST=dashboard_post
 
 _install_dashboard_routes()
+# Apply dashboard settings to managed bots without changing the global Monetag configuration.
+def _managed_plan_prices(bot_id):
+    d=_managed_bot_doc(bot_id) or {}
+    prices=d.get("dashboard_prices") or {}
+    base=get_premium_prices()
+    return {m:float(prices.get(m,base[m])) for m in ("1","3","9","12") if m in base}
+
+_original_ad_enabled_for=_ad_enabled_for
+def _ad_enabled_for_dashboard(uid,bot_id=None):
+    if bot_id and str(bot_id)!="main":
+        d=_managed_bot_doc(bot_id) or {}
+        ds=d.get("dashboard_settings") or {}
+        if ds.get("ads_enabled") is False:
+            return True
+    return _original_ad_enabled_for(uid,bot_id)
+_ad_enabled_for=_ad_enabled_for_dashboard
+
+_original_managed_start=_managed_bot_start_instance
+def _managed_bot_start_instance_with_health_notice(doc):
+    try:
+        result=_original_managed_start(doc)
+        if result is None and doc and doc.get("active",True):
+            for aid in get_admin_ids():
+                try:
+                    bot.send_message(int(aid),f"⚠️ <b>MANAGED BOT WORKER FAILED</b>\n\n🤖 @{html.escape(str(doc.get('username') or 'unknown'))}\n🆔 <code>{html.escape(str(doc.get('bot_id') or ''))}</code>\n\nThe worker could not start or Telegram rejected the current token.",parse_mode="HTML")
+                except Exception: pass
+        return result
+    except Exception as e:
+        for aid in get_admin_ids():
+            try: bot.send_message(int(aid),f"⚠️ <b>MANAGED BOT START ERROR</b>\n\n🆔 <code>{html.escape(str((doc or {}).get('bot_id') or ''))}</code>\n\n<code>{html.escape(str(e))}</code>",parse_mode="HTML")
+            except Exception: pass
+        return None
+_managed_bot_start_instance=_managed_bot_start_instance_with_health_notice
+
+_original_removed_notify=_creator_notify_managed_bot_removed
+def _creator_notify_managed_bot_removed_with_admin(doc,reason="deleted_or_revoked"):
+    _original_removed_notify(doc,reason)
+    if not doc: return
+    owner=str(doc.get("owner_id") or ""); username=str(doc.get("username") or "unknown").lstrip("@")
+    if reason in {"deleted_or_revoked","token_revoked"}:
+        for aid in get_admin_ids():
+            try: bot.send_message(int(aid),f"🚨 <b>MANAGED BOT DELETED / UNAVAILABLE</b>\n\n🤖 @{html.escape(username)}\n🆔 <code>{html.escape(str(doc.get('bot_id') or ''))}</code>\n👤 Owner: <code>{html.escape(owner)}</code>\n\nThe bot was removed from My Bots and its worker was stopped.",parse_mode="HTML")
+            except Exception: pass
+_creator_notify_managed_bot_removed=_creator_notify_managed_bot_removed_with_admin
+
 _admin_menu_original=admin_menu
 def admin_menu_extended():
     kb=_admin_menu_original(); kb.add("🖼 PREMIUM / CREATOR MEDIA"); return kb
