@@ -13224,6 +13224,8 @@ def _creator_check_managed_bots():
         try:
             result,err=_creator_api_with_token(token,"getMe",{},timeout=10)
             if not err and result:
+                if d.get("health_failure_count"):
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"health_failure_count":0,"health_alert_sent":False}})
                 continue
             # Ask Managed Bot Mode for the current credential before treating a failure as deletion.
             fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
@@ -13232,18 +13234,21 @@ def _creator_check_managed_bots():
                     d["token_enc"]=_encrypt_managed_token(fresh)
                     d["health_alert_sent"]=False
                     d["updated_at"]=datetime.now(timezone.utc)
-                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":d["token_enc"],"health_alert_sent":False,"updated_at":d["updated_at"]}})
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":d["token_enc"],"health_alert_sent":False,"health_failure_count":0,"updated_at":d["updated_at"]}})
                     fresh_doc=managed_bots_col.find_one({"bot_id":bid}) or d
                     _managed_bot_restart_instance(fresh_doc)
                     _creator_notify_managed_bot_token_updated(fresh_doc,fresh,deleted=False)
                 continue
-            if not d.get("health_alert_sent",False):
-                d["health_alert_sent"]=True
-                managed_bots_col.update_one({"bot_id":bid},{"$set":{"health_alert_sent":True,"last_health_error_at":datetime.now(timezone.utc)}})
+            failures=int(d.get("health_failure_count",0) or 0)+1
+            if failures>=3:
+                _creator_notify_managed_bot_removed(d,"deleted_or_unavailable")
+                continue
+            managed_bots_col.update_one({"bot_id":bid},{"$set":{"health_failure_count":failures,"health_alert_sent":True,"last_health_error_at":datetime.now(timezone.utc)}})
+            if failures==1:
                 _creator_notify_bot_admins(
                     f"⚠️ <b>Managed Bot Not Responding</b>\n\n"
                     f"🤖 @{html.escape(str(d.get('username') or 'unknown').lstrip('@'))}\n\n"
-                    "The bot is currently unavailable or its managed token could not be fetched. Telegram may have deleted the bot. The system will keep checking.",
+                    "The bot is unavailable or its managed token could not be fetched. Telegram may have deleted it. The system will verify again before removing it.",
                     str(d.get("owner_id") or "")
                 )
         except Exception as e:
