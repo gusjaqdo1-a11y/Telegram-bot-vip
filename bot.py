@@ -12796,9 +12796,15 @@ def _creator_on_managed_bot_created(msg):
     managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True)
     _creator_clear_session(uid)
     d=managed_bots_col.find_one({"bot_id":str(bot_id)}); _managed_bot_start_instance(d)
+    d=managed_bots_col.find_one({"bot_id":str(bot_id)}) or {}
+    pin=str(d.get("dashboard_pin_plain") or "")
+    managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":{"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest()}})
     _creator_send(owner_id,
         f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
         "Your downloader bot is now running.\n\n"
+        f"🌐 Dashboard: <code>{str(AD_PUBLIC_BASE_URL).rstrip('/')}/dashboard/{bot_id}</code>\n"
+        f"👤 Login username: <b>@{html.escape(username or 'unknown')}</b>\n"
+        f"🔐 Dashboard PIN: <code>{html.escape(pin)}</code>\n\n"
         "💎 Premium uses your shared @Downloadvedioytibot balance.",
         reply_markup=_creator_keyboard(uid))
 
