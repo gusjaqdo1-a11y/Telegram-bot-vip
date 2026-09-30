@@ -12077,6 +12077,11 @@ def _creator_edit(chat_id, message_id, text, reply_markup=None):
     if reply_markup is not None: payload["reply_markup"]=reply_markup
     return _creator_api("editMessageText",payload)
 
+def _creator_edit_media(chat_id,message_id,media_url,caption,reply_markup=None):
+    payload={"chat_id":chat_id,"message_id":message_id,"media":{"type":"photo","media":media_url,"caption":caption,"parse_mode":"HTML"}}
+    if reply_markup is not None: payload["reply_markup"]=reply_markup
+    return _creator_api("editMessageMedia",payload)
+
 
 def _creator_admin(uid):
     """Return True for the main admins and any explicitly configured Creator admins.
@@ -12210,12 +12215,28 @@ def _creator_verify_gate(uid, chat_id):
     return False
 
 
+def _creator_card_url(kind):
+    labels={"video":"VIDEO+DOWNLOADER%0ATikTok+%E2%80%A2+YouTube+%E2%80%A2+Instagram","music":"MUSIC+DOWNLOADER%0ASearch+%E2%80%A2+MP3+%E2%80%A2+Artwork","all":"ALL-IN-ONE+DOWNLOADER%0AVideo+%E2%80%A2+Music+%E2%80%A2+Premium"}
+    return "https://placehold.co/1200x700/111827/FFFFFF.png?text="+labels.get(kind,labels["all"])
+
+def _creator_type_keyboard(kind=None):
+    rows=[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"},{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+          [{"text":"🤖 All-in-One","callback_data":"ctype:all"}]]
+    if kind and CREATOR_BOT_USERNAME:
+        manager=str(CREATOR_BOT_USERNAME).lstrip("@")
+        suggested_name={"video":"Video Downloader","music":"Music Downloader","all":"All-in-One Downloader"}[kind]
+        suggested_username={"video":"my_video_downloader_bot","music":"my_music_downloader_bot","all":"my_all_in_one_bot"}[kind]
+        create_url=f"https://t.me/newbot/{urllib.parse.quote(manager)}/{urllib.parse.quote(suggested_username)}?{urllib.parse.urlencode({'name':suggested_name})}"
+        rows.append([{"text":"🚀 Create with Telegram","url":create_url}])
+    return {"inline_keyboard":rows}
+
 def _creator_start_create(uid, chat_id):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}]]})
+    payload={"chat_id":chat_id,"photo":_creator_card_url("all"),"caption":"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type. Telegram will then open the official managed-bot screen where you enter/edit the bot name and username.","parse_mode":"HTML","reply_markup":_creator_type_keyboard()}
+    _creator_api("sendPhoto",payload)
 
 
 def _creator_finish_request(uid, chat_id):
@@ -12841,9 +12862,13 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music","all"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+        caption=f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader' if btype=='music' else '🤖 All-in-One Downloader'}</b> selected.\n\nTelegram will now open the official creation screen. The name and username are pre-filled but editable."
+        _creator_edit_media(chat_id,mid,_creator_card_url(btype),caption,_creator_type_keyboard(btype))
+        _creator_answer(call.get("id"),"Type selected")
+        return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
