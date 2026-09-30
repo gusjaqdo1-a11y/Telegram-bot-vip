@@ -10575,23 +10575,27 @@ def premium_buy_callback(call):
         link,stars=_create_main_premium_invoice(uid,months,"premium_menu")
         price=float(get_premium_prices()[months])
         text=(f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n"
-              f"💰 Price: <b>${price:.2f}</b>\n"
+              f"💰 Price: <b>$\{price:.2f}</b>\n"
               f"⭐ Payment: <b>{stars} Telegram Stars</b>\n\n"
               "Tap <b>PAY NOW</b> to complete payment securely in Telegram.\n"
               "Premium will activate automatically after successful payment.")
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)], [InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
-        image_id=_premium_plan_image(months)
-        if image_id:
+        bot.answer_callback_query(call.id,"Invoice ready")
+        media=_quickdl_extensions._premium_media(months)
+        if media and media.get("file_id"):
             try:
-                bot.send_photo(call.message.chat.id,image_id,caption=text,parse_mode="HTML",reply_markup=kb)
-                bot.answer_callback_query(call.id,"Invoice ready")
+                if media.get("type")=="video":
+                    bot.send_video(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
+                else:
+                    bot.send_photo(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
                 try: bot.delete_message(call.message.chat.id,call.message.message_id)
                 except Exception: pass
-                return
-            except Exception as e: print("Premium image send skipped:",repr(e))
-        bot.answer_callback_query(call.id,"Invoice ready")
-        try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
-        except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
+            except Exception:
+                try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
+                except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
+        else:
+            try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
+            except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
     except Exception as e:
         print("Main Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create payment link.",show_alert=True)
 
