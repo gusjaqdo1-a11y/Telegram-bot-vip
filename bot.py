@@ -12839,6 +12839,7 @@ def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
                   "Your bot was deleted or is no longer available on Telegram.\n"
                   "It has been removed from your <b>My Bots</b> list and stopped on this system.")
         _creator_send(int(owner),text,reply_markup=_creator_keyboard(owner))
+    _creator_notify_admins("⚠️ <b>Managed Bot Removed</b>\\n\\n🤖 @"+html.escape(username)+"\\nOwner: <code>"+html.escape(owner)+"</code>\\nReason: <b>"+html.escape(str(reason))+"</b>\\nDashboard disabled and worker stopped.")
 
 
 def _creator_on_managed_update(update):
@@ -12896,7 +12897,9 @@ def _creator_on_managed_update(update):
            "name":info.get("first_name") or sess.get("name") or "Downloader Bot",
            "bot_type":str(sess.get("bot_type") or "video"),"active":True,"suspended":False,
            "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),
-           "updated_at":datetime.now(timezone.utc),"users":[]}
+           "updated_at":datetime.now(timezone.utc),"users":[],
+           "dashboard_pin_plain":"".join(random.choice("0123456789") for _ in range(6)),
+           "dashboard_settings":{"platforms":{},"ads_enabled":True,"premium_enabled":True,"buttons":{"create":True,"remove_ads":True,"admin":True,"powered_by":True},"locked_fields":[]}}
         managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
         # Keep the creation session until the managed_bot_created message arrives;
         # that message contains the selected Video/Music type.
