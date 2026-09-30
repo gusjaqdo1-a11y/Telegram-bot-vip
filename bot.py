@@ -12571,8 +12571,9 @@ def _creator_register_existing_token(uid,chat_id,token):
              "created_at":(existing or {}).get("created_at",now),"updated_at":now,"users":list((existing or {}).get("users") or []),
              "managed_by_telegram":False,"token_source":"existing_token"}
         managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
-        _creator_clear_session(uid); d=managed_bots_col.find_one({"bot_id":bid}) or doc; _managed_bot_start_instance(d)
-        _creator_send(chat_id,f"🎉 <b>BOT CONNECTED SUCCESSFULLY</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username)}\n📥 Type: <b>{'🎵 Music Downloader' if btype=='music' else '🎬 Video Downloader'}</b>\n\nYour existing bot is now running. Open <b>🤖 My Bots</b> to manage it or <b>💎 Premium</b> to upgrade it.",reply_markup=_creator_keyboard(uid))
+        d=_ensure_bot_dashboard(managed_bots_col.find_one({"bot_id":bid}) or doc); _managed_bot_start_instance(d)
+        dash_url,dash_user,dash_pin=_dashboard_credentials(d); _creator_clear_session(uid)
+        _creator_send(chat_id,f"🎉 <b>BOT CONNECTED SUCCESSFULLY</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username)}\n📥 Type: <b>{'🎵 Music Downloader' if btype=='music' else '🎬 Video Downloader'}</b>\n\n🌐 <b>Owner Dashboard</b>\n🔗 {html.escape(dash_url)}\n👤 Username: <code>@{html.escape(dash_user)}</code>\n🔐 PIN: <code>{html.escape(dash_pin)}</code>\n\nYour existing bot is now running. Open <b>🤖 My Bots</b> to manage it.",reply_markup=_creator_keyboard(uid))
     except Exception as e:
         print("Existing bot token validation failed:",repr(e))
         _creator_send(chat_id,"❌ <b>Could not connect this bot.</b>\n\nCheck the token and try again.")
@@ -13069,12 +13070,14 @@ def _creator_on_managed_bot_created(msg):
         "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],
     }
     managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True)
-    _creator_clear_session(uid)
-    d=managed_bots_col.find_one({"bot_id":str(bot_id)}); _managed_bot_start_instance(d)
+    d=_ensure_bot_dashboard(managed_bots_col.find_one({"bot_id":str(bot_id)}) or doc)
+    _creator_clear_session(uid); _managed_bot_start_instance(d)
+    dash_url,dash_user,dash_pin=_dashboard_credentials(d)
     _creator_send(owner_id,
         f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
-        "Your downloader bot is now running.\n\n"
-        "💎 Premium uses your shared @Downloadvedioytibot balance.",
+        "🌐 <b>Owner Dashboard</b>\n"
+        f"🔗 {html.escape(dash_url)}\n👤 Username: <code>@{html.escape(dash_user)}</code>\n🔐 PIN: <code>{html.escape(dash_pin)}</code>\n\n"
+        "Your downloader bot is now running.\n💎 Premium uses your shared @Downloadvedioytibot balance.",
         reply_markup=_creator_keyboard(uid))
 
 
@@ -13277,8 +13280,10 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
+        d=_ensure_bot_dashboard(d)
         typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
-        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
+        dash_url,dash_user,dash_pin=_dashboard_credentials(d)
+        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>\n\n🌐 <b>Owner Dashboard</b>\n🔗 {html.escape(dash_url)}\n👤 <code>@{html.escape(dash_user)}</code>\n🔐 PIN: <code>{html.escape(dash_pin)}</code>",reply_markup={"inline_keyboard":[[{"text":"🌐 Open Dashboard","url":dash_url}],[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
