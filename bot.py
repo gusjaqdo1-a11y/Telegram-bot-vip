@@ -1461,7 +1461,7 @@ def _show_ad_premium_plans(bot_obj,call,token):
           "\n".join(f"• <b>{m} month(s)</b> — ${float(plans[m]):.2f}" for m in ("1","3","9","12") if m in plans)+
           "\n\nPayment is handled by <b>@Downloadvedioytibot</b> with Telegram Stars.")
     bot_obj.answer_callback_query(call.id)
-    try: bot_obj.edit_message_text(call.message.chat.id,call.message.message_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+    try: bot_obj.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
     except Exception as e: print("Ad premium menu edit failed:",repr(e))
 
 def _ad_gate_keyboard(token, premium_url=None):
@@ -11287,29 +11287,65 @@ def premium_prices_admin(m):
 @bot.message_handler(func=lambda m: m.text == "🖼 PREMIUM INVOICE IMAGES")
 def premium_invoice_images_admin(m):
     if not is_admin(m.from_user.id): return
-    msg=bot.send_message(m.chat.id,
-        "🖼️ <b>INVOICE IMAGES</b>\n\n"
-        "Send one photo at a time. Caption format:\n"
-        "• <code>premium:1</code>, <code>premium:3</code>, <code>premium:9</code>, <code>premium:12</code>\n"
-        "• <code>remove:3</code>, <code>remove:6</code>, <code>remove:12</code>\n\n"
-        "The selected image appears on that plan's Telegram invoice. Images are optional.",
-        parse_mode="HTML")
-    bot.register_next_step_handler(msg, set_premium_invoice_image_admin)
+    rows=[]
+    for kind,plans in (("premium",("1","3","9","12")),("remove",("3","6","12"))):
+        for plan in plans:
+            key=f"{kind}_invoice_photo_{plan}" if kind=="remove" else f"premium_invoice_photo_{plan}"
+            status="🖼️ Set" if get_setting(key,"") else "⚪ Not set"
+            label="Premium" if kind=="premium" else "Remove Ads"
+            rows.append([InlineKeyboardButton(f"{label} {plan}m — {status}",callback_data=f"invimg:{kind}:{plan}")])
+    bot.send_message(m.chat.id,"🖼️ <b>INVOICE MEDIA MANAGER</b>\n\nChoose a plan to upload/replace its invoice image, or delete the saved image.\n\n"
+        "Telegram invoice media is optional. The selected image is automatically attached to that plan's invoice.",
+        parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
 
-def set_premium_invoice_image_admin(m):
-    if not is_admin(m.from_user.id): return
-    caption=str(getattr(m,"caption","") or "").strip().lower()
-    if getattr(m,"photo",None):
-        parts=caption.split(":",1)
-        kind=parts[0] if len(parts)==2 else ""
-        plan=parts[1].strip() if len(parts)==2 else ""
-        allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
-        if kind not in allowed or plan not in allowed[kind]:
-            bot.send_message(m.chat.id,"❌ Caption must be <code>premium:1/3/9/12</code> or <code>remove:3/6/12</code>.",parse_mode="HTML"); return
-        set_setting(f"{kind}_ads_invoice_photo_{plan}" if kind=="remove" else f"premium_invoice_photo_{plan}",m.photo[-1].file_id)
-        bot.send_message(m.chat.id,f"✅ Invoice image saved for <b>{kind} {plan}</b>.",parse_mode="HTML")
-        return
-    bot.send_message(m.chat.id,"❌ Send a photo with caption <code>premium:1</code> or <code>remove:3</code>.",parse_mode="HTML")
+@bot.callback_query_handler(func=lambda c: c.data.startswith("invimg:"))
+def invoice_image_plan_cb(call):
+    if not is_admin(call.from_user.id): return
+    parts=str(call.data).split(":"); kind=parts[1] if len(parts)>1 else ""; plan=parts[2] if len(parts)>2 else ""
+    allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
+    if kind not in allowed or plan not in allowed[kind]:
+        bot.answer_callback_query(call.id,"Invalid invoice plan.",show_alert=True); return
+    key=f"{kind}_invoice_photo_{plan}" if kind=="remove" else f"premium_invoice_photo_{plan}"
+    current=bool(get_setting(key,"")); label="Premium" if kind=="premium" else "Remove Ads"
+    bot.answer_callback_query(call.id)
+    kb=InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🖼 Upload / Replace",callback_data=f"invimg_upload:{kind}:{plan}"))
+    if current: kb.add(InlineKeyboardButton("🗑 Delete Image",callback_data=f"invimg_delete:{kind}:{plan}"))
+    kb.add(InlineKeyboardButton("⬅️ Back",callback_data="invimg_back"))
+    bot.send_message(call.message.chat.id,f"🖼️ <b>{label} — {plan} month(s)</b>\n\nCurrent image: <b>{'SET' if current else 'NOT SET'}</b>\n\n"
+        f"Tap <b>Upload / Replace</b>, then send a photo with caption <code>{kind}:{plan}</code>.\nOr delete the current image.",
+        parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("invimg_upload:"))
+def invoice_image_upload_cb(call):
+    if not is_admin(call.from_user.id): return
+    parts=str(call.data).split(":"); kind=parts[1] if len(parts)>1 else ""; plan=parts[2] if len(parts)>2 else ""
+    if kind not in {"premium","remove"}: bot.answer_callback_query(call.id,"Invalid type.",show_alert=True); return
+    bot.answer_callback_query(call.id)
+    msg=bot.send_message(call.message.chat.id,f"📤 Send the <b>{'Premium' if kind=='premium' else 'Remove Ads'} {plan}-month</b> invoice photo now.\n\nCaption: <code>{kind}:{plan}</code>",parse_mode="HTML")
+    bot.register_next_step_handler(msg,set_premium_invoice_image_admin)
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("invimg_delete:"))
+def invoice_image_delete_cb(call):
+    if not is_admin(call.from_user.id): return
+    parts=str(call.data).split(":"); kind=parts[1] if len(parts)>1 else ""; plan=parts[2] if len(parts)>2 else ""
+    allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
+    if kind not in allowed or plan not in allowed[kind]:
+        bot.answer_callback_query(call.id,"Invalid invoice plan.",show_alert=True); return
+    key=f"{kind}_invoice_photo_{plan}" if kind=="remove" else f"premium_invoice_photo_{plan}"
+    set_setting(key,""); bot.answer_callback_query(call.id,"Image deleted")
+    bot.send_message(call.message.chat.id,f"🗑 <b>{'Premium' if kind=='premium' else 'Remove Ads'} {plan}-month invoice image deleted.</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.callback_query_handler(func=lambda c: c.data=="invimg_back")
+def invoice_image_back_cb(call):
+    if not is_admin(call.from_user.id): return
+    bot.answer_callback_query(call.id)
+    try: bot.edit_message_text("🖼️ <b>Invoice Media Manager closed.</b>",call.message.chat.id,call.message.message_id,parse_mode="HTML")
+    except Exception: pass
+
+def resolve_user_input(text):
+    text=(text or '').strip()
+    return text if text in users else find_user_by_botid(text)
 
 def resolve_user_input(text):
     text=(text or '').strip()
@@ -12102,7 +12138,13 @@ def _creator_send(chat_id, text, reply_markup=None, parse_mode="HTML", **extra):
     payload={"chat_id":chat_id,"text":str(text),"parse_mode":parse_mode}
     if reply_markup is not None: payload["reply_markup"]=reply_markup
     payload.update(extra)
-    return _creator_api("sendMessage",payload)
+    result=_creator_api("sendMessage",payload)
+    try:
+        if isinstance(result,dict) and result.get("message_id"):
+            creator_sessions_col.update_one({"_id":str(chat_id)},{"$set":{"last_message_id":int(result["message_id"])}},upsert=True)
+    except Exception:
+        pass
+    return result
 
 
 def _creator_answer(call_id, text="", alert=False):
@@ -12242,39 +12284,70 @@ def _creator_verify_gate(uid, chat_id):
     return False
 
 
-def _creator_start_create(uid, chat_id):
+def _creator_start_create(uid, chat_id, mid=None):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
-    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,
-        "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
-        "Choose how you want to add your Downloader Bot:",
-        reply_markup={"inline_keyboard":[
-            [{"text":"🚀 Create with Telegram","callback_data":"ccreate_managed"}],
-            [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
-            [{"text":"❌ Cancel","callback_data":"ccancel_create"}],
-        ]})
+    sess=_creator_session(uid); old_mid=mid or sess.get("last_message_id")
+    data={"state":"type","updated_at":datetime.now(timezone.utc)}
+    if old_mid: data["last_message_id"]=int(old_mid)
+    _creator_set_session(uid,data)
+    text=("🤖 <b>CREATE YOUR OWN DOWNLOADER BOT</b>\n\n"
+          "You have two ways to add your bot:\n\n"
+          "🚀 <b>Create with Telegram</b>\n"
+          "Telegram opens its official managed-bot screen. You choose the bot <b>Name</b> and <b>Username</b> there. "
+          "The Creator Bot then receives the managed bot automatically and securely starts it.\n\n"
+          "🔑 <b>Use Existing Token</b>\n"
+          "Connect a bot you already created with @BotFather. First choose <b>Video</b> or <b>Music</b>, then paste its BotFather token. "
+          "The token is validated with Telegram, encrypted, saved and the bot starts automatically.\n\n"
+          "👇 Choose how you want to continue.")
+    markup={"inline_keyboard":[
+        [{"text":"🚀 Create with Telegram","callback_data":"ccreate_managed"}],
+        [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
+        [{"text":"❌ Cancel","callback_data":"ccancel_create"}],
+    ]}
+    if old_mid:
+        try: _creator_edit(chat_id,int(old_mid),text,reply_markup=markup); return
+        except Exception: pass
+    _creator_send(chat_id,text,reply_markup=markup)
 
-def _creator_request_bot_type(uid,chat_id):
-    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CHOOSE BOT TYPE</b>\n\nSelect the downloader type:",
-        reply_markup={"inline_keyboard":[
-            [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
-            [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
-            [{"text":"⬅️ Back","callback_data":"ccreate_back"}],
-        ]})
+def _creator_request_bot_type(uid,chat_id,mid=None):
+    sess=_creator_session(uid); target=mid or sess.get("last_message_id")
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc),"last_message_id":target} if target else {"state":"type","updated_at":datetime.now(timezone.utc)})
+    text=("🤖 <b>CHOOSE DOWNLOADER TYPE</b>\n\n"
+          "Select what this bot should do:\n\n"
+          "🎬 <b>Video Downloader</b> — download supported videos/photos from links.\n"
+          "🎵 <b>Music Downloader</b> — search and download songs/MP3 with music features.\n\n"
+          "Your choice is saved with the bot and used when it starts.")
+    markup={"inline_keyboard":[
+        [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+        [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+        [{"text":"⬅️ Back","callback_data":"ccreate_back"}],
+    ]}
+    if target:
+        try: _creator_edit(chat_id,int(target),text,reply_markup=markup); return
+        except Exception: pass
+    _creator_send(chat_id,text,reply_markup=markup)
 
-def _creator_existing_token_prompt(uid,chat_id):
-    sess=_creator_session(uid)
-    _creator_set_session(uid,{**sess,"state":"existing_token","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,
-        "🔑 <b>USE EXISTING BOT TOKEN</b>\n\n"
-        "Send the complete BotFather token in one message.\n\n"
-        "Example: <code>123456789:AAExampleToken...</code>\n\n"
-        "Telegram will be used to validate the token and read the bot name/username. "
-        "The token is saved encrypted and the Downloader Bot starts automatically.",
-        reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel_create"}]]})
+def _creator_existing_token_prompt(uid,chat_id,btype=None,mid=None):
+    sess=_creator_session(uid); btype=str(btype or sess.get("bot_type") or "").lower()
+    if btype not in {"video","music"}:
+        _creator_request_bot_type(uid,chat_id,mid=mid); return
+    target=mid or sess.get("last_message_id")
+    _creator_set_session(uid,{**sess,"state":"existing_token","bot_type":btype,"updated_at":datetime.now(timezone.utc),"last_message_id":target})
+    type_text="🎬 <b>Video Downloader</b>" if btype=="video" else "🎵 <b>Music Downloader</b>"
+    text=("🔑 <b>CONNECT EXISTING BOT</b>\n\n"
+          f"Selected type: <b>{type_text}</b>\n\n"
+          "1️⃣ Copy the token from <b>@BotFather</b>.\n"
+          "2️⃣ Paste the complete token here as one message.\n"
+          "3️⃣ Telegram will validate it and the Creator Bot will read the bot name/username.\n"
+          "4️⃣ The token is stored encrypted and the bot starts automatically.\n\n"
+          "⚠️ Send only a BotFather token. Do not send your Telegram account password, login code or 2FA password.")
+    markup={"inline_keyboard":[[{"text":"⬅️ Change Type","callback_data":"cuse_existing_token"}],[{"text":"❌ Cancel","callback_data":"ccancel_create"}]]}
+    if target:
+        try: _creator_edit(chat_id,int(target),text,reply_markup=markup); return
+        except Exception: pass
+    _creator_send(chat_id,text,reply_markup=markup)
 
 def _creator_register_existing_token(uid,chat_id,token):
     token=str(token or "").strip()
@@ -12292,28 +12365,36 @@ def _creator_register_existing_token(uid,chat_id,token):
         existing=managed_bots_col.find_one({"bot_id":bid})
         if existing and str(existing.get("owner_id"))!=str(uid):
             _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
-        sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower()
-        if btype not in {"video","music"}: btype="video"
+        sess=_creator_session(uid); btype=str(sess.get("bot_type") or "").lower()
+        if btype not in {"video","music"}:
+            _creator_send(chat_id,"⚠️ <b>Downloader type not selected.</b>\n\nPlease choose Video Downloader or Music Downloader first.",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"cexisting_type:video"}],[{"text":"🎵 Music Downloader","callback_data":"cexisting_type:music"}]]}); return
         now=datetime.now(timezone.utc)
-        doc={
-            "bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),
-            "username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,
-            "premium_until":(existing or {}).get("premium_until"),"wallet_linked":bool((existing or {}).get("wallet_linked",False)),
-            "created_at":(existing or {}).get("created_at",now),"updated_at":now,
-            "users":list((existing or {}).get("users") or []),"managed_by_telegram":False,"token_source":"existing_token",
-        }
+        doc={"bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),"username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,
+             "premium_until":(existing or {}).get("premium_until"),"wallet_linked":bool((existing or {}).get("wallet_linked",False)),
+             "created_at":(existing or {}).get("created_at",now),"updated_at":now,"users":list((existing or {}).get("users") or []),
+             "managed_by_telegram":False,"token_source":"existing_token"}
         managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
-        _creator_clear_session(uid)
-        d=managed_bots_col.find_one({"bot_id":bid}) or doc
-        _managed_bot_start_instance(d)
-        _creator_send(chat_id,
-            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n"
-            f"🔗 @{html.escape(username)}\n🆔 <code>{bid}</code>\n\n"
-            "Your existing bot is now running as a Downloader Bot.",
-            reply_markup=_creator_keyboard(uid))
+        _creator_clear_session(uid); d=managed_bots_col.find_one({"bot_id":bid}) or doc; _managed_bot_start_instance(d)
+        _creator_send(chat_id,f"🎉 <b>BOT CONNECTED SUCCESSFULLY</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username)}\n📥 Type: <b>{'🎵 Music Downloader' if btype=='music' else '🎬 Video Downloader'}</b>\n\nYour existing bot is now running. Open <b>🤖 My Bots</b> to manage it or <b>💎 Premium</b> to upgrade it.",reply_markup=_creator_keyboard(uid))
     except Exception as e:
         print("Existing bot token validation failed:",repr(e))
         _creator_send(chat_id,"❌ <b>Could not connect this bot.</b>\n\nCheck the token and try again.")
+
+def _creator_finish_request(uid, chat_id, mid=None):
+    d=_creator_session(uid); btype=str(d.get("bot_type") or "video").lower()
+    if btype not in {"video","music"}: btype="video"
+    request_id=random.randint(1,2_000_000_000); target=mid or d.get("last_message_id")
+    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"bot_type":btype,"updated_at":datetime.now(timezone.utc),"last_message_id":target})
+    text=(f"<b>STEP 2 — {('🎬 VIDEO DOWNLOADER' if btype=='video' else '🎵 MUSIC DOWNLOADER')}</b>\n\n"
+          "Tap the Telegram button below. Telegram opens the official managed-bot creation screen.\n\n"
+          "📝 There you enter:\n• Bot <b>Name</b>\n• Bot <b>Username</b> (must end in <code>bot</code>)\n\n"
+          "After Telegram creates it, the Creator Bot receives the managed-bot update, securely obtains the new token and starts your Downloader Bot.\n\n"
+          "No manual token is required for this option.")
+    markup=_creator_request_keyboard(request_id)
+    if target:
+        try: _creator_edit(chat_id,int(target),text,reply_markup=markup); return
+        except Exception: pass
+    _creator_send(chat_id,text,reply_markup=markup)
 
 def _creator_finish_request(uid, chat_id):
     d=_creator_session(uid)
@@ -12975,11 +13056,16 @@ def _creator_callback(call):
     if data=="ccancel_create":
         _creator_clear_session(uid); _creator_send(chat_id,"↩️ Creation cancelled.",reply_markup=_creator_keyboard(uid)); return
     if data=="ccreate_managed":
-        _creator_request_bot_type(uid,chat_id); return
+        _creator_request_bot_type(uid,chat_id,mid=mid); return
     if data=="ccreate_back":
-        _creator_start_create(uid,chat_id); return
+        _creator_start_create(uid,chat_id,mid=mid); return
     if data=="cuse_existing_token":
-        _creator_existing_token_prompt(uid,chat_id); return
+        _creator_request_bot_type(uid,chat_id,mid=mid); return
+    if data.startswith("cexisting_type:"):
+        btype=data.split(":",1)[1].lower()
+        if btype not in {"video","music"}:
+            _creator_answer(call.get("id"),"Invalid downloader type.",True); return
+        _creator_existing_token_prompt(uid,chat_id,btype=btype,mid=mid); return
     if data=="creatorwallet:request":
         if users.get(uid,{}).get("creator_wallet_linked"):
             _creator_edit(chat_id,mid,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot account and @Downloadvedioytibot share the same balance.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":"cmybots"}]]}); return
@@ -12998,7 +13084,7 @@ def _creator_callback(call):
         if btype not in {"video","music"} or sess.get("state")!="type":
             _creator_answer(call.get("id"),"Creation session expired.",True); return
         _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_finish_request(uid,chat_id)
+        _creator_finish_request(uid,chat_id,mid=mid)
         _creator_answer(call.get("id"),"Open Telegram to enter the bot name and username.")
         return
     if data.startswith("cbotinfo:"):
@@ -13471,14 +13557,14 @@ def _ad_premium_plan_managed_cb(mb,call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); mb.answer_callback_query(call.id,"Invoice ready")
-        mb.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        mb.edit_message_text(f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
     except Exception as e: print("Managed ad Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 def _ad_premium_back_managed_cb(mb,call):
     token=str(call.data).split(":",1)[1] if ":" in str(call.data) else ""; row=ad_gates_col.find_one({"token":token})
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     mb.answer_callback_query(call.id)
-    try: mb.edit_message_text(call.message.chat.id,call.message.message_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token))
+    try: mb.edit_message_text("To continue, watch a short ad or use Premium/Skip.",call.message.chat.id,call.message.message_id,reply_markup=_ad_gate_keyboard(token))
     except Exception as e: print("Managed ad premium back failed:",repr(e))
 
 
