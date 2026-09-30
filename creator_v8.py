@@ -50,10 +50,7 @@ def apply(core):
         def safe(chat_id,path,caption="",reply_markup=None,platform=None,link=None):
             if platform=="youtube":
                 try:
-                    uid=str(core._current_user_id() if hasattr(core,"_current_user_id") else "")
-                    if not uid:
-                        meta=core._ACTIVE_MANAGED_META.get() or {}
-                        uid=str(meta.get("owner_id") or "")
+                    uid=str(chat_id)
                     max_mb=int(core._download_max_mb(uid,platform="youtube",link=link) or 0)
                     mb=os.path.getsize(path)/(1024*1024)
                     if max_mb>0 and mb>max_mb and not core.is_premium(uid):
