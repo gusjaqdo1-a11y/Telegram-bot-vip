@@ -13018,8 +13018,15 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
-        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🤖 All-in-One" if str(d.get("bot_type") or "video")=="all" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
-        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
+        if not d.get("dashboard_pin_hash"):
+            pin="".join(random.choice("0123456789") for _ in range(6))
+            managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_pin_hash":hashlib.sha256(pin.encode()).hexdigest(),"dashboard_pin_plain":pin}})
+            d["dashboard_pin_plain"]=pin
+        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🤖 All-in-One" if str(d.get("bot_type") or "video")=="all" else "🎬 Video Downloader"
+        prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
+        dash=str(AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+str(bid); pin=str(d.get("dashboard_pin_plain") or "••••••")
+        text_info=f"🤖 <b>{typ}</b>\\n\\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\\nPremium: <b>{prem}</b>\\n\\n🌐 <code>{html.escape(dash)}</code>\\n👤 Login: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\\n🔐 PIN: <code>{html.escape(pin)}</code>"
+        _creator_edit(chat_id,mid,text_info,reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"🌐 Open Dashboard","url":dash}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
