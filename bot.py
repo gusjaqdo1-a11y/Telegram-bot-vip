@@ -2463,6 +2463,7 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("🗑 Delete Last Broadcast", "🗑 Delete 2 Last Broadcast")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
@@ -9831,6 +9832,31 @@ def raadi_stats(m):
     except Exception as e:
         print(f"RAADI error: {e}")
 
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete Last Broadcast")
+def delete_last_broadcast(m):
+    if not is_admin(m.from_user.id): return
+    rows=list(broadcast_history_col.find().sort("created_at",-1).limit(1))
+    if not rows: bot.send_message(m.chat.id,"ℹ️ No saved broadcast found.",reply_markup=admin_menu()); return
+    deleted=failed=0
+    for x in rows[0].get("messages") or []:
+        try: bot.delete_message(int(x["chat_id"]),int(x["message_id"])); deleted+=1
+        except Exception: failed+=1
+    broadcast_history_col.delete_one({"_id":rows[0]["_id"]})
+    bot.send_message(m.chat.id,f"🗑 <b>Last broadcast deleted</b>\n\n✅ Deleted: {deleted}\n❌ Failed: {failed}",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete 2 Last Broadcast")
+def delete_two_last_broadcasts(m):
+    if not is_admin(m.from_user.id): return
+    rows=list(broadcast_history_col.find().sort("created_at",-1).limit(2))
+    if not rows: bot.send_message(m.chat.id,"ℹ️ No saved broadcasts found.",reply_markup=admin_menu()); return
+    deleted=failed=0
+    for row in rows:
+        for x in row.get("messages") or []:
+            try: bot.delete_message(int(x["chat_id"]),int(x["message_id"])); deleted+=1
+            except Exception: failed+=1
+        broadcast_history_col.delete_one({"_id":row["_id"]})
+    bot.send_message(m.chat.id,f"🗑 <b>Last 2 broadcasts deleted</b>\n\n✅ Deleted: {deleted}\n❌ Failed: {failed}",parse_mode="HTML",reply_markup=admin_menu())
+
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST")
 def broadcast_start(m):
     if not is_admin(m.from_user.id):
@@ -9845,16 +9871,17 @@ def broadcast_send(m):
         return
     # copyMessage preserves Telegram custom-emoji entities instead of flattening
     # them into ordinary keyboard emoji. It also preserves the original rich text.
-    sent=failed=0
+    sent=failed=0; delivered=[]
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid), m.chat.id, m.message_id)
-            sent+=1
-        except Exception:
-            failed+=1
-    try:
-        bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
-    except Exception: pass
+            cp=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            delivered.append({"chat_id":int(uid),"message_id":int(getattr(cp,"message_id",0) or 0)}); sent+=1
+        except Exception: failed+=1
+    if delivered:
+        broadcast_history_col.insert_one({"created_at":datetime.now(timezone.utc),"admin_id":str(m.from_user.id),"messages":delivered})
+        ids=list(broadcast_history_col.find({},{"_id":1}).sort("created_at",-1))
+        for old in ids[2:]: broadcast_history_col.delete_one({"_id":old["_id"]})
+    bot.send_message(m.chat.id,f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
@@ -9872,13 +9899,16 @@ def broadcast_media_process(m):
         return
         
     # copy_message preserves the original caption entities, including Telegram custom emojis.
-    sent=failed=0
+    sent=failed=0; delivered=[]
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid),m.chat.id,m.message_id); sent+=1
-        except Exception:
-            failed+=1
-    bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+            cp=bot.copy_message(int(uid),m.chat.id,m.message_id); delivered.append({"chat_id":int(uid),"message_id":int(getattr(cp,"message_id",0) or 0)}); sent+=1
+        except Exception: failed+=1
+    if delivered:
+        broadcast_history_col.insert_one({"created_at":datetime.now(timezone.utc),"admin_id":str(m.from_user.id),"messages":delivered})
+        ids=list(broadcast_history_col.find({},{"_id":1}).sort("created_at",-1))
+        for old in ids[2:]: broadcast_history_col.delete_one({"_id":old["_id"]})
+    bot.send_message(m.chat.id,f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
