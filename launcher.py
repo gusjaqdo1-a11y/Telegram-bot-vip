@@ -3,10 +3,14 @@ import bot as core
 from creator_patch import apply
 from creator_v2 import apply as apply_v2
 from creator_v3 import apply as apply_v3
+from creator_v4 import apply as apply_v4
+from creator_v5 import apply as apply_v5
 
 apply(core)
 apply_v2(core)
 apply_v3(core)
+apply_v4(core)
+apply_v5(core)
 
 def main():
     try: core._start_ad_http_server()
