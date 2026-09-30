@@ -204,6 +204,7 @@ def creator_dashboard_home(doc):
     photo_html=f'<img class="avatar" src="{avatar}" alt="Telegram profile" onerror="this.style.display=\'none\'">'
     notice=request.args.get("notice","")
     locked="" if premium else '<div class="notice">💎 Premium-only controls are locked. Open Premium in Creator Bot to unlock profile editing, broadcast, speed, ads and YouTube controls.</div>'
+    token_action=(f'<form method="post" action="{url_for("creator_dashboard_rotate_token",bot_id=bid)}"><button class="btn danger" type="submit">🔄 Revoke Bot Token</button></form>' if bool(doc.get("managed",True)) else "")
     body=f"""<div class="wrap">
     <div class="glass top"><div class="brand">{photo_html}<div><div class="title">@{html.escape(str(doc.get("username") or "unknown"))}</div><div class="sub">{typ} • Dashboard</div></div></div><div style="display:flex;align-items:center;gap:12px"><span class="pill {'premium' if premium else ''}">{'💎 Premium' if premium else '🆓 Standard'}</span><a class="logout" href="{url_for('creator_dashboard_logout',bot_id=bid)}">Log out</a></div></div>
     {f'<div class="notice ok">{html.escape(notice)}</div>' if notice else ''}
@@ -239,7 +240,7 @@ def creator_dashboard_home(doc):
         </div>
         <div class="glass card"><h2>Security</h2><div class="muted">PIN and managed-token controls stay separate from profile customization.</div>
           <div class="actions"><form method="post" action="{url_for('creator_dashboard_rotate_pin',bot_id=bid)}"><button class="btn secondary" type="submit">🔐 Revoke PIN / Get New PIN</button></form>
-          {'<form method="post" action="'+url_for('creator_dashboard_rotate_token',bot_id=bid)+'"><button class="btn danger" type="submit">🔄 Revoke Bot Token</button></form>' if bool(doc.get('managed',True)) else ''}
+          {token_action}
           </div>
         </div>
       </aside>
