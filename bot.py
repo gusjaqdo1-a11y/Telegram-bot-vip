@@ -268,8 +268,10 @@ quick_executor = ThreadPoolExecutor(max_workers=max(1, QUICK_ACCESS_CONCURRENT_D
 normal_executor = ThreadPoolExecutor(max_workers=max(1, FREE_CONCURRENT_DOWNLOADS))
 # Creator-managed bots get dedicated shared queues so they cannot starve the
 # main downloader, while still starting downloads with high parallelism.
+MANAGED_NORMAL_CONCURRENT_DOWNLOADS = int(os.getenv("MANAGED_NORMAL_CONCURRENT_DOWNLOADS", "32"))
 MANAGED_CONCURRENT_DOWNLOADS = int(os.getenv("MANAGED_CONCURRENT_DOWNLOADS", "64"))
 MANAGED_PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("MANAGED_PREMIUM_CONCURRENT_DOWNLOADS", "96"))
+managed_normal_executor = ThreadPoolExecutor(max_workers=max(1, MANAGED_NORMAL_CONCURRENT_DOWNLOADS))
 managed_executor = ThreadPoolExecutor(max_workers=max(1, MANAGED_CONCURRENT_DOWNLOADS))
 managed_premium_executor = ThreadPoolExecutor(max_workers=max(1, MANAGED_PREMIUM_CONCURRENT_DOWNLOADS))
 
@@ -2206,10 +2208,23 @@ def _managed_download_executor(uid, bid):
     try:
         d=managed_bots_col.find_one({"bot_id":str(bid)},{"premium_until":1,"speed":1}) or {}
         if _managed_premium_active_doc(d):
-            return managed_premium_executor
+            speed=str(d.get("speed") or "fast").lower()
+            if speed=="normal": return managed_normal_executor
+            if speed=="turbo": return managed_premium_executor
+            return managed_executor
     except Exception:
         pass
     return managed_executor
+
+def _managed_youtube_limit_minutes(bid):
+    try:
+        d=managed_bots_col.find_one({"bot_id":str(bid)},{"premium_until":1,"youtube_max_minutes":1}) or {}
+        if _managed_premium_active_doc(d):
+            try: return max(0,min(1440,int(d.get("youtube_max_minutes") or 0)))
+            except Exception: return 0
+    except Exception:
+        pass
+    return youtube_free_limit_minutes()
 
 def find_user_by_botid(bid):
     for u, data in users.items():
