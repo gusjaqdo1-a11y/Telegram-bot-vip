@@ -1769,7 +1769,7 @@ def _managed_dashboard(doc):
 
 def _dashboard_session_from_request(handler,bid):
     cookie=handler.headers.get("Cookie","")
-    mm=re.search(r"(?:^|;)\\s*qd_dash_session=([^;]+)",cookie)
+    mm=re.search(r"(?:^|;)\s*qd_dash_session=([^;]+)",cookie)
     if not mm: return None
     row=dashboard_sessions_col.find_one({"_id":urllib.parse.unquote(mm.group(1)),"bot_id":str(bid),"expires_at":{"$gt":datetime.now(timezone.utc)}})
     if not row: return None
