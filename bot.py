@@ -1302,6 +1302,8 @@ settings_col = db1["settings"]
 managed_bots_col = db1["managed_bots"]
 creator_sessions_col = db1["creator_sessions"]
 premium_logs_col = db1["premium_logs"]
+premium_images_col = db1["premium_images"]
+broadcast_history_col = db1["broadcast_history"]
 activity_col = db1["activity_logs"]
 ratings_col = db1["bot_ratings"]
 rating_campaigns_col = db1["rating_campaigns"]
@@ -2523,6 +2525,7 @@ def admin_menu():
     kb.add("♻️ Reset all Verify")
     # Premium administration
     kb.add("💎 PREMIUM PANEL", "💰 PREMIUM PRICES")
+    kb.add("🖼 PREMIUM PLAN IMAGES")
     kb.add("🔓 OPEN PREMIUM", "🔒 CLOSE PREMIUM")
     kb.add("🎁 GIVE PREMIUM ALL", "🎁 TRIAL PREMIUM")
     kb.add("🎁 OPEN TRIAL DAYS")
@@ -10502,6 +10505,10 @@ def premium_plan_keyboard():
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
+def _premium_plan_image(months):
+    try: return str((premium_images_col.find_one({"months":str(months)}) or {}).get("file_id") or "")
+    except Exception: return ""
+
 def _create_main_premium_invoice(uid, months, context="premium"):
     uid=str(uid); months=str(months); prices=get_premium_prices()
     if months not in prices: raise ValueError("Invalid Premium plan")
@@ -10573,6 +10580,15 @@ def premium_buy_callback(call):
               "Tap <b>PAY NOW</b> to complete payment securely in Telegram.\n"
               "Premium will activate automatically after successful payment.")
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)], [InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
+        image_id=_premium_plan_image(months)
+        if image_id:
+            try:
+                bot.send_photo(call.message.chat.id,image_id,caption=text,parse_mode="HTML",reply_markup=kb)
+                bot.answer_callback_query(call.id,"Invoice ready")
+                try: bot.delete_message(call.message.chat.id,call.message.message_id)
+                except Exception: pass
+                return
+            except Exception as e: print("Premium image send skipped:",repr(e))
         bot.answer_callback_query(call.id,"Invoice ready")
         try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
         except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
@@ -11185,6 +11201,24 @@ def balance_lock_worker():
         time.sleep(3600)
 
 # ================= ADMIN PREMIUM MANAGEMENT =================
+@bot.message_handler(func=lambda m: m.text == "🖼 PREMIUM PLAN IMAGES")
+def premium_plan_images_admin(m):
+    if not is_admin(m.from_user.id): return
+    bot.send_message(m.chat.id,"🖼 <b>Premium Plan Images</b>\n\nSend a photo with caption <code>1</code>, <code>3</code>, <code>9</code>, or <code>12</code>. The image will appear with that plan's payment link.",parse_mode="HTML")
+    bot.register_next_step_handler(m, premium_plan_image_save)
+
+def premium_plan_image_save(m):
+    if not is_admin(m.from_user.id): return
+    months=str((m.caption or m.text or "").strip().lower())
+    if months.startswith("off "):
+        months=months[4:].strip()
+        if months in {"1","3","9","12"}: premium_images_col.delete_one({"months":months}); bot.send_message(m.chat.id,f"✅ Premium {months}-month image removed.")
+        return
+    if months not in {"1","3","9","12"} or not getattr(m,"photo",None):
+        bot.send_message(m.chat.id,"❌ Send a photo with caption 1, 3, 9, or 12."); return
+    premium_images_col.update_one({"months":months},{"$set":{"months":months,"file_id":m.photo[-1].file_id,"updated_at":datetime.now(timezone.utc),"updated_by":str(m.from_user.id)}},upsert=True)
+    bot.send_message(m.chat.id,f"✅ Premium {months}-month image saved.")
+
 @bot.message_handler(func=lambda m: m.text == "💎 PREMIUM PANEL")
 def admin_premium_panel(m):
     if not is_admin(m.from_user.id): return
@@ -12692,8 +12726,23 @@ def _creator_on_managed_update(update):
         if not err and token:
             old_token=_decrypt_managed_token(d)
             if old_token and str(token)!=str(old_token):
-                _creator_notify_managed_bot_removed(d,"token_revoked")
-                return
+                try:
+                    old_obj=managed_bot_objects.pop(bid,None)
+                    if old_obj:
+                        try: old_obj.stop_polling()
+                        except Exception: pass
+                    managed_bot_threads.pop(bid,None)
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":_encrypt_managed_token(token),"active":True,"suspended":False,"updated_at":datetime.now(timezone.utc),"token_updated_at":datetime.now(timezone.utc)}})
+                    fresh=managed_bots_col.find_one({"bot_id":bid}); _managed_bot_start_instance(fresh)
+                    uname=str(d.get("username") or info.get("username") or "unknown").lstrip("@"); owner_txt=str(old_owner or owner_id or "")
+                    if owner_txt:
+                        _creator_send(int(owner_txt),f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(uname)}\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in <b>My Bots</b> and continues using the same settings.",reply_markup=_creator_keyboard(owner_txt))
+                    for aid in get_admin_ids():
+                        try: bot.send_message(int(aid),f"🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @{html.escape(uname)}\n👤 Owner: <code>{html.escape(owner_txt)}</code>\n\nThe new token was saved and the bot was restarted.",parse_mode="HTML")
+                        except Exception: pass
+                    return
+                except Exception as e:
+                    print("Managed token rotation recovery failed:",repr(e)); return
             if owner_id and old_owner and str(owner_id)!=old_owner:
                 _creator_notify_managed_bot_removed(d,"owner_changed")
                 return
@@ -12776,9 +12825,13 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        suggested_name="Video Downloader" if btype=="video" else "Music Downloader"
+        suggested_username="my_video_downloader_bot" if btype=="video" else "my_music_downloader_bot"
+        request_id=random.randint(1,2_000_000_000)
+        _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":btype,"request_id":request_id,"updated_at":datetime.now(timezone.utc)})
+        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\nTelegram will now open the official bot-creation screen. Enter the bot name and username there, then press Create.",reply_markup=_creator_request_keyboard(request_id,suggested_name,suggested_username)); return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
