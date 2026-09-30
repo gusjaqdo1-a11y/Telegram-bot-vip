@@ -13012,7 +13012,8 @@ def _creator_callback(call):
             _creator_answer(call.get("id"),"Creation session expired.",True); return
         _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
         caption=f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader' if btype=='music' else '🤖 All-in-One Downloader'}</b> selected.\n\nTelegram will now open the official creation screen. The name and username are pre-filled but editable."
-        _creator_edit_media(chat_id,mid,_creator_card_url(btype),caption,_creator_type_keyboard(btype))
+        _,media_err=_creator_edit_media(chat_id,mid,_creator_card_url(btype),caption,_creator_type_keyboard(btype))
+        if media_err: _creator_edit(chat_id,mid,caption,_creator_type_keyboard(btype))
         _creator_answer(call.get("id"),"Type selected")
         return
     if data.startswith("cbotinfo:"):
