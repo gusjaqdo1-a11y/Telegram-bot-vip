@@ -12929,7 +12929,16 @@ def _creator_check_managed_bots():
             fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
             if not ferr and fresh:
                 if str(fresh)!=str(token):
-                    _creator_notify_managed_bot_removed(d,"token_revoked")
+                    d["token_enc"]=_encrypt_managed_token(fresh); d["active"]=True; d["suspended"]=False; d["updated_at"]=datetime.now(timezone.utc)
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":d})
+                    try:
+                        old_obj=managed_bot_objects.pop(bid,None)
+                        if old_obj: old_obj.stop_polling()
+                    except Exception: pass
+                    fresh_doc=managed_bots_col.find_one({"bot_id":bid}) or d
+                    _managed_bot_start_instance(fresh_doc)
+                    _creator_send(int(d.get("owner_id")), "🔄 <b>Bot Token Updated</b>\n\n🤖 @"+html.escape(str(d.get("username") or "unknown"))+"\n\nThe managed bot token changed. Creator Bot saved the new token and restarted the bot.")
+                    _creator_notify_admins("🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @"+html.escape(str(d.get("username") or "unknown"))+"\nOwner: <code>"+html.escape(str(d.get("owner_id") or ""))+"</code>")
                 # Same token but temporary getMe failure: leave it alone.
                 continue
             _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
