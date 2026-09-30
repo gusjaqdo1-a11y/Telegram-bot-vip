@@ -37,7 +37,7 @@ CUSTOMER_AI_BOT_TOKEN = os.getenv("CUSTOMER_AI_BOT_TOKEN", "").strip()
 
 # Dedicated Telegram managed-bot Creator. Bot Management Mode must be enabled.
 CREATOR_BOT_TOKEN = os.getenv("CREATOR_BOT_TOKEN", "").strip()
-CREATOR_BOT_USERNAME = os.getenv("CREATOR_BOT_USERNAME", "").strip().lstrip("@")
+CREATOR_BOT_USERNAME = os.getenv("CREATOR_BOT_USERNAME", "BotMakerToDownloadBot").strip().lstrip("@")
 MANAGED_TOKEN_ENCRYPTION_KEY = os.getenv("MANAGED_TOKEN_ENCRYPTION_KEY", "").strip()
 
 API_ID = int(os.getenv("API_ID", "0"))
