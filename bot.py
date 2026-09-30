@@ -1749,6 +1749,44 @@ def _ad_gate_bot_token(row):
     except Exception as e:
         print("Ad gate bot token lookup failed:",repr(e)); return ""
 
+DASHBOARD_PLATFORMS=["tiktok","youtube","instagram","facebook","pinterest","snapchat","twitter","reddit","threads","likee","vimeo","dailymotion","soundcloud","twitch","tumblr","streamable","odnoklassniki"]
+
+def _managed_dashboard(doc):
+    base={"platforms":{p:True for p in DASHBOARD_PLATFORMS},"ads_enabled":True,"premium_enabled":True,"buttons":{"create":True,"remove_ads":True,"admin":True,"powered_by":True},"locked_fields":[]}
+    raw=dict((doc or {}).get("dashboard_settings") or {})
+    base["platforms"].update({str(k):bool(v) for k,v in dict(raw.get("platforms") or {}).items() if str(k) in DASHBOARD_PLATFORMS})
+    for k in ("ads_enabled","premium_enabled"):
+        if k in raw: base[k]=bool(raw[k])
+    base["buttons"].update({str(k):bool(v) for k,v in dict(raw.get("buttons") or {}).items()})
+    base["locked_fields"]=[str(x) for x in (raw.get("locked_fields") or [])]
+    return base
+
+def _dashboard_session_from_request(handler,bid):
+    cookie=handler.headers.get("Cookie","")
+    mm=re.search(r"(?:^|;)\\s*qd_dash_session=([^;]+)",cookie)
+    if not mm: return None
+    row=dashboard_sessions_col.find_one({"_id":urllib.parse.unquote(mm.group(1)),"bot_id":str(bid),"expires_at":{"$gt":datetime.now(timezone.utc)}})
+    if not row: return None
+    d=managed_bots_col.find_one({"bot_id":str(bid)})
+    return d if d and str(row.get("owner_id"))==str(d.get("owner_id")) and d.get("active",True) and not d.get("suspended") else None
+
+def _dashboard_login_html(bid,error=""):
+    msg=("<p>"+html.escape(error)+"</p>") if error else ""
+    return "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'><title>QuickDL Dashboard</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,#08131f,#28415a);color:white;font:16px system-ui}form{width:min(420px,calc(100% - 36px));box-sizing:border-box;padding:28px;border-radius:26px;background:#ffffff12;border:1px solid #ffffff25;backdrop-filter:blur(20px)}input,button{width:100%;box-sizing:border-box;padding:14px;margin:8px 0;border-radius:13px;border:1px solid #ffffff25;background:#ffffff0c;color:white}button{background:#e5f8ff;color:#07131d;font-weight:800}</style><form method='post' action='/dashboard/"+html.escape(str(bid))+"/login'><h1>🌐 QuickDL</h1><p>Managed bot dashboard</p>"+msg+"<input name='username' placeholder='Bot username' required><input name='pin' type='password' inputmode='numeric' placeholder='6-digit PIN' required><button>🔐 Login</button></form>"
+
+def _dashboard_html(d,notice=""):
+    ds=_managed_dashboard(d); bid=str(d.get("bot_id")); name=html.escape(str(d.get("name") or "Downloader Bot")); user=html.escape(str(d.get("username") or "unknown"))
+    locked=", ".join(sorted(ds["locked_fields"])) or "none"
+    labels={"tiktok":"TikTok","youtube":"YouTube","instagram":"Instagram","facebook":"Facebook","pinterest":"Pinterest","snapchat":"Snapchat","twitter":"X / Twitter","reddit":"Reddit","threads":"Threads","likee":"Likee","vimeo":"Vimeo","dailymotion":"Dailymotion","soundcloud":"SoundCloud","twitch":"Twitch","tumblr":"Tumblr","streamable":"Streamable","odnoklassniki":"OK.ru"}
+    plats=""
+    for p in DASHBOARD_PLATFORMS:
+        checked="checked" if ds["platforms"].get(p,True) else ""
+        disabled="disabled" if "platforms" in ds["locked_fields"] else ""
+        plats+="<label><input type='checkbox' name='platform_"+p+"' "+checked+" "+disabled+">"+labels[p]+"</label>"
+    b=ds["buttons"]
+    def c(v): return "checked" if v else ""
+    notice_html="<p>"+html.escape(notice)+"</p>" if notice else ""
+    return "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'><title>"+name+" Dashboard</title><style>body{margin:0;background:radial-gradient(circle at top,#203b58,#07101a 65%);color:#eef7ff;font:16px system-ui}main{max-width:1000px;margin:auto;padding:22px}section{background:#ffffff12;border:1px solid #ffffff20;border-radius:24px;padding:22px;margin:14px 0;backdrop-filter:blur(18px);box-shadow:0 20px 60px #0007}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}label{display:block;padding:12px;border-radius:14px;background:#ffffff0b}button{padding:13px 18px;border:0;border-radius:14px;font-weight:800}</style><main><section><h1>🌐 "+name+"</h1><p>@"+user+" · Managed Bot ID "+bid+"</p><b>🟢 Active</b></section>"+notice_html+"<form method='post' action='/dashboard/"+bid+"/save'><section><h2>⚙️ Features</h2><label><input type='checkbox' name='ads_enabled' "+c(ds["ads_enabled"])+" "+("disabled" if "ads_enabled" in ds["locked_fields"] else "")+"> Ads enabled</label><label><input type='checkbox' name='premium_enabled' "+c(ds["premium_enabled"])+" "+("disabled" if "premium_enabled" in ds["locked_fields"] else "")+"> Premium enabled</label></section><section><h2>🌐 Platforms</h2><div class='grid'>"+plats+"</div></section><section><h2>🔘 Buttons</h2><div class='grid'><label><input type='checkbox' name='button_create' "+c(b.get("create",True))+"> Create My Bot</label><label><input type='checkbox' name='button_remove_ads' "+c(b.get("remove_ads",True))+"> Remove Ads</label><label><input type='checkbox' name='button_admin' "+c(b.get("admin",True))+"> Owner Admin Panel</label><label><input type='checkbox' name='button_powered' "+c(b.get("powered_by",True))+"> Powered by</label></div></section><section><p>Main Admin locked: "+html.escape(locked)+"</p><button>💾 Save Settings</button></section></form></main>"
 class _AdGateHandler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): return
     def _send(self,code,body,ctype="text/html; charset=utf-8"):
@@ -1757,6 +1795,12 @@ class _AdGateHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
+        m=re.fullmatch(r"/dashboard/([0-9]+)/?",path)
+        if m:
+            bid=m.group(1); d=managed_bots_col.find_one({"bot_id":bid})
+            if not d or not d.get("active",True) or d.get("suspended"): self._send(410,"Dashboard disabled."); return
+            owner=_dashboard_session_from_request(self,bid)
+            self._send(200,_dashboard_html(owner) if owner else _dashboard_login_html(bid)); return
         m=re.fullmatch(r"/ad/(?:open|app)/([A-Za-z0-9]{16,64})",path)
         if m:
             token=m.group(1); row=ad_gates_col.find_one({"token":token,"status":{"$in":["pending","opened"]}})
