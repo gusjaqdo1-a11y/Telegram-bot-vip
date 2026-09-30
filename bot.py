@@ -10515,17 +10515,47 @@ def premium_plan_keyboard():
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
-def _create_main_premium_invoice(uid, months, context="premium"):
-    uid=str(uid); months=str(months); prices=get_premium_prices()
+def _premium_media_doc(months):
+    try: return premium_media_col.find_one({"months":str(months),"enabled":{"$ne":False}}) or {}
+    except Exception: return {}
+
+def _premium_media_url(months):
+    d=_premium_media_doc(months); key=str(d.get("public_key") or "").strip()
+    return f"{str(AD_PUBLIC_BASE_URL or '').rstrip('/')}/premium-media/{urllib.parse.quote(key,safe='')}" if key else ""
+
+def _premium_invoice_body(uid, months, context="premium"):
+    months=str(months); prices=get_premium_prices()
     if months not in prices: raise ValueError("Invalid Premium plan")
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(prices[months])*rate)))
-    payload=f"premium_stars:{uid}:{months}:{stars}:{context}"
+    payload=f"premium_stars:{str(uid)}:{months}:{stars}:{context}"
+    media=_premium_media_doc(months); photo_url=_premium_media_url(months)
     body={"title":f"Downloader Premium {months} Month(s)","description":f"Premium access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
+    if str(media.get("kind"))=="photo" and photo_url:
+        body.update({"photo_url":photo_url,"photo_width":int(media.get("width") or 800),"photo_height":int(media.get("height") or 450)})
+        if int(media.get("size") or 0)>0: body["photo_size"]=int(media.get("size"))
+    return body,stars,media,photo_url
+
+def _create_main_premium_invoice(uid, months, context="premium"):
+    body,stars,_,_= _premium_invoice_body(uid,months,context)
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
     link=str(data.get("result") or "")
     if not link: raise RuntimeError("Telegram returned an empty invoice link")
     return link,stars
+
+def _send_premium_media_card(bot_obj, chat_id, months, price, stars, link, back_callback=None, prefix="💎 PREMIUM"):
+    media=_premium_media_doc(months); media_url=_premium_media_url(months)
+    caption=(f"{prefix}\n\n💰 Price: <b>${float(price):.2f}</b>\n⭐ Payment: <b>{int(stars)} Telegram Stars</b>\n\nPremium activates automatically after successful payment.")
+    rows=[[InlineKeyboardButton("⭐ PAY NOW",url=link)]]
+    if back_callback: rows.append([InlineKeyboardButton("⬅️ Back",callback_data=back_callback)])
+    markup=InlineKeyboardMarkup(rows)
+    try:
+        if str(media.get("kind"))=="video" and media_url:
+            return bot_obj.send_video(chat_id,media_url,caption=caption,parse_mode="HTML",reply_markup=markup,supports_streaming=True)
+        if str(media.get("kind"))=="photo" and media_url:
+            return bot_obj.send_photo(chat_id,media_url,caption=caption,parse_mode="HTML",reply_markup=markup)
+    except Exception as e: print("Premium media card send failed:",repr(e))
+    return bot_obj.send_message(chat_id,caption,parse_mode="HTML",reply_markup=markup)
 
 def _premium_invoice_buttons(context="premium"):
     prices=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
@@ -10585,10 +10615,10 @@ def premium_buy_callback(call):
               f"⭐ Payment: <b>{stars} Telegram Stars</b>\n\n"
               "Tap <b>PAY NOW</b> to complete payment securely in Telegram.\n"
               "Premium will activate automatically after successful payment.")
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)], [InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
         bot.answer_callback_query(call.id,"Invoice ready")
-        try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
-        except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
+        try: bot.delete_message(call.message.chat.id,call.message.message_id)
+        except Exception: pass
+        _send_premium_media_card(bot,call.message.chat.id,months,price,stars,link,back_callback="premium_menu")
     except Exception as e:
         print("Main Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create payment link.",show_alert=True)
 
