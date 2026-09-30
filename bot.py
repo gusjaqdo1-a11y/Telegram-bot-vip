@@ -13361,8 +13361,8 @@ def _managed_bot_start_instance(doc):
                         rows.append([InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}")])
                 mb.answer_callback_query(call.id)
                 try:
-                    mb.edit_message_text(call.message.chat.id,call.message.message_id,
-                        "💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is handled and verified by <b>@Downloadvedioytibot</b>.",
+                    mb.edit_message_text("💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is handled and verified by <b>@Downloadvedioytibot</b>.",
+                        call.message.chat.id,call.message.message_id,
                         parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
                 except Exception:
                     mb.send_message(call.message.chat.id,
