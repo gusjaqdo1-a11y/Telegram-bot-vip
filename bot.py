@@ -1672,7 +1672,7 @@ def _ad_premium_back_callback(call):
     token=str(call.data).split(":",1)[1]; row=ad_gates_col.find_one({"token":token})
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     bot.answer_callback_query(call.id)
-    try: bot.edit_message_text(call.message.chat.id,call.message.message_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token))
+    try: bot.edit_message_text("To continue, watch a short ad or use Premium/Skip.",call.message.chat.id,call.message.message_id,reply_markup=_ad_gate_keyboard(token))
     except Exception as e: print("Ad premium back failed:",repr(e))
 
 @bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("adpremplan:"))
@@ -1681,7 +1681,7 @@ def _ad_premium_plan_callback(call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); bot.answer_callback_query(call.id,"Invoice ready")
-        bot.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        bot.edit_message_text(f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
     except Exception as e: print("Ad Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adplan:"))
