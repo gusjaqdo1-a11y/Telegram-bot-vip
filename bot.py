@@ -12339,7 +12339,8 @@ def _creator_start_create(uid, chat_id):
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
     payload={"chat_id":chat_id,"photo":_creator_card_url("all"),"caption":"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type. Telegram will then open the official managed-bot screen where you enter/edit the bot name and username.","parse_mode":"HTML","reply_markup":_creator_type_keyboard()}
-    _creator_api("sendPhoto",payload)
+    _,err=_creator_api("sendPhoto",payload)
+    if err: _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the bot type:",reply_markup=_creator_type_keyboard())
 
 
 def _creator_finish_request(uid, chat_id):
