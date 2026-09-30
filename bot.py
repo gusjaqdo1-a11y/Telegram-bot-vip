@@ -13044,7 +13044,14 @@ def _managed_bot_start_instance(doc):
                     link=str(data.get("result") or "")
                     if not link: raise RuntimeError("Telegram returned an empty invoice link")
                     mb.answer_callback_query(call.id,"⭐ Invoice link ready")
-                    mb.send_message(call.message.chat.id,f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nAfter payment, Premium is activated for this Downloader Bot. You will not need to open Premium again during the active period. YouTube downloads are unlimited while Premium is active.\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]]))
+                    invoice_kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]])
+                    image_id=_premium_plan_image(months)
+                    invoice_text=f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nAfter payment, Premium is activated for this Downloader Bot.\n\nPayment is processed by <b>@Downloadvedioytibot</b>."
+                    if image_id:
+                        try: mb.send_photo(call.message.chat.id,image_id,caption=invoice_text,parse_mode="HTML",reply_markup=invoice_kb)
+                        except Exception: mb.send_message(call.message.chat.id,invoice_text,parse_mode="HTML",reply_markup=invoice_kb)
+                    else:
+                        mb.send_message(call.message.chat.id,invoice_text,parse_mode="HTML",reply_markup=invoice_kb)
                 except Exception as e:
                     print("Managed YouTube Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
