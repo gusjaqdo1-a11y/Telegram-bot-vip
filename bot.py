@@ -10605,7 +10605,7 @@ def premium_buy_callback(call):
         link,stars=_create_main_premium_invoice(uid,months,"premium_menu")
         price=float(get_premium_prices()[months])
         text=(f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n"
-              f"💰 Price: <b>$\{price:.2f}</b>\n"
+              f"💰 Price: <b>${price:.2f}</b>\n"
               f"⭐ Payment: <b>{stars} Telegram Stars</b>\n\n"
               "Tap <b>PAY NOW</b> to complete payment securely in Telegram.\n"
               "Premium will activate automatically after successful payment.")
