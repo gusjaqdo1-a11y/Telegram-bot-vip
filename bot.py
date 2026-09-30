@@ -1542,11 +1542,7 @@ def _create_remove_ads_invoice(bot_id,uid,months,send_to_chat=None,send_func=Non
     d=managed_bots_col.find_one({"bot_id":bid}) if bid!="main" else None
     bot_name=("@"+str(d.get("username")).lstrip("@")) if d and d.get("username") else "@Downloadvedioytibot"
     body={"title":f"Remove Ads {months} Months","description":f"Remove ads for {bot_name} for {months} months.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Remove Ads {months} Months","amount":int(stars)}]}
-    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20)
-    data=rr.json() if rr.content else {}
-    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
-    link=str(data.get("result") or "")
-    if not link: raise RuntimeError("Telegram returned an empty invoice link")
+    link=_main_create_invoice_link(body,months,"remove_ads_invoice_photo")
     remove_ads_payments_col.insert_one({"payload":payload,"user_id":uid,"bot_id":bid,"months":int(months),"stars":int(stars),"status":"invoice_created","created_at":datetime.now(timezone.utc)})
     return link,stars
 
@@ -10496,9 +10492,9 @@ def grant_premium_days(uid,days,reason="admin"):
 def get_premium_prices():
     return {k: float(get_setting(f"premium_price_{k}", v)) for k, v in PREMIUM_DEFAULT_PRICES.items()}
 
-def _premium_invoice_photo_url(months):
+def _invoice_photo_url(setting_prefix, months):
     months=str(months)
-    file_id=str(get_setting(f"premium_invoice_photo_{months}","") or "").strip()
+    file_id=str(get_setting(f"{setting_prefix}_{months}","") or "").strip()
     if not file_id: return ""
     try:
         f=bot.get_file(file_id)
@@ -10506,12 +10502,15 @@ def _premium_invoice_photo_url(months):
         if not path: return ""
         return f"https://api.telegram.org/file/bot{TOKEN}/{path}"
     except Exception as e:
-        print("Premium invoice photo lookup failed:",repr(e))
+        print("Invoice photo lookup failed:",repr(e))
         return ""
 
-def _main_create_invoice_link(body, months=None):
+def _premium_invoice_photo_url(months):
+    return _invoice_photo_url("premium_invoice_photo",months)
+
+def _main_create_invoice_link(body, months=None, photo_prefix="premium_invoice_photo"):
     payload=dict(body or {})
-    photo_url=_premium_invoice_photo_url(months) if months else ""
+    photo_url=_invoice_photo_url(photo_prefix,months) if months else ""
     if photo_url: payload["photo_url"]=photo_url
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=payload,timeout=20)
     data=rr.json() if rr.content else {}
@@ -11253,10 +11252,11 @@ def premium_prices_admin(m):
 def premium_invoice_images_admin(m):
     if not is_admin(m.from_user.id): return
     msg=bot.send_message(m.chat.id,
-        "🖼️ <b>PREMIUM INVOICE IMAGES</b>\n\n"
-        "Send one photo at a time. Put the plan in the photo caption: <code>1</code>, <code>3</code>, <code>9</code> or <code>12</code>.\n"
-        "Example: send the 1-month image with caption <code>1</code>.\n\n"
-        "To remove an image, send text like <code>remove 1</code> instead.",
+        "🖼️ <b>INVOICE IMAGES</b>\n\n"
+        "Send one photo at a time. Caption format:\n"
+        "• <code>premium:1</code>, <code>premium:3</code>, <code>premium:9</code>, <code>premium:12</code>\n"
+        "• <code>remove:3</code>, <code>remove:6</code>, <code>remove:12</code>\n\n"
+        "The selected image appears on that plan's Telegram invoice. Images are optional.",
         parse_mode="HTML")
     bot.register_next_step_handler(msg, set_premium_invoice_image_admin)
 
@@ -11264,19 +11264,16 @@ def set_premium_invoice_image_admin(m):
     if not is_admin(m.from_user.id): return
     caption=str(getattr(m,"caption","") or "").strip().lower()
     if getattr(m,"photo",None):
-        plan=caption.replace("month","").replace("months","").strip()
-        if plan not in {"1","3","9","12"}:
-            bot.send_message(m.chat.id,"❌ Caption must be exactly <code>1</code>, <code>3</code>, <code>9</code> or <code>12</code>.",parse_mode="HTML"); return
-        set_setting(f"premium_invoice_photo_{plan}",m.photo[-1].file_id)
-        bot.send_message(m.chat.id,f"✅ Invoice image saved for <b>{plan} month(s)</b>.",parse_mode="HTML")
+        parts=caption.split(":",1)
+        kind=parts[0] if len(parts)==2 else ""
+        plan=parts[1].strip() if len(parts)==2 else ""
+        allowed={"premium":{"1","3","9","12"},"remove":{"3","6","12"}}
+        if kind not in allowed or plan not in allowed[kind]:
+            bot.send_message(m.chat.id,"❌ Caption must be <code>premium:1/3/9/12</code> or <code>remove:3/6/12</code>.",parse_mode="HTML"); return
+        set_setting(f"{kind}_ads_invoice_photo_{plan}" if kind=="remove" else f"premium_invoice_photo_{plan}",m.photo[-1].file_id)
+        bot.send_message(m.chat.id,f"✅ Invoice image saved for <b>{kind} {plan}</b>.",parse_mode="HTML")
         return
-    raw=(m.text or "").strip().lower()
-    mm=re.fullmatch(r"remove\s+(1|3|9|12)",raw)
-    if mm:
-        set_setting(f"premium_invoice_photo_{mm.group(1)}","")
-        bot.send_message(m.chat.id,f"🗑️ Removed invoice image for <b>{mm.group(1)} month(s)</b>.",parse_mode="HTML")
-        return
-    bot.send_message(m.chat.id,"❌ Send a photo with caption 1/3/9/12, or <code>remove 1</code>.",parse_mode="HTML")
+    bot.send_message(m.chat.id,"❌ Send a photo with caption <code>premium:1</code> or <code>remove:3</code>.",parse_mode="HTML")
 
 def resolve_user_input(text):
     text=(text or '').strip()
