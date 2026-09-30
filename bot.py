@@ -1931,6 +1931,32 @@ if(gateDelay>0){setTimeout(runAd,gateDelay*1000);}else{runAd();}
         self._send(404,"Not found")
 
 
+
+    def do_POST(self):
+        path=urllib.parse.urlparse(self.path).path
+        n=int(self.headers.get("Content-Length","0") or 0); raw=self.rfile.read(min(n,20000)).decode("utf-8","ignore")
+        form={k:v[-1] for k,v in urllib.parse.parse_qs(raw,keep_blank_values=True).items()}
+        m=re.fullmatch(r"/dashboard/([0-9]+)/login",path)
+        if m:
+            bid=m.group(1); d=managed_bots_col.find_one({"bot_id":bid})
+            ok=bool(d and d.get("active",True) and not d.get("suspended") and str(form.get("username","")).lstrip("@").lower()==str(d.get("username","")).lstrip("@").lower() and hashlib.sha256(str(form.get("pin","")).encode()).hexdigest()==str(d.get("dashboard_pin_hash","")))
+            if not ok: self._send(200,_dashboard_login_html(bid,"Invalid username or PIN.")); return
+            sid=secrets.token_urlsafe(32); dashboard_sessions_col.insert_one({"_id":sid,"bot_id":bid,"owner_id":str(d.get("owner_id")),"expires_at":datetime.now(timezone.utc)+timedelta(days=7)})
+            body=_dashboard_html(d,"Logged in successfully.")
+            self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8"); self.send_header("Set-Cookie","qd_dash_session="+sid+"; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=604800"); self.send_header("Content-Length",str(len(body.encode()))); self.end_headers(); self.wfile.write(body.encode()); return
+        m=re.fullmatch(r"/dashboard/([0-9]+)/save",path)
+        if m:
+            bid=m.group(1); d=_dashboard_session_from_request(self,bid)
+            if not d: self._send(403,"Dashboard session expired."); return
+            ds=_managed_dashboard(d); locked=set(ds["locked_fields"])
+            if "ads_enabled" not in locked: ds["ads_enabled"]=form.get("ads_enabled")=="on"
+            if "premium_enabled" not in locked: ds["premium_enabled"]=form.get("premium_enabled")=="on"
+            if "platforms" not in locked: ds["platforms"]={p:form.get("platform_"+p)=="on" for p in DASHBOARD_PLATFORMS}
+            if "buttons" not in locked: ds["buttons"]={"create":form.get("button_create")=="on","remove_ads":form.get("button_remove_ads")=="on","admin":form.get("button_admin")=="on","powered_by":form.get("button_powered")=="on"}
+            managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_settings":ds,"dashboard_updated_at":datetime.now(timezone.utc)}})
+            self._send(200,_dashboard_html(managed_bots_col.find_one({"bot_id":bid}) or d,"Settings saved.")); return
+        self._send(404,"Not found")
+
 def _start_ad_http_server():
     try:
         server=ThreadingHTTPServer((AD_HTTP_HOST,AD_HTTP_PORT),_AdGateHandler)
