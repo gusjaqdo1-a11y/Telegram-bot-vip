@@ -1801,6 +1801,18 @@ class _AdGateHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
+        m=re.fullmatch(r"/premium-media/([A-Za-z0-9_-]{16,64})",path)
+        if m:
+            row=premium_media_col.find_one({"public_key":m.group(1),"enabled":{"$ne":False}})
+            if not row: self._send(404,"Media unavailable."); return
+            try:
+                info=requests.post(f"https://api.telegram.org/bot{TOKEN}/getFile",json={"file_id":row.get("file_id")},timeout=15).json()
+                fp=((info.get("result") or {}).get("file_path") or "")
+                if not fp: self._send(404,"Media unavailable."); return
+                src=requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{fp}",timeout=30)
+                if not src.ok: self._send(404,"Media unavailable."); return
+                self._send(200,src.content,"video/mp4" if row.get("kind")=="video" else "image/jpeg"); return
+            except Exception: self._send(502,"Media unavailable."); return
         m=re.fullmatch(r"/dashboard/([0-9]+)/avatar",path)
         if m:
             d=managed_bots_col.find_one({"bot_id":m.group(1),"active":True,"suspended":{"$ne":True}})
