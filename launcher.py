@@ -1,8 +1,10 @@
 import threading
 import bot as core
 from creator_patch import apply
+from creator_v2 import apply as apply_v2
 
 apply(core)
+apply_v2(core)
 
 def main():
     try: core._start_ad_http_server()
