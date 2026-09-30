@@ -304,6 +304,19 @@ show();
 
     # Owner can revoke from inside the managed bot; the Creator Bot receives the
     # official managed_bot update and refreshes the stored token.
+
+    old_removed=core._creator_notify_managed_bot_removed
+    def removed(doc,reason="deleted_or_revoked"):
+        try:
+            bid=str((doc or {}).get("bot_id") or ""); uname=str((doc or {}).get("username") or "unknown").lstrip("@")
+            for aid in getattr(core,"ADMIN_IDS",[]):
+                try:
+                    core.bot.send_message(int(aid),"⚠️ <b>Managed Bot Unavailable</b>\n\n🤖 @"+html.escape(uname)+"\n🆔 <code>"+html.escape(bid)+"</code>\n\nReason: <b>"+html.escape(str(reason))+"</b>\nThe bot was removed from the Creator system and its dashboard is no longer available.",parse_mode="HTML")
+                except Exception: pass
+        except Exception: pass
+        return old_removed(doc,reason)
+    core._creator_notify_managed_bot_removed=removed
+
     old_start=core._managed_bot_start_instance
     def start(doc):
         mb=old_start(doc)
@@ -353,6 +366,11 @@ show();
             mb.send_message(m.chat.id,"👑 <b>BOT CONTROL CENTER</b>\n\n🤖 @"+html.escape(str(d2.get("username") or "unknown"))+"\n\n"+
                 ("💎 Premium dashboard controls are unlocked." if pm else "🆓 Free: dashboard settings are locked. Open Premium to unlock customization.")+
                 "\n\n🌐 Dashboard: <b>"+html.escape(str(core.AD_PUBLIC_BASE_URL).rstrip("/")+"/dashboard/"+bid)+"</b>",parse_mode="HTML",reply_markup=kb)
+        # This owner panel must run before the legacy ADMIN PANEL handler.
+        try:
+            if mb.message_handlers and mb.message_handlers[-1].get('function') is owner_panel:
+                mb.message_handlers.insert(0,mb.message_handlers.pop())
+        except Exception: pass
         mb._quickdl_v10_owner_controls=True
         return mb
     core._managed_bot_start_instance=start2
