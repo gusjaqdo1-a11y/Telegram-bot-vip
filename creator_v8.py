@@ -39,6 +39,28 @@ def apply(core):
     replace_handler("broadcast_send",text_broadcast)
     replace_handler("broadcast_media_process",media_broadcast)
 
+    def delete_batches(n,m):
+        if not core.is_admin(m.from_user.id): return
+        col=core.db1["broadcast_history"]; docs=list(col.find({"admin_id":str(m.from_user.id)}).sort("created_at",-1).limit(500))
+        groups=[];seen=set()
+        for d in docs:
+            k=str(d.get("batch_id") or ("legacy:"+str(d["_id"])))
+            if k not in seen: seen.add(k); groups.append(k)
+            if len(groups)>=n: break
+        total=0
+        for k in groups:
+            rows=[d for d in docs if str(d.get("batch_id") or ("legacy:"+str(d["_id"])))==k]
+            for x in rows:
+                try: core.bot.delete_message(int(x["chat_id"]),int(x["message_id"])); total+=1
+                except Exception: pass
+            if rows:
+                col.delete_many({"_id":{"$in":[x["_id"] for x in rows]}})
+        core.bot.send_message(m.chat.id,"🗑 <b>Broadcast deletion</b>\n\nDeleted <b>"+str(total)+"</b> delivered message(s) from <b>"+str(len(groups))+"</b> broadcast(s).",parse_mode="HTML")
+    def del_one(m): delete_batches(1,m)
+    def del_two(m): delete_batches(2,m)
+    replace_handler("delete_last",del_one)
+    replace_handler("delete_two",del_two)
+
     # Size-aware YouTube gate. The existing download error path remains intact:
     # we mark a size gate as a duration-limit error, while premium_gate_message
     # renders the exact required/allowed MB values.
