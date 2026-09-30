@@ -10611,13 +10611,11 @@ def premium_buy_callback(call):
               "Premium will activate automatically after successful payment.")
         kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)], [InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
         bot.answer_callback_query(call.id,"Invoice ready")
-        media=_quickdl_extensions._premium_media(months)
+        media=get_premium_media(months)
         if media and media.get("file_id"):
             try:
-                if media.get("type")=="video":
-                    bot.send_video(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
-                else:
-                    bot.send_photo(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
+                if media.get("type")=="video": bot.send_video(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
+                else: bot.send_photo(call.message.chat.id,media["file_id"],caption=text,parse_mode="HTML",reply_markup=kb)
                 try: bot.delete_message(call.message.chat.id,call.message.message_id)
                 except Exception: pass
             except Exception:
@@ -14243,6 +14241,179 @@ for _lang,_d in MAIN_LABELS.items():
 
 
 
+
+
+# ================= EXTENDED CREATOR / PREMIUM MEDIA / DASHBOARD =================
+def get_premium_media(months):
+    value=get_setting(f"premium_media_{str(months)}",{}) or {}
+    return value if isinstance(value,dict) else {}
+
+def get_creator_type_media(kind):
+    value=get_setting(f"creator_type_media_{str(kind)}",{}) or {}
+    return value if isinstance(value,dict) else {}
+
+def _creator_send_media(chat_id, media, caption, reply_markup=None):
+    if not media or not media.get("file_id"): return False
+    field="video" if media.get("type")=="video" else "photo"
+    method="sendVideo" if field=="video" else "sendPhoto"
+    payload={"chat_id":int(chat_id),field:str(media["file_id"]),"caption":str(caption or ""),"parse_mode":"HTML"}
+    if reply_markup is not None: payload["reply_markup"]=reply_markup
+    result,err=_creator_api(method,payload)
+    return bool(result and not err)
+
+def _media_capture_main(message):
+    if not is_admin(message.from_user.id): return
+    uid=str(message.from_user.id); target=get_setting(f"pending_admin_media_{uid}",""); media=None
+    if getattr(message,"photo",None): media={"type":"photo","file_id":message.photo[-1].file_id}
+    elif getattr(message,"video",None): media={"type":"video","file_id":message.video.file_id}
+    if not media: bot.send_message(message.chat.id,"❌ Send a photo or video."); return
+    if target.startswith("premium:"):
+        months=target.split(":",1)[1]
+        if months in {"1","3","9","12"}:
+            set_setting(f"premium_media_{months}",media); set_setting(f"pending_admin_media_{uid}","")
+            bot.send_message(message.chat.id,f"✅ Premium {months}-month media saved.",reply_markup=admin_menu()); return
+    if target.startswith("creator:"):
+        kind=target.split(":",1)[1]
+        if kind in {"video","music","all"}:
+            set_setting(f"creator_type_media_{kind}",media); set_setting(f"pending_admin_media_{uid}","")
+            bot.send_message(message.chat.id,f"✅ Creator {kind} media saved.",reply_markup=admin_menu()); return
+    bot.send_message(message.chat.id,"ℹ️ No media upload is pending.",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text=="🖼 PREMIUM / CREATOR MEDIA")
+def admin_media_manager_button(m):
+    if is_admin(m.from_user.id):
+        kb=InlineKeyboardMarkup(row_width=2)
+        for mo in ("1","3","9","12"): kb.add(InlineKeyboardButton(f"💎 Premium {mo} Month",callback_data=f"adminpm:{mo}"))
+        kb.row(InlineKeyboardButton("🎬 Creator Video",callback_data="admincm:video"),InlineKeyboardButton("🎵 Creator Music",callback_data="admincm:music"))
+        kb.add(InlineKeyboardButton("🌐 Creator Video + Music",callback_data="admincm:all"))
+        bot.send_message(m.chat.id,"🖼 <b>MEDIA MANAGER</b>\n\nChoose a plan/card, then send a photo or video.",reply_markup=kb,parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda c: str(c.data).startswith("adminpm:"))
+def admin_premium_media_pick(call):
+    if not is_admin(call.from_user.id): return
+    mo=call.data.split(":",1)[1]; set_setting(f"pending_admin_media_{call.from_user.id}",f"premium:{mo}")
+    bot.answer_callback_query(call.id,"Send the photo/video now.")
+    prompt=bot.send_message(call.message.chat.id,f"🖼 Send media for Premium <b>{mo} month(s)</b> now.",parse_mode="HTML")
+    bot.register_next_step_handler(prompt,_media_capture_main)
+
+@bot.callback_query_handler(func=lambda c: str(c.data).startswith("admincm:"))
+def admin_creator_media_pick(call):
+    if not is_admin(call.from_user.id): return
+    kind=call.data.split(":",1)[1]; set_setting(f"pending_admin_media_{call.from_user.id}",f"creator:{kind}")
+    bot.answer_callback_query(call.id,"Send the photo/video now.")
+    prompt=bot.send_message(call.message.chat.id,"🖼 Send the Creator card photo/video now.")
+    bot.register_next_step_handler(prompt,_media_capture_main)
+
+def _enhanced_creator_start_create(uid,chat_id):
+    if not _creation_open():
+        _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
+    if not _creator_verify_gate(uid,chat_id): return
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
+    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the downloader type:",reply_markup={"inline_keyboard":[
+        [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+        [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+        [{"text":"🌐 Video + Music","callback_data":"ctype:all"}],
+    ]})
+
+def _enhanced_creator_callback(update):
+    data=str((update or {}).get("callback_query",{}).get("data") or "")
+    if not data.startswith("ctype:"): return _original_creator_callback(update)
+    call=(update or {}).get("callback_query") or {}; uid=str((call.get("from") or {}).get("id") or ""); chat=(call.get("message") or {}).get("chat",{}).get("id")
+    kind=data.split(":",1)[1].lower()
+    if kind not in {"video","music","all"}: _creator_answer(call.get("id"),"Invalid bot type.",True); return
+    sess=_creator_session(uid)
+    if sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired. Press Create My Bot again.",True); return
+    bot_type="video" if kind in {"video","all"} else "music"
+    suggested_name={"video":"QuickDL Video","music":"QuickDL Music","all":"QuickDL Downloader"}[kind]
+    suggested_username=f"quickdl_{uid[-8:]}_bot"[:32]
+    request_id=random.randint(1,2_000_000_000)
+    _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":bot_type,"bot_mode":kind,"suggested_name":suggested_name,"suggested_username":suggested_username,"request_id":request_id,"updated_at":datetime.now(timezone.utc)})
+    markup=_creator_request_keyboard(request_id,suggested_name,suggested_username)
+    title={"video":"🎬 VIDEO DOWNLOADER","music":"🎵 MUSIC DOWNLOADER","all":"🌐 VIDEO + MUSIC DOWNLOADER"}[kind]
+    caption=f"<b>{title}</b>\n\nTelegram will now open the official managed-bot creation screen. Enter or edit your Bot Name and Username there, then press Create."
+    _creator_answer(call.get("id"),"Opening Telegram bot creator…")
+    media=get_creator_type_media(kind)
+    if not _creator_send_media(chat,media,caption,markup): _creator_send(chat,caption,reply_markup=markup)
+
+_original_creator_start_create=_creator_start_create
+_creator_start_create=_enhanced_creator_start_create
+_original_creator_callback=_creator_callback
+_creator_callback=_enhanced_creator_callback
+
+_original_creator_created=_creator_on_managed_bot_created
+def _creator_on_managed_bot_created_with_dashboard(msg):
+    _original_creator_created(msg)
+    try:
+        info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}; bid=str(info.get("id") or ""); owner=str(((msg or {}).get("from") or {}).get("id") or "")
+        if not bid or not owner: return
+        d=managed_bots_col.find_one({"bot_id":bid})
+        if not d: return
+        pin=str(secrets.randbelow(900000)+100000); username=str(d.get("username") or info.get("username") or "").lstrip("@")
+        pin_hash=hashlib.sha256((str(TOKEN or "")+":"+pin).encode()).hexdigest()
+        base=str(AD_PUBLIC_BASE_URL or "https://go.quickdl.site").rstrip("/"); url=f"{base}/dashboard/{urllib.parse.quote(bid,safe='')}"
+        managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_url":url,"dashboard_username":username,"dashboard_pin_hash":pin_hash,"dashboard_enabled":True,"dashboard_settings":{"ads_enabled":True,"welcome_enabled":True,"platforms":{}},"dashboard_pin_updated_at":datetime.now(timezone.utc)}})
+        _creator_send(int(owner),f"🔐 <b>YOUR BOT DASHBOARD</b>\n\n🤖 @{html.escape(username or 'unknown')}\n🔗 <b>{html.escape(url)}</b>\n👤 Username: <code>{html.escape(username or 'unknown')}</code>\n🔑 PIN: <code>{pin}</code>\n\nSave this PIN. After the first login this device stays signed in.",parse_mode="HTML")
+    except Exception as e: print("Dashboard credential setup error:",repr(e))
+_creator_on_managed_bot_created=_creator_on_managed_bot_created_with_dashboard
+
+def _dashboard_session_ok(handler,bid,doc):
+    cookie=str(handler.headers.get("Cookie") or "")
+    if "qd_dash=" not in cookie: return False
+    value=cookie.split("qd_dash=",1)[1].split(";",1)[0]
+    try:
+        b,ts,sig=value.split(".",2)
+        if b!=str(bid) or abs(int(time.time())-int(ts))>2592000: return False
+        expected=hmac.new(str(TOKEN or "").encode(),f"{bid}:{ts}:{doc.get('dashboard_pin_hash','')}".encode(),hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig,expected)
+    except Exception: return False
+
+def _dashboard_page(doc):
+    bid=str(doc.get("bot_id")); s=doc.get("dashboard_settings") or {}; p=s.get("platforms") or {}; prices=doc.get("dashboard_prices") or get_premium_prices()
+    checks="".join(f'<label><input type="checkbox" name="p_{k}" {"checked" if p.get(k,True) else ""}> {k.title()}</label><br>' for k in ("tiktok","instagram","facebook","youtube","pinterest","snapchat","twitter","reddit","threads"))
+    prices_html="".join(f'<label>{m} months<input name="price_{m}" value="{float(prices.get(m,get_premium_prices()[m])):g}"></label>' for m in ("1","3","9","12"))
+    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickDL Dashboard</title><style>body{{margin:0;background:radial-gradient(circle at top,#1f5b80,#07111d 62%);font-family:system-ui;color:#fff}}.wrap{{max-width:980px;margin:auto;padding:20px}}.glass{{background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.16);backdrop-filter:blur(22px);border-radius:26px;padding:22px;margin:14px 0;box-shadow:0 18px 70px rgba(0,0,0,.28)}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}input,textarea,button{{box-sizing:border-box;width:100%;padding:12px;margin:6px 0;border-radius:13px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.18);color:#fff}}input[type=checkbox]{{width:auto}}button{{cursor:pointer;background:rgba(76,184,255,.3);font-weight:800}}.muted{{opacity:.7}}</style></head><body><div class="wrap"><div class="glass"><h1>🤖 @{html.escape(str(doc.get("username") or "unknown"))}</h1><p class="muted">QuickDL Bot Dashboard</p></div><form method="post" action="/dashboard/{urllib.parse.quote(bid,safe='')}/save"><div class="grid"><div class="glass"><h2>⚙️ Bot</h2><input name="name" value="{html.escape(str(doc.get("name") or "Downloader Bot"))}"><textarea name="welcome" rows="5">{html.escape(str(s.get("welcome") or ""))}</textarea><label><input type="checkbox" name="ads_enabled" {"checked" if s.get("ads_enabled",True) else ""}> Monetag Ads</label></div><div class="glass"><h2>🌐 Platforms</h2>{checks}</div><div class="glass"><h2>💎 Premium</h2>{prices_html}</div><div class="glass"><h2>🔘 Controls</h2><label><input type="checkbox" name="welcome_enabled" {"checked" if s.get("welcome_enabled",True) else ""}> Welcome</label><label><input type="checkbox" name="premium_enabled" {"checked" if s.get("premium_enabled",True) else ""}> Premium</label></div></div><button>💾 SAVE SETTINGS</button></form></div></body></html>"""
+
+def _dashboard_login_page(doc,error=""):
+    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickDL Dashboard</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,#06111d,#17354d);font-family:system-ui;color:#fff}}.glass{{width:min(430px,90vw);padding:28px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(24px);border-radius:28px}}input,button{{width:100%;box-sizing:border-box;padding:14px;margin:7px 0;border-radius:14px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.18);color:#fff}}button{{background:rgba(76,184,255,.3);font-weight:800}}.err{{color:#ffb0b0}}</style></head><body><div class="glass"><h1>🤖 QuickDL</h1><p>Bot Dashboard</p><p>@{html.escape(str(doc.get("username") or "unknown"))}</p>{f"<p class='err'>{html.escape(error)}</p>" if error else ""}<form method="post" action="/dashboard/{urllib.parse.quote(str(doc.get('bot_id')),safe='')}/login"><input name="username" placeholder="Telegram username" required><input name="pin" type="password" inputmode="numeric" placeholder="PIN" required><button>🔐 OPEN DASHBOARD</button></form></div></body></html>"""
+
+def _dashboard_form(body):
+    data=urllib.parse.parse_qs(body,keep_blank_values=True); return {k:(v[-1] if v else "") for k,v in data.items()}
+
+def _install_dashboard_routes():
+    old_get=_AdGateHandler.do_GET
+    def dashboard_get(self):
+        path=urllib.parse.urlparse(self.path).path; m=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]+)",path)
+        if m:
+            bid=urllib.parse.unquote(m.group(1)); doc=managed_bots_col.find_one({"bot_id":bid,"active":True})
+            if not doc or not doc.get("dashboard_enabled",False): self._send(404,"Dashboard unavailable."); return
+            self._send(200,_dashboard_page(doc) if _dashboard_session_ok(self,bid,doc) else _dashboard_login_page(doc)); return
+        return old_get(self)
+    def dashboard_post(self):
+        path=urllib.parse.urlparse(self.path).path; m=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]+)/(login|save)",path)
+        if not m: self._send(404,"Not found."); return
+        bid=urllib.parse.unquote(m.group(1)); action=m.group(2); doc=managed_bots_col.find_one({"bot_id":bid,"active":True})
+        if not doc or not doc.get("dashboard_enabled",False): self._send(404,"Dashboard unavailable."); return
+        n=int(self.headers.get("Content-Length","0") or 0); f=_dashboard_form(self.rfile.read(n).decode("utf-8","ignore"))
+        if action=="login":
+            username=str(f.get("username") or "").lstrip("@").lower(); expected=str(doc.get("dashboard_username") or doc.get("username") or "").lstrip("@").lower()
+            supplied=hashlib.sha256((str(TOKEN or "")+":"+str(f.get("pin") or "")).encode()).hexdigest()
+            if username!=expected or not hmac.compare_digest(supplied,str(doc.get("dashboard_pin_hash") or "")):
+                self._send(401,_dashboard_login_page(doc,"Invalid username or PIN.")); return
+            ts=str(int(time.time())); sig=hmac.new(str(TOKEN or "").encode(),f"{bid}:{ts}:{doc.get('dashboard_pin_hash','')}".encode(),hashlib.sha256).hexdigest()
+            self.send_response(303); self.send_header("Location",f"/dashboard/{bid}"); self.send_header("Set-Cookie",f"qd_dash={bid}.{ts}.{sig}; Max-Age=2592000; Path=/; HttpOnly; SameSite=Lax"); self.end_headers(); return
+        if not _dashboard_session_ok(self,bid,doc): self._send(401,"Dashboard session expired. Please login again."); return
+        s=doc.get("dashboard_settings") or {}; platforms={p:bool(f.get("p_"+p)) for p in ("tiktok","instagram","facebook","youtube","pinterest","snapchat","twitter","reddit","threads")}
+        prices={m:max(0.01,float(f.get("price_"+m) or get_premium_prices()[m])) for m in ("1","3","9","12")}
+        s.update({"ads_enabled":bool(f.get("ads_enabled")),"welcome_enabled":bool(f.get("welcome_enabled")),"premium_enabled":bool(f.get("premium_enabled")),"welcome":str(f.get("welcome") or ""),"platforms":platforms})
+        managed_bots_col.update_one({"bot_id":bid},{"$set":{"name":str(f.get("name") or doc.get("name") or "Downloader Bot"),"dashboard_settings":s,"dashboard_prices":prices,"updated_at":datetime.now(timezone.utc)}})
+        self.send_response(303); self.send_header("Location",f"/dashboard/{bid}"); self.end_headers()
+    _AdGateHandler.do_GET=dashboard_get; _AdGateHandler.do_POST=dashboard_post
+
+_install_dashboard_routes()
+_admin_menu_original=admin_menu
+def admin_menu_extended():
+    kb=_admin_menu_original(); kb.add("🖼 PREMIUM / CREATOR MEDIA"); return kb
+admin_menu=admin_menu_extended
 
 
 # ================= MAIN RUN LOOP =================
