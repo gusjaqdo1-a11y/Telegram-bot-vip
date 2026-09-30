@@ -1301,6 +1301,10 @@ except Exception as e:
 settings_col = db1["settings"]
 managed_bots_col = db1["managed_bots"]
 creator_sessions_col = db1["creator_sessions"]
+dashboard_sessions_col = db1["dashboard_sessions"]
+premium_media_col = db1["premium_media"]
+broadcast_history_col = db1["broadcast_history"]
+broadcast_deliveries_col = db1["broadcast_deliveries"]
 premium_logs_col = db1["premium_logs"]
 activity_col = db1["activity_logs"]
 ratings_col = db1["bot_ratings"]
@@ -1410,7 +1414,13 @@ def _ad_enabled_for(uid, bot_id=None):
     # have a Creator-admin master switch.
     bid0=_ad_bot_key(bot_id)
     if bid0 == "main" and not _main_ads_open(): return True
-    if bid0 != "main" and not bool(get_setting("managed_ads_enabled", True)): return True
+    if bid0 != "main":
+        try:
+            md=managed_bots_col.find_one({"bot_id":bid0},{"dashboard_settings":1}) or {}
+            ds=md.get("dashboard_settings") or {}
+            if ds.get("ads_enabled") is False: return True
+        except Exception: pass
+        if not bool(get_setting("managed_ads_enabled", True)): return True
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -2461,6 +2471,7 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("🗑 Delete Last Broadcast", "🗑 Delete 2 Last Broadcast")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
@@ -2492,6 +2503,8 @@ def admin_menu():
     kb.add("📣 Send all G/CH")
     kb.add("🟢 Open song in bot", "🔴 Close Song in bot")
     kb.add("📤 SEND TO CREATE BOT")
+    kb.add("🖼 PREMIUM MEDIA")
+    kb.add("🔐 LOCK DASHBOARD FIELD", "🔓 UNLOCK DASHBOARD FIELD")
     kb.add("🟢 OPEN VERIFY CREATE BOT", "🔴 CLOSE VERIFY CREATE BOT")
     kb.add("🟢 OPEN CREATE CAPTION", "🔴 CLOSE CREATE CAPTION")
     kb.add("🟢 Open Creation", "🔴 Close Creation")
