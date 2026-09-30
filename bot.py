@@ -12976,7 +12976,7 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
-        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
+        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🤖 All-in-One" if str(d.get("bot_type") or "video")=="all" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
         _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
@@ -13531,6 +13531,37 @@ def admin_send_to_creator_process(m):
         try: bot.send_message(int(uid),text_msg,reply_markup=kb,parse_mode="HTML"); sent+=1
         except Exception: failed+=1
     bot.send_message(m.chat.id,f"✅ <b>Creator announcement sent</b>\n\n📨 Sent: <b>{sent}</b>\n❌ Failed: <b>{failed}</b>",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔐 LOCK DASHBOARD FIELD")
+def admin_lock_dashboard_field(m):
+    if not is_admin(m.from_user.id): return
+    msg=bot.send_message(m.chat.id,"🔐 Send: <code>BOT_ID FIELD</code>\nFields: <code>platforms ads_enabled premium_enabled buttons</code>")
+    bot.register_next_step_handler(msg,admin_lock_dashboard_field_process)
+
+def admin_lock_dashboard_field_process(m):
+    if not is_admin(m.from_user.id): return
+    parts=(m.text or "").split(maxsplit=1)
+    if len(parts)!=2 or parts[1] not in {"platforms","ads_enabled","premium_enabled","buttons"}:
+        bot.send_message(m.chat.id,"❌ Invalid field."); return
+    bid,field=parts[0],parts[1]; d=managed_bots_col.find_one({"bot_id":bid})
+    if not d: bot.send_message(m.chat.id,"❌ Managed bot not found."); return
+    ds=_managed_dashboard(d); ds["locked_fields"]=sorted(set(ds["locked_fields"])|{field}); managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_settings":ds}})
+    bot.send_message(m.chat.id,f"🔐 Locked <code>{html.escape(field)}</code> for @{html.escape(str(d.get('username') or bid))}.",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🔓 UNLOCK DASHBOARD FIELD")
+def admin_unlock_dashboard_field(m):
+    if not is_admin(m.from_user.id): return
+    msg=bot.send_message(m.chat.id,"🔓 Send: <code>BOT_ID FIELD</code>")
+    bot.register_next_step_handler(msg,admin_unlock_dashboard_field_process)
+
+def admin_unlock_dashboard_field_process(m):
+    if not is_admin(m.from_user.id): return
+    parts=(m.text or "").split(maxsplit=1)
+    if len(parts)!=2: bot.send_message(m.chat.id,"❌ Invalid."); return
+    bid,field=parts[0],parts[1]; d=managed_bots_col.find_one({"bot_id":bid})
+    if not d: bot.send_message(m.chat.id,"❌ Managed bot not found."); return
+    ds=_managed_dashboard(d); ds["locked_fields"]=[x for x in ds["locked_fields"] if x!=field]; managed_bots_col.update_one({"bot_id":bid},{"$set":{"dashboard_settings":ds}})
+    bot.send_message(m.chat.id,f"🔓 Unlocked <code>{html.escape(field)}</code> for @{html.escape(str(d.get('username') or bid))}.",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🟢 OPEN VERIFY CREATE BOT")
 def admin_open_verify_create_bot(m):
