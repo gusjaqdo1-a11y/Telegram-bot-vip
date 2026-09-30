@@ -14342,18 +14342,20 @@ def _enhanced_creator_start_create(uid,chat_id):
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the downloader type:",reply_markup={"inline_keyboard":[
+    buttons={"inline_keyboard":[
         [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
         [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
         [{"text":"🌐 Video + Music","callback_data":"ctype:all"}],
-    ]})
+    ]}
+    media=get_creator_type_media("video")
+    caption="🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the downloader type. The card changes in this same message when you choose."
+    if not _creator_send_media(chat_id,media,caption,buttons):
+        _creator_send(chat_id,caption,reply_markup=buttons)
 
 def _enhanced_creator_callback(call):
     data=str((call or {}).get("data") or "")
-    if not data.startswith("ctype:"):
-        return _original_creator_callback(call)
-    uid=str((call.get("from") or {}).get("id") or "")
-    chat=(call.get("message") or {}).get("chat",{}).get("id")
+    if not data.startswith("ctype:"): return _original_creator_callback(call)
+    uid=str((call.get("from") or {}).get("id") or ""); msg=call.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); mid=msg.get("message_id")
     kind=data.split(":",1)[1].lower()
     if kind not in {"video","music","all"}:
         _creator_answer(call.get("id"),"Invalid bot type.",True); return
@@ -14363,14 +14365,25 @@ def _enhanced_creator_callback(call):
     bot_type="video" if kind in {"video","all"} else "music"
     suggested_name={"video":"QuickDL Video","music":"QuickDL Music","all":"QuickDL Downloader"}[kind]
     suggested_username=f"quickdl_{uid[-8:]}_bot"[:32]
-    request_id=random.randint(1,2_000_000_000)
-    _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":bot_type,"bot_mode":kind,"suggested_name":suggested_name,"suggested_username":suggested_username,"request_id":request_id,"updated_at":datetime.now(timezone.utc)})
-    markup=_creator_request_keyboard(request_id,suggested_name,suggested_username)
+    _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":bot_type,"bot_mode":kind,"suggested_name":suggested_name,"suggested_username":suggested_username,"updated_at":datetime.now(timezone.utc)})
+    me,me_err=_creator_api("getMe",{})
+    manager=str((me or {}).get("username") or "").lstrip("@")
+    if not manager:
+        manager=str(_creator_bot_url() or "").rstrip("/").split("/")[-1].lstrip("@")
+    url=f"https://t.me/newbot/{urllib.parse.quote(manager,safe='')}/{urllib.parse.quote(suggested_username,safe='')}?name={urllib.parse.quote(suggested_name)}"
+    markup={"inline_keyboard":[[{"text":"🚀 Create with Telegram","url":url}]]}
     title={"video":"🎬 VIDEO DOWNLOADER","music":"🎵 MUSIC DOWNLOADER","all":"🌐 VIDEO + MUSIC DOWNLOADER"}[kind]
-    caption=f"<b>{title}</b>\n\nTelegram will now open the official managed-bot creation screen. Enter or edit your Bot Name and Username there, then press Create."
-    _creator_answer(call.get("id"),"Opening Telegram bot creator…")
+    caption=f"<b>{title}</b>\n\nTelegram will open the official managed-bot creation screen with the Bot Name and Username pre-filled. You can edit both there before confirming."
+    _creator_answer(call.get("id"),"Updated")
     media=get_creator_type_media(kind)
-    if not _creator_send_media(chat,media,caption,markup): _creator_send(chat,caption,reply_markup=markup)
+    edited=False
+    if mid and chat and media and media.get("file_id"):
+        mtype="video" if media.get("type")=="video" else "photo"
+        payload={"chat_id":int(chat),"message_id":int(mid),"media":{"type":mtype,"media":media["file_id"],"caption":caption,"parse_mode":"HTML"},"reply_markup":markup}
+        _,err=_creator_api("editMessageMedia",payload); edited=not bool(err)
+    elif mid and chat:
+        _,err=_creator_api("editMessageText",{"chat_id":int(chat),"message_id":int(mid),"text":caption,"parse_mode":"HTML","reply_markup":markup}); edited=not bool(err)
+    if not edited: _creator_send(chat,caption,reply_markup=markup)
 
 _original_creator_start_create=_creator_start_create
 _creator_start_create=_enhanced_creator_start_create
