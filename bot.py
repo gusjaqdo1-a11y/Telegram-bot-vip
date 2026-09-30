@@ -1732,12 +1732,213 @@ def _ad_gate_bot_token(row):
     except Exception as e:
         print("Ad gate bot token lookup failed:",repr(e)); return ""
 
+
+# ================= PER-BOT OWNER DASHBOARD =================
+DASHBOARD_BASE_URL="https://go.quickdl.site"
+_dashboard_sessions={}
+_dashboard_session_lock=threading.RLock()
+_DASHBOARD_PLATFORM_NAMES=[
+    ("youtube","YouTube"),("tiktok","TikTok"),("instagram","Instagram"),
+    ("facebook","Facebook"),("pinterest","Pinterest"),("snapchat","Snapchat"),
+    ("twitter","X / Twitter"),("reddit","Reddit"),("threads","Threads"),
+    ("likee","Likee"),("vimeo","Vimeo"),("dailymotion","Dailymotion"),
+    ("soundcloud","SoundCloud"),("twitch","Twitch"),("tumblr","Tumblr"),
+    ("streamable","Streamable"),("odnoklassniki","OK.ru"),
+]
+
+def _dashboard_pin_encrypt(pin):
+    cipher=_managed_token_cipher()
+    if cipher:
+        try: return cipher.encrypt(str(pin).encode()).decode()
+        except Exception: pass
+    return str(pin)
+
+def _dashboard_pin_decrypt(doc):
+    raw=str((doc or {}).get("dashboard_pin_enc") or "").strip()
+    if not raw: return str((doc or {}).get("dashboard_pin") or "").strip()
+    cipher=_managed_token_cipher()
+    if cipher:
+        try: return cipher.decrypt(raw.encode()).decode()
+        except Exception: pass
+    return str((doc or {}).get("dashboard_pin") or "").strip()
+
+def _dashboard_defaults(doc):
+    btype=str((doc or {}).get("bot_type") or "video").lower()
+    return {"buttons":{"premium":True,"remove_ads":True,"create_bot":True,"admin_panel":True,"music_search":btype=="music"},
+            "platforms":{k:True for k,_ in _DASHBOARD_PLATFORM_NAMES}}
+
+def _ensure_bot_dashboard(doc):
+    doc=dict(doc or {}); bid=str(doc.get("bot_id") or "").strip()
+    if not bid: return doc
+    changed={}
+    slug=str(doc.get("dashboard_slug") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,64}",slug):
+        slug=secrets.token_urlsafe(24).replace("-","_").replace("~","_")
+        changed["dashboard_slug"]=slug
+    pin=_dashboard_pin_decrypt(doc)
+    if not re.fullmatch(r"\d{6}",pin):
+        pin="".join(str(random.randint(0,9)) for _ in range(6))
+        changed["dashboard_pin_enc"]=_dashboard_pin_encrypt(pin)
+        if not _managed_token_cipher(): changed["dashboard_pin"]=pin
+    defaults=_dashboard_defaults(doc); saved=doc.get("dashboard_settings") if isinstance(doc.get("dashboard_settings"),dict) else {}
+    buttons=dict(defaults["buttons"]); buttons.update(saved.get("buttons") or {})
+    platforms=dict(defaults["platforms"]); platforms.update(saved.get("platforms") or {})
+    changed["dashboard_settings"]={"buttons":buttons,"platforms":platforms}
+    if changed:
+        managed_bots_col.update_one({"bot_id":bid},{"$set":changed},upsert=False); doc.update(changed)
+    return doc
+
+def _dashboard_url(doc):
+    return f"{DASHBOARD_BASE_URL}/dashboard/{_ensure_bot_dashboard(doc).get('dashboard_slug')}"
+
+def _dashboard_credentials(doc):
+    d=_ensure_bot_dashboard(doc)
+    return _dashboard_url(d),str(d.get("username") or "").lstrip("@"),_dashboard_pin_decrypt(d)
+
+def _dashboard_button_enabled(doc,key):
+    d=_ensure_bot_dashboard(doc); return bool((((d.get("dashboard_settings") or {}).get("buttons") or {}).get(key,True)))
+
+def _dashboard_platform_enabled(doc,platform):
+    d=_ensure_bot_dashboard(doc); return bool((((d.get("dashboard_settings") or {}).get("platforms") or {}).get(platform,True)))
+
+def _dashboard_effective_button(doc,key):
+    if key=="create_bot": return _dashboard_button_enabled(doc,key) and _creation_open()
+    if key=="remove_ads": return _dashboard_button_enabled(doc,key) and bool(get_setting("managed_ads_enabled",True))
+    if key=="music_search": return _dashboard_button_enabled(doc,key) and str((doc or {}).get("bot_type") or "video")=="music"
+    return _dashboard_button_enabled(doc,key)
+
+def _dashboard_avatar_data_url(doc):
+    try:
+        token=_decrypt_managed_token(doc or {}); bid=int(str((doc or {}).get("bot_id") or "0"))
+        if not token: return ""
+        rr=requests.get(f"https://api.telegram.org/bot{token}/getUserProfilePhotos",params={"user_id":bid,"limit":1},timeout=8)
+        photos=((rr.json().get("result") or {}).get("photos") or [])
+        if not photos or not photos[0]: return ""
+        fid=str(photos[0][-1].get("file_id") or ""); 
+        fr=requests.get(f"https://api.telegram.org/bot{token}/getFile",params={"file_id":fid},timeout=8)
+        fp=str((fr.json().get("result") or {}).get("file_path") or "")
+        if not fp: return ""
+        raw=requests.get(f"https://api.telegram.org/file/bot{token}/{fp}",timeout=10).content
+        return "data:image/jpeg;base64,"+__import__("base64").b64encode(raw).decode() if raw else ""
+    except Exception as e:
+        print("Dashboard avatar lookup failed:",repr(e)); return ""
+
+def _dashboard_session_bot(cookie_header):
+    try:
+        m=re.search(r"(?:^|;\s*)qd_dash_session=([^;]+)",str(cookie_header or ""))
+        token=urllib.parse.unquote(m.group(1)) if m else ""
+        with _dashboard_session_lock: row=_dashboard_sessions.get(token)
+        if not row or float(row.get("expires",0))<time.time(): return None
+        d=managed_bots_col.find_one({"bot_id":str(row.get("bot_id"))})
+        if not d or not d.get("active",True) or d.get("suspended") or str(d.get("dashboard_slug"))!=str(row.get("slug")): return None
+        return d
+    except Exception: return None
+
+def _dashboard_new_session(bot_id,slug):
+    token=secrets.token_urlsafe(32)
+    with _dashboard_session_lock: _dashboard_sessions[token]={"bot_id":str(bot_id),"slug":str(slug),"expires":time.time()+86400}
+    return token
+
+def _dashboard_page(doc,error="",notice=""):
+    d=_ensure_bot_dashboard(doc); username=str(d.get("username") or "unknown").lstrip("@"); name=html.escape(str(d.get("name") or username or "Downloader Bot"))
+    typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
+    dash_url,_,pin=_dashboard_credentials(d); avatar=_dashboard_avatar_data_url(d)
+    img=f'<img class="avatar" src="{avatar}" alt="Bot">' if avatar else '<div class="avatar fallback">🤖</div>'
+    settings=d.get("dashboard_settings") or {}; buttons=settings.get("buttons") or {}; plats=settings.get("platforms") or {}
+    global_ads=bool(get_setting("managed_ads_enabled",True)); global_create=_creation_open()
+    defs=[("premium","💎 Premium","Premium entry button"),("remove_ads","🚫 Remove Ads","Remove Ads entry button"),("create_bot","🤖 Create Your Own Bot","Creator link button"),("admin_panel","👑 Admin Panel","Owner-only admin button"),("music_search","🎵 Music Search","Music search entry")]
+    cards=[]
+    for key,label,desc in defs:
+        val=bool(buttons.get(key,True)) and (global_create if key=="create_bot" else global_ads if key=="remove_ads" else True)
+        lock=(key=="create_bot" and not global_create) or (key=="remove_ads" and not global_ads)
+        cards.append(f'<div class="row"><div><b>{label}</b><small>{html.escape(desc)}{" · Global admin CLOSED" if lock else ""}</small></div><form method="post" action="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/toggle"><input type="hidden" name="kind" value="button"><input type="hidden" name="key" value="{key}"><input type="hidden" name="value" value="{"0" if val else "1"}"><button class="switch {"on" if val else ""}" type="submit">{"ON" if val else "OFF"}</button></form></div>')
+    pcs=[]
+    for key,label in _DASHBOARD_PLATFORM_NAMES:
+        val=bool(plats.get(key,True)); pcs.append(f'<div class="platform"><span>{html.escape(label)}</span><form method="post" action="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/toggle"><input type="hidden" name="kind" value="platform"><input type="hidden" name="key" value="{key}"><input type="hidden" name="value" value="{"0" if val else "1"}"><button class="switch {"on" if val else ""}" type="submit">{"ON" if val else "OFF"}</button></form></div>')
+    err=f'<div class="error">{html.escape(error)}</div>' if error else ""; note=f'<div class="notice">{html.escape(notice)}</div>' if notice else ""
+    return f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{name} • QuickDL</title>
+<style>
+:root{{--bg:#06100e;--glass:rgba(255,255,255,.08);--line:rgba(255,255,255,.14);--text:#effff9;--muted:#a9c4bc;--accent:#6fffd1}}
+*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at 15% 0%,#15483e 0,#071312 44%,#020605 100%);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif}}.wrap{{max-width:1080px;margin:auto;padding:24px 16px 50px}}.glass{{background:var(--glass);border:1px solid var(--line);box-shadow:0 18px 60px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.08);backdrop-filter:blur(20px);border-radius:26px}}.hero{{display:flex;gap:18px;align-items:center;padding:22px;margin-bottom:18px}}.avatar{{width:84px;height:84px;border-radius:24px;object-fit:cover;border:1px solid var(--line)}}.fallback{{display:grid;place-items:center;background:rgba(255,255,255,.08);font-size:36px}}h1{{margin:7px 0 4px;font-size:28px}}h2{{font-size:19px;margin:0 0 15px}}.muted,small{{color:var(--muted)}}small{{display:block;margin-top:4px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:18px}}.card{{padding:21px}}.row,.platform{{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.08)}}.row:last-child,.platform:last-child{{border-bottom:0}}.switch{{border:1px solid var(--line);background:rgba(255,255,255,.08);color:#fff;border-radius:999px;padding:9px 15px;font-weight:900;cursor:pointer}}.switch.on{{background:rgba(111,255,209,.18);border-color:rgba(111,255,209,.45);color:var(--accent)}}.cred{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}.pill{{padding:13px;border-radius:16px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.08);word-break:break-all}}.badge{{display:inline-flex;padding:6px 10px;border-radius:999px;background:rgba(111,255,209,.12);color:var(--accent);font-weight:900;font-size:12px}}.notice,.error{{padding:13px 15px;border-radius:16px;margin-bottom:15px}}.notice{{background:rgba(111,255,209,.12)}}.error{{background:rgba(255,80,100,.12);color:#ffd8dd}}a{{color:var(--accent);text-decoration:none}}@media(max-width:760px){{.grid{{grid-template-columns:1fr}}.cred{{grid-template-columns:1fr}}}}
+</style></head><body><main class="wrap">{note}{err}
+<section class="glass hero">{img}<div><span class="badge">🟢 OWNER DASHBOARD</span><h1>{name}</h1><div class="muted">@{html.escape(username)} · {typ}</div><div class="muted"><a href="{html.escape(dash_url,quote=True)}">{html.escape(dash_url)}</a></div></div></section>
+<section class="glass card" style="margin-bottom:18px"><h2>🔐 Login Credentials</h2><div class="cred"><div class="pill"><small>Username</small><b>@{html.escape(username)}</b></div><div class="pill"><small>PIN</small><b>{html.escape(pin or "Unavailable")}</b></div></div><form method="post" action="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/regenerate-pin"><button class="switch" type="submit" style="margin-top:12px">🔄 Regenerate PIN</button></form></section>
+<div class="grid"><section class="glass card"><h2>🎛️ Bot Buttons</h2>{''.join(cards)}</section><section class="glass card"><h2>🌐 Platforms</h2>{''.join(pcs)}</section></div>
+<section class="glass card" style="margin-top:18px"><h2>🛡️ Main Admin Protection</h2><p class="muted">Main-admin/global controls remain authoritative. You can turn your own features OFF, but you cannot turn ON a feature that the main admin has closed.</p><div class="cred"><div class="pill"><small>Managed Ads</small><b>{'OPEN' if global_ads else 'CLOSED'}</b></div><div class="pill"><small>Bot Creation</small><b>{'OPEN' if global_create else 'CLOSED'}</b></div></div><p><a href="/dashboard/{html.escape(str(d.get("dashboard_slug")))}/logout">↪ Logout</a></p></section>
+</main></body></html>'''
+
+def _dashboard_login_page(doc,error=""):
+    d=_ensure_bot_dashboard(doc); slug=html.escape(str(d.get("dashboard_slug") or ""),quote=True); username=html.escape(str(d.get("username") or "").lstrip("@")); avatar=_dashboard_avatar_data_url(d)
+    img=f'<img class="avatar" src="{avatar}" alt="Bot">' if avatar else '<div class="avatar fallback">🤖</div>'
+    err=f'<div class="error">{html.escape(error)}</div>' if error else ""
+    return f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickDL Dashboard Login</title><style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 20% 0%,#16483d,#050b0a 65%);color:#effff9;font-family:Inter,system-ui}}.box{{width:min(92vw,430px);padding:28px;border-radius:28px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(22px);box-shadow:0 25px 80px rgba(0,0,0,.35)}}.avatar{{width:86px;height:86px;border-radius:25px;object-fit:cover}}.fallback{{display:grid;place-items:center;background:rgba(255,255,255,.08);font-size:38px}}input{{width:100%;padding:14px;border-radius:15px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2);color:#fff;font-size:16px;margin:7px 0 13px;box-sizing:border-box}}button{{width:100%;padding:14px;border:0;border-radius:15px;background:#6fffd1;color:#05231c;font-weight:900;font-size:16px}}.error{{padding:12px;border-radius:14px;background:rgba(255,80,100,.12);color:#ffd8dd;margin:12px 0}}</style></head><body><section class="box">{img}<h1>QuickDL Dashboard</h1><p>Owner access for <b>@{username}</b>.</p>{err}<form method="post" action="/dashboard/{slug}/login"><label>Bot Username</label><input name="username" value="@{username}" required><label>PIN</label><input name="pin" type="password" inputmode="numeric" maxlength="6" required><button>🔐 Open Dashboard</button></form></section></body></html>'''
+
+def _dashboard_parse_post(handler):
+    length=int(handler.headers.get("Content-Length","0") or 0); raw=handler.rfile.read(min(length,20000)).decode("utf-8","ignore")
+    return {k:(v[0] if isinstance(v,list) else v) for k,v in urllib.parse.parse_qs(raw,keep_blank_values=True).items()}
+
 class _AdGateHandler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): return
     def _send(self,code,body,ctype="text/html; charset=utf-8"):
         if isinstance(body,str): body=body.encode()
         self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_POST(self):
+        path=urllib.parse.urlparse(self.path).path
+        dm=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]{20,64})/(login|toggle|regenerate-pin)",path)
+        if not dm: self._send(404,"Not found"); return
+        slug=dm.group(1); action=dm.group(2); d=managed_bots_col.find_one({"dashboard_slug":slug})
+        if not d or not d.get("active",True) or d.get("suspended"):
+            self._send(410,"This bot dashboard is no longer available."); return
+        d=_ensure_bot_dashboard(d); form=_dashboard_parse_post(self)
+        if action=="login":
+            u=str(form.get("username","")).strip().lstrip("@").lower(); expected=str(d.get("username") or "").strip().lstrip("@").lower()
+            p=str(form.get("pin","")).strip(); ep=_dashboard_pin_decrypt(d)
+            if u!=expected or not ep or not secrets.compare_digest(p,ep):
+                self._send(401,_dashboard_login_page(d,"❌ Incorrect bot username or PIN.")); return
+            sess=_dashboard_new_session(d.get("bot_id"),slug)
+            self.send_response(303); self.send_header("Location",f"/dashboard/{slug}"); self.send_header("Set-Cookie",f"qd_dash_session={urllib.parse.quote(sess)}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"); self.end_headers(); return
+        authed=_dashboard_session_bot(self.headers.get("Cookie",""))
+        if not authed or str(authed.get("dashboard_slug"))!=slug or str(authed.get("bot_id"))!=str(d.get("bot_id")):
+            self._send(401,"Dashboard session expired. Please log in again."); return
+        if action=="toggle":
+            kind=str(form.get("kind") or ""); key=str(form.get("key") or ""); value=str(form.get("value") or "0").lower() in {"1","true","on","yes"}
+            current=_ensure_bot_dashboard(d); settings=dict(current.get("dashboard_settings") or {})
+            if kind=="button":
+                allowed={"premium","remove_ads","create_bot","admin_panel","music_search"}
+                if key not in allowed: self._send(400,"Invalid button."); return
+                buttons=dict(settings.get("buttons") or {}); buttons[key]=value; settings["buttons"]=buttons
+            elif kind=="platform":
+                allowed={k for k,_ in _DASHBOARD_PLATFORM_NAMES}
+                if key not in allowed: self._send(400,"Invalid platform."); return
+                plats=dict(settings.get("platforms") or {}); plats[key]=value; settings["platforms"]=plats
+            else: self._send(400,"Invalid setting."); return
+            managed_bots_col.update_one({"bot_id":str(d.get("bot_id"))},{"$set":{"dashboard_settings":settings,"updated_at":datetime.now(timezone.utc)}})
+            self.send_response(303); self.send_header("Location",f"/dashboard/{slug}"); self.end_headers(); return
+        if action=="regenerate-pin":
+            pin="".join(str(random.randint(0,9)) for _ in range(6)); upd={"dashboard_pin_enc":_dashboard_pin_encrypt(pin),"updated_at":datetime.now(timezone.utc)}
+            if not _managed_token_cipher(): upd["dashboard_pin"]=pin
+            managed_bots_col.update_one({"bot_id":str(d.get("bot_id"))},{"$set":upd})
+            self.send_response(303); self.send_header("Location",f"/dashboard/{slug}"); self.send_header("Set-Cookie","qd_dash_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"); self.end_headers(); return
+
     def do_GET(self):
+        path=urllib.parse.urlparse(self.path).path
+        dm=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]{20,64})(?:/(logout))?",path)
+        if dm:
+            slug=dm.group(1); action=dm.group(2) or ""; d=managed_bots_col.find_one({"dashboard_slug":slug})
+            if not d or not d.get("active",True) or d.get("suspended"):
+                self._send(410,"This bot dashboard is no longer available."); return
+            d=_ensure_bot_dashboard(d)
+            if action=="logout":
+                m=re.search(r"(?:^|;\s*)qd_dash_session=([^;]+)",str(self.headers.get("Cookie","") or ""))
+                if m:
+                    with _dashboard_session_lock: _dashboard_sessions.pop(urllib.parse.unquote(m.group(1)),None)
+                self.send_response(303); self.send_header("Location",f"/dashboard/{slug}"); self.send_header("Set-Cookie","qd_dash_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"); self.end_headers(); return
+            authed=_dashboard_session_bot(self.headers.get("Cookie",""))
+            if authed and str(authed.get("dashboard_slug"))==slug:
+                self._send(200,_dashboard_page(authed))
+            else:
+                self._send(200,_dashboard_login_page(d))
+            return
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
         m=re.fullmatch(r"/ad/(?:open|app)/([A-Za-z0-9]{16,64})",path)
@@ -12392,19 +12593,6 @@ def _creator_finish_request(uid, chat_id, mid=None):
         except Exception: pass
     _creator_send(chat_id,text,reply_markup=markup)
 
-def _creator_finish_request(uid, chat_id):
-    d=_creator_session(uid)
-    btype=str(d.get("bot_type") or "video").lower()
-    if btype not in {"video","music"}: btype="video"
-    request_id=random.randint(1,2_000_000_000)
-    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,
-        f"<b>Step 2 of 2</b>\n\n"
-        f"{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'} selected.\n\n"
-        "Tap the Telegram button below. Telegram will open the official managed-bot creation screen where you enter the <b>bot name</b> and <b>bot username</b> directly.\n\n"
-        "No manual Name/Username messages, no @BotFather, and no token copying are required.",
-        reply_markup=_creator_request_keyboard(request_id))
-
 def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
     text=(text or "").strip(); low=text.lower()
@@ -12500,8 +12688,10 @@ def _creator_my_bots_edit(uid, chat_id, mid=None):
         for i,d in enumerate(rows[:50],1):
             typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
             status="🟢 Active" if d.get("active",True) and not d.get("suspended") else "🔴 Suspended"
+            d=_ensure_bot_dashboard(d); dash_url,_,_=_dashboard_credentials(d)
             lines += [f"<b>{i}. {typ}</b>",f"   @{html.escape(str(d.get('username') or 'unknown'))} • {status}",""]
             buttons.append([{"text":f"⚙️ @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"}])
+            buttons.append([{"text":"🌐 Open Dashboard","url":dash_url}])
         text="\n".join(lines); markup={"inline_keyboard":buttons}
     if mid is not None: _creator_edit(chat_id,mid,text,reply_markup=markup)
     else: _creator_send(chat_id,text,reply_markup=markup)
@@ -13171,6 +13361,7 @@ def _managed_bot_is_owner(bot_id, uid):
 
 
 def _managed_bot_start_instance(doc):
+    doc=_ensure_bot_dashboard(doc or {})
     token=_decrypt_managed_token(doc or {})
     if not token: return None
     bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music"} else "video"
@@ -13183,10 +13374,12 @@ def _managed_bot_start_instance(doc):
             managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username,"bot_type":btype,"active":True,"updated_at":datetime.now(timezone.utc)}},upsert=False); managed_bot_objects[bid]=mb
             def _ctx(): _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta)
             def _menu(owner=False):
+                fresh=_ensure_bot_dashboard(_managed_bot_doc(bid) or doc)
                 kb=ReplyKeyboardMarkup(resize_keyboard=True)
-                if _creation_open(): kb.add("🤖 Create Your Own Bot")
-                kb.add("🚫 Remove Ads")
-                if owner: kb.add("👑 ADMIN PANEL")
+                if _dashboard_effective_button(fresh,"create_bot"): kb.add("🤖 Create Your Own Bot")
+                if _dashboard_effective_button(fresh,"premium"): kb.add("💎 PREMIUM")
+                if _dashboard_effective_button(fresh,"remove_ads"): kb.add("🚫 Remove Ads")
+                if owner and _dashboard_effective_button(fresh,"admin_panel"): kb.add("👑 ADMIN PANEL")
                 return kb
             def _start(m):
                 _ctx(); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); owner=str(doc.get("owner_id") or "")==str(m.from_user.id)
@@ -13201,7 +13394,10 @@ def _managed_bot_start_instance(doc):
                 if not _creation_open(): mb.send_message(m.chat.id,"🔒 <b>Bot creation is currently closed.</b>",parse_mode="HTML"); return
                 if url: mb.send_message(m.chat.id,"🤖 <b>Create Your Own Bot</b>\n\nOpen the Creator Bot to choose Video Downloader or Music Downloader.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Open Creator Bot",url=url)]]),parse_mode="HTML")
             def _remove_ads_menu(m):
-                _ctx(); _send_remove_ads_plans(mb,str(m.from_user.id),m.chat.id,bid)
+                _ctx()
+                if not _dashboard_effective_button(_ensure_bot_dashboard(_managed_bot_doc(bid) or doc),"remove_ads"):
+                    mb.send_message(m.chat.id,"🔒 <b>Remove Ads is disabled by this bot owner.</b>",parse_mode="HTML"); return
+                _send_remove_ads_plans(mb,str(m.from_user.id),m.chat.id,bid)
 
             def _admin(m):
                 _ctx()
@@ -13212,6 +13408,9 @@ def _managed_bot_start_instance(doc):
             managed_music_pending={}
             def _music_search(m):
                 _ctx(); uid=str(m.from_user.id); q=_music_clean_text(m.text)
+                current=_ensure_bot_dashboard(_managed_bot_doc(bid) or doc)
+                if not _dashboard_effective_button(current,"music_search"):
+                    mb.send_message(m.chat.id,"🔒 <b>Music Search is disabled by this bot owner.</b>",parse_mode="HTML"); return
                 if not q or len(q)<2: return
                 if not _ad_enabled_for(uid,bid):
                     if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
@@ -13254,8 +13453,11 @@ def _managed_bot_start_instance(doc):
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
+                current=_ensure_bot_dashboard(_managed_bot_doc(bid) or doc); platform=detect_platform(link)
+                if not _dashboard_platform_enabled(current,platform):
+                    mb.send_message(m.chat.id,f"🚫 <b>{html.escape(platform.title())}</b> is disabled for this bot by its owner.",parse_mode="HTML"); return
                 try:
-                    if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
+                    if platform=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
@@ -13352,6 +13554,8 @@ def _managed_bot_start_instance(doc):
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             def _managed_premium_menu_cb(call):
                 _ctx()
+                if not _dashboard_effective_button(_ensure_bot_dashboard(_managed_bot_doc(bid) or doc),"premium"):
+                    mb.answer_callback_query(call.id,"Premium is disabled by the bot owner.",show_alert=True); return
                 parts=str(call.data).split(":"); target_bid=parts[1] if len(parts)>1 else ""
                 if target_bid!=bid:
                     mb.answer_callback_query(call.id,"Invalid Premium request.",show_alert=True); return
