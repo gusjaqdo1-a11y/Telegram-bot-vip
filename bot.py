@@ -13426,6 +13426,40 @@ def verifycreate_command(m):
     kb=InlineKeyboardMarkup(); kb.add(InlineKeyboardButton("🔐 VERIFY ACCOUNT",callback_data="start_verify_flow"))
     bot.send_message(m.chat.id,"🔐 <b>Verify before creating a bot</b>\n\nChoose one of the available verification methods below. After verification, return to the Creator Bot.",reply_markup=kb)
 
+@bot.message_handler(func=lambda m: m.text == "🖼 PREMIUM MEDIA")
+def admin_premium_media_menu(m):
+    if not is_admin(m.from_user.id): return
+    kb=InlineKeyboardMarkup(row_width=2)
+    for months in ("1","3","9","12"):
+        d=_premium_media_doc(months); mark="🖼" if d.get("kind")=="photo" else "🎬" if d.get("kind")=="video" else "➕"
+        kb.add(InlineKeyboardButton(f"{mark} {months} Month",callback_data=f"premmedia:{months}"))
+    bot.send_message(m.chat.id,"🖼 <b>PREMIUM PLAN MEDIA</b>\n\nChoose a month, then send a photo or video. The media is used in the Premium card and photo invoices.",parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("premmedia:"))
+def admin_premium_media_plan(call):
+    if not is_admin(call.from_user.id): return
+    months=str(call.data).split(":",1)[1]
+    if months not in get_premium_prices():
+        bot.answer_callback_query(call.id,"Invalid plan.",show_alert=True); return
+    set_setting(f"premium_media_pending_{call.from_user.id}",months)
+    bot.answer_callback_query(call.id,"Send the media now")
+    bot.send_message(call.message.chat.id,f"🖼 <b>Premium {months} month(s)</b>\n\nSend one photo or video now. It replaces the previous media for this plan.",parse_mode="HTML")
+
+@bot.message_handler(content_types=["photo","video"])
+def admin_premium_media_receive(m):
+    if not is_admin(m.from_user.id): return
+    months=str(get_setting(f"premium_media_pending_{m.from_user.id}","") or "")
+    if months not in get_premium_prices(): return
+    if m.photo:
+        item=m.photo[-1]; kind="photo"; fid=item.file_id; width=getattr(item,"width",0); height=getattr(item,"height",0); size=getattr(item,"file_size",0) or 0
+    elif m.video:
+        item=m.video; kind="video"; fid=item.file_id; width=getattr(item,"width",0); height=getattr(item,"height",0); size=getattr(item,"file_size",0) or 0
+    else: return
+    key=secrets.token_urlsafe(20)
+    premium_media_col.update_one({"months":months},{"$set":{"months":months,"kind":kind,"file_id":fid,"public_key":key,"width":int(width or 0),"height":int(height or 0),"size":int(size or 0),"enabled":True,"updated_at":datetime.now(timezone.utc),"admin_id":str(m.from_user.id)}},upsert=True)
+    set_setting(f"premium_media_pending_{m.from_user.id}","")
+    bot.send_message(m.chat.id,f"✅ <b>Premium {months} month(s) media saved.</b>\n\nType: <b>{kind}</b>\nPhoto media is also embedded in the Telegram Premium invoice when possible.",parse_mode="HTML",reply_markup=admin_menu())
+
 @bot.message_handler(func=lambda m: m.text == "🟢 Open Ads")
 def admin_open_ads(m):
     if not is_admin(m.from_user.id): return
