@@ -11279,7 +11279,6 @@ def set_premium_invoice_image_admin(m):
     bot.send_message(m.chat.id,"❌ Send a photo with caption 1/3/9/12, or <code>remove 1</code>.",parse_mode="HTML")
 
 def resolve_user_input(text):
-def resolve_user_input(text):
     text=(text or '').strip()
     return text if text in users else find_user_by_botid(text)
 
@@ -12711,6 +12710,52 @@ def _creator_on_managed_bot_created(msg):
         "💎 Premium uses your shared @Downloadvedioytibot balance.",
         reply_markup=_creator_keyboard(uid))
 
+
+def _creator_notify_bot_admins(text, owner_id=""):
+    targets=set()
+    if owner_id:
+        try: targets.add(int(owner_id))
+        except Exception: pass
+    for aid in list(ADMIN_IDS or []) + [PRIMARY_ADMIN_ID] + list(SUPPORT_ADMIN_IDS or []):
+        try: targets.add(int(aid))
+        except Exception: pass
+    for target in targets:
+        try:
+            if str(target)==str(owner_id):
+                _creator_send(target,text,reply_markup=_creator_keyboard(target))
+            else:
+                _main_bot.send_message(target,text,parse_mode="HTML")
+        except Exception as e:
+            print("Managed bot admin notification failed:",repr(e))
+
+def _managed_bot_restart_instance(doc):
+    bid=str((doc or {}).get("bot_id") or "")
+    if not bid: return None
+    with managed_bot_lock:
+        old=managed_bot_objects.pop(bid,None)
+        managed_bot_threads.pop(bid,None)
+        if old:
+            try: old.stop_polling()
+            except Exception: pass
+    time.sleep(0.2)
+    return _managed_bot_start_instance(doc)
+
+def _creator_notify_managed_bot_token_updated(doc,new_token,deleted=False):
+    if not doc: return
+    username=str(doc.get("username") or "unknown").lstrip("@")
+    name=str(doc.get("name") or "Downloader Bot")
+    owner=str(doc.get("owner_id") or "")
+    if deleted:
+        text=(f"🗑️ <b>Bot Deleted</b>\n\n"
+              f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
+              "Telegram reports that this managed bot was deleted.\n"
+              "The bot was removed from <b>My Bots</b> and stopped on this system.")
+    else:
+        text=(f"🔄 <b>Bot Token Updated</b>\n\n"
+              f"🤖 @{html.escape(username)}\n\n"
+              "Telegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n"
+              "✅ Your bot remains in <b>My Bots</b> and continues using the same settings.")
+    _creator_notify_bot_admins(text,owner)
 
 def _creator_notify_managed_bot_removed(doc, reason="deleted_or_unavailable"):
     if not doc: return
