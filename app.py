@@ -370,7 +370,22 @@ def creator_dashboard_rotate_token(doc):
     result,err=_dash_creator_api("replaceManagedBotToken",{"user_id":int(bid)},timeout=25)
     if err or not result:
         return redirect(url_for("creator_dashboard_home",bot_id=bid)+"?notice="+urllib.parse.quote("Token revoke failed: "+str(err or "Telegram returned no token.")))
-    return redirect(url_for("creator_dashboard_home",bot_id=bid)+"?notice=Token revoke requested. Creator Bot will receive the new token and restart this bot automatically.")
+    # A token revoke also revokes the old dashboard PIN. The new PIN is sent
+    # only through the Creator Bot, never displayed on the web page.
+    pin=_dash_make_pin()
+    _dash_bots.update_one({"bot_id":bid},{"$set":{"dashboard_pin_hash":_dash_pin_hash(pin),"dashboard_pin_updated_at":datetime.now(timezone.utc)}})
+    owner=str(doc.get("owner_id") or "")
+    if owner:
+        dash_url=html.escape(f"{DASHBOARD_BASE_URL}/dashboard/{bid}",quote=True)
+        _dash_creator_api("sendMessage",{"chat_id":int(owner),"text":
+            f"🔐 <b>Dashboard PIN Rotated</b>\n\n"
+            f"🤖 <b>@{html.escape(str(doc.get('username') or 'unknown'))}</b>\n"
+            f'🌐 <a href="{dash_url}">Open Dashboard</a>\n'
+            f"👤 Username: <code>{html.escape(str(doc.get('dashboard_username') or doc.get('username') or ''))}</code>\n"
+            f"🔑 New PIN: <code>{pin}</code>\n\n"
+            "The old Dashboard PIN was revoked because the bot token was revoked. "
+            "Creator Bot will receive the new token and restart the bot automatically."})
+    return redirect(url_for("creator_dashboard_home",bot_id=bid)+"?notice=Token revoke requested. Old Dashboard PIN revoked; the new PIN was sent by Creator Bot.")
 
 
 @app.route("/dashboard/<bot_id>/broadcast",methods=["POST"])
