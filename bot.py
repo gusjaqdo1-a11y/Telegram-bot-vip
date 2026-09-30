@@ -4877,6 +4877,26 @@ def download_media(chat_id, link, message_id, quality=None):
                     else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
                 except Exception: pass
                 return
+        if platform=="youtube" and not priority and "telegram upload limit exceeded" in err_text.lower():
+            actual_mb=None
+            mm=re.search(r"exceeded:\s*([0-9.]+) MB >\s*([0-9]+) MB",err_text,re.I)
+            if mm:
+                try: actual_mb=float(mm.group(1))
+                except Exception: actual_mb=None
+            max_mb=_download_max_mb(uid,platform="youtube",link=link)
+            msg=(f"▶️ <b>YouTube Premium Required</b>\n\n"
+                 f"📦 Required file size: <b>{actual_mb:.1f} MB</b>\n" if actual_mb is not None else "▶️ <b>YouTube Premium Required</b>\n\n")
+            msg += f"🆓 Your current limit: <b>{max_mb} MB</b>\n\n💎 Premium removes this Free YouTube file-size restriction."
+            plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
+            for months in ("1","3","9","12"):
+                if months in plans:
+                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
+            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+            try:
+                if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
+                else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
+            except Exception: pass
+            return
         msg="❌ Download failed. Please try again."
         try:
             if message_id: _current_bot().edit_message_text(msg,chat_id,message_id)
@@ -12381,7 +12401,19 @@ def _managed_premium_callback(call):
         rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
         payload=f"managed_premium_stars:{bid}:{months}:{stars}"
         try:
-            _main_bot.send_invoice(int(uid),f"Downloader Bot Premium — {months} month(s)","Premium for your managed Downloader Bot. Pay securely with Telegram Stars through @Downloadvedioytibot.",payload,"","XTR",[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)])
+            invoice_kwargs=dict(
+                title=f"Downloader Bot Premium — {months} month(s)",
+                description="Premium for your managed Downloader Bot. Pay securely with Telegram Stars through @Downloadvedioytibot.",
+                invoice_payload=payload, provider_token="", currency="XTR",
+                prices=[LabeledPrice(label=f"Premium {months} month(s)",amount=stars)]
+            )
+            photo_url=_premium_invoice_photo_url(months)
+            if photo_url: invoice_kwargs["photo_url"]=photo_url
+            try:
+                _main_bot.send_invoice(int(uid),**invoice_kwargs)
+            except Exception:
+                invoice_kwargs.pop("photo_url",None)
+                _main_bot.send_invoice(int(uid),**invoice_kwargs)
             bot.answer_callback_query(call.id,'⭐ Payment invoice sent by @Downloadvedioytibot')
         except Exception as e:
             bot.answer_callback_query(call.id,'Could not create Stars invoice.',show_alert=True); print('Managed Stars invoice error:',repr(e))
@@ -12680,32 +12712,17 @@ def _creator_on_managed_bot_created(msg):
         reply_markup=_creator_keyboard(uid))
 
 
-def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
-    """Notify the owner and remove a managed bot from the Creator system.
-
-    Telegram's managed-bot update is also used when a token changes. For this
-    Creator product, a token revoke is treated as the owner removing the bot
-    from this service, so the old entry is removed from My Bots as well.
-    """
+def _creator_notify_managed_bot_removed(doc, reason="deleted_or_unavailable"):
     if not doc: return
-    bid=str(doc.get("bot_id") or "")
     owner=str(doc.get("owner_id") or "")
     username=str(doc.get("username") or "unknown").lstrip("@")
     name=str(doc.get("name") or "Downloader Bot")
-    _managed_bot_remove_from_system(bid)
-    if owner:
-        if reason=="token_revoked":
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
-                  "The bot token was revoked/changed in Telegram.\n"
-                  "This bot has been removed from your <b>My Bots</b> list and stopped on this system.")
-        else:
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
-                  "Your bot was deleted or is no longer available on Telegram.\n"
-                  "It has been removed from your <b>My Bots</b> list and stopped on this system.")
-        _creator_send(int(owner),text,reply_markup=_creator_keyboard(owner))
-
+    _managed_bot_remove_from_system(str(doc.get("bot_id") or ""))
+    text=(f"🗑️ <b>Bot Deleted</b>\n\n"
+          f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
+          "Telegram reports that this managed bot was deleted or is no longer available.\n"
+          "It has been removed from <b>My Bots</b> and stopped on this system.")
+    _creator_notify_bot_admins(text,owner)
 
 def _creator_on_managed_update(update):
     obj=(update.get("managed_bot") or {})
@@ -12715,28 +12732,34 @@ def _creator_on_managed_update(update):
     bid=str(bot_id)
     d=managed_bots_col.find_one({"bot_id":bid}) or {}
 
-    # An update for an already-registered bot means Telegram changed the managed
-    # bot (most importantly its token or owner). A token change is deliberately
-    # treated as a revoke/remove in this Creator system instead of silently
-    # replacing our stored credential and keeping the bot in My Bots.
+    # Existing managed bot: Telegram may have rotated/revoked its token.
     if d:
         old_owner=str(d.get("owner_id") or "")
         token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
         if not err and token:
             old_token=_decrypt_managed_token(d)
-            if old_token and str(token)!=str(old_token):
-                _creator_notify_managed_bot_removed(d,"token_revoked")
-                return
             if owner_id and old_owner and str(owner_id)!=old_owner:
                 _creator_notify_managed_bot_removed(d,"owner_changed")
                 return
-            d.update({"username":info.get("username") or d.get("username"),"name":info.get("first_name") or d.get("name") or "Downloader Bot","updated_at":datetime.now(timezone.utc)})
-            managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
+            changed=bool(old_token and str(token)!=str(old_token))
+            d.update({
+                "owner_id":str(owner_id or d.get("owner_id") or ""),
+                "username":info.get("username") or d.get("username"),
+                "name":info.get("first_name") or d.get("name") or "Downloader Bot",
+                "updated_at":datetime.now(timezone.utc),
+                "health_alert_sent":False,
+            })
+            if changed:
+                d["token_enc"]=_encrypt_managed_token(token)
+                managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
+                fresh=managed_bots_col.find_one({"bot_id":bid}) or d
+                _managed_bot_restart_instance(fresh)
+                _creator_notify_managed_bot_token_updated(fresh,token,deleted=False)
+            else:
+                managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
             return
-        # If Telegram can no longer export the managed token, the bot has been
-        # deleted/unavailable. Remove it instead of leaving a dead My Bots entry.
         if err:
-            _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+            _creator_notify_managed_bot_removed(d,"deleted_or_unavailable")
             return
 
     # New managed bot update: register it normally.
@@ -12766,17 +12789,27 @@ def _creator_check_managed_bots():
             result,err=_creator_api_with_token(token,"getMe",{},timeout=10)
             if not err and result:
                 continue
-            # A revoked token can briefly fail while Telegram sends the
-            # managed_bot update. Ask the manager for the current token before
-            # deciding the bot is deleted. If it returns a different token, this
-            # is a revoke/change and is removed by the product policy above.
+            # Ask Managed Bot Mode for the current credential before treating a failure as deletion.
             fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
             if not ferr and fresh:
                 if str(fresh)!=str(token):
-                    _creator_notify_managed_bot_removed(d,"token_revoked")
-                # Same token but temporary getMe failure: leave it alone.
+                    d["token_enc"]=_encrypt_managed_token(fresh)
+                    d["health_alert_sent"]=False
+                    d["updated_at"]=datetime.now(timezone.utc)
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":d["token_enc"],"health_alert_sent":False,"updated_at":d["updated_at"]}})
+                    fresh_doc=managed_bots_col.find_one({"bot_id":bid}) or d
+                    _managed_bot_restart_instance(fresh_doc)
+                    _creator_notify_managed_bot_token_updated(fresh_doc,fresh,deleted=False)
                 continue
-            _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+            if not d.get("health_alert_sent",False):
+                d["health_alert_sent"]=True
+                managed_bots_col.update_one({"bot_id":bid},{"$set":{"health_alert_sent":True,"last_health_error_at":datetime.now(timezone.utc)}})
+                _creator_notify_bot_admins(
+                    f"⚠️ <b>Managed Bot Not Responding</b>\n\n"
+                    f"🤖 @{html.escape(str(d.get('username') or 'unknown').lstrip('@'))}\n\n"
+                    "The bot is currently unavailable or its managed token could not be fetched. Telegram may have deleted the bot. The system will keep checking.",
+                    str(d.get("owner_id") or "")
+                )
         except Exception as e:
             print("Managed bot health check error:",bid,repr(e))
 
@@ -12847,11 +12880,9 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
         stars=max(1,int(round(float(price)*max(1,int(get_setting("stars_per_usd",100) or 100))))); payload=f"managed_creator_premium_stars:{bid}:{months}:{stars}"
         try:
-            rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]},timeout=20); body=rr.json()
-            if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
-            _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":str(body.get('result') or '')}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
-            _creator_answer(call.get("id"),"Payment link ready")
-        except Exception as e: print("Creator createInvoiceLink error:",repr(e)); _creator_answer(call.get("id"),"Could not create payment link.",True)
+            body={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
+            link=_main_create_invoice_link(body,months)
+            _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":link}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
         return
     if data.startswith("cprem:"):
         parts=data.split(":"); bid=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid}); price=get_premium_prices().get(months)
@@ -12993,7 +13024,7 @@ def _managed_bot_start_instance(doc):
                             for months in ("1","3","9","12"):
                                 if months in plans:
                                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
-                            kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
+                            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data=f"mypremium:{bid}"))
                             msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{youtube_free_limit_minutes()} minutes</b>\n\n💎 This video is longer than the free limit. Choose a Premium plan below to continue.\n\n<b>Premium stays active for the selected period and YouTube is unlimited while Premium is active.</b>"
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
@@ -13022,10 +13053,7 @@ def _managed_bot_start_instance(doc):
                     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
                     payload=f"managed_premium_stars:{bid}:{months}:{stars}:{str(call.from_user.id)}"
                     body={"title":f"Downloader Premium — {months} month(s)","description":f"Unlimited YouTube for @{username or 'DownloaderBot'} for {months} month(s).","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
-                    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
-                    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
-                    link=str(data.get("result") or "")
-                    if not link: raise RuntimeError("Telegram returned an empty invoice link")
+                    link=_main_create_invoice_link(body,months)
                     mb.answer_callback_query(call.id,"⭐ Invoice link ready")
                     mb.send_message(call.message.chat.id,f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nAfter payment, Premium is activated for this Downloader Bot. You will not need to open Premium again during the active period. YouTube downloads are unlimited while Premium is active.\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)]]))
                 except Exception as e:
@@ -13084,6 +13112,25 @@ def _managed_bot_start_instance(doc):
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
+            def _managed_premium_menu_cb(call):
+                _ctx()
+                parts=str(call.data).split(":"); target_bid=parts[1] if len(parts)>1 else ""
+                if target_bid!=bid:
+                    mb.answer_callback_query(call.id,"Invalid Premium request.",show_alert=True); return
+                plans=get_premium_prices(); rows=[]
+                for months in ("1","3","9","12"):
+                    if months in plans:
+                        rows.append([InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}")])
+                mb.answer_callback_query(call.id)
+                try:
+                    mb.edit_message_text(call.message.chat.id,call.message.message_id,
+                        "💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is handled and verified by <b>@Downloadvedioytibot</b>.",
+                        parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+                except Exception:
+                    mb.send_message(call.message.chat.id,
+                        "💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is handled by <b>@Downloadvedioytibot</b>.",
+                        parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+            mb.callback_query_handler(func=lambda c:c.data.startswith("mypremium:"))(_managed_premium_menu_cb)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
@@ -13254,8 +13301,13 @@ def _managed_download_song(mb,chat_id,song,uid,bid,status_id=None):
 
 
 def _ad_premium_managed_cb(mb, call):
-    try: _show_ad_premium_plans(mb,call,str(call.data).split(":",1)[1])
-    except Exception as e: print("Managed ad premium callback failed:",repr(e))
+    token=str(call.data).split(":",1)[1] if ":" in str(call.data) else ""
+    try:
+        _show_ad_premium_plans(mb,call,token)
+    except Exception as e:
+        print("Managed ad premium callback failed:",repr(e))
+        try: mb.answer_callback_query(call.id,"Could not open Premium.",show_alert=True)
+        except Exception: pass
 
 def _ad_premium_plan_managed_cb(mb,call):
     parts=str(call.data).split(":"); token=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; row=ad_gates_col.find_one({"token":token})
