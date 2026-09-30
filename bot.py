@@ -1441,7 +1441,7 @@ def _ad_timeout_seconds():
     except Exception: return 5
 
 def _create_ad_premium_invoice(token,uid,bot_id,months):
-    plans=get_premium_prices(); months=str(months)
+    plans=_managed_plan_prices(bot_id) if bot_id and str(bot_id)!="main" else get_premium_prices(); months=str(months)
     if months not in plans: raise ValueError("Invalid Premium plan")
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[months])*rate)))
     payload=f"ad_gate_premium:{token}:{_ad_bot_key(bot_id)}:{str(uid)}:{months}:{stars}"
@@ -13048,11 +13048,14 @@ def _managed_bot_start_instance(doc):
             def _text(m):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
+                current_doc=_managed_bot_doc(bid) or {}; ds=current_doc.get("dashboard_settings") or {}; detected=detect_platform(link)
+                if detected and (ds.get("platforms") or {}).get(detected) is False:
+                    mb.send_message(m.chat.id,f"🚫 <b>{html.escape(str(detected).title())}</b> downloads are disabled by this bot owner.",parse_mode="HTML"); return
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
-                            plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
+                            plans=_managed_plan_prices(bid); kb=InlineKeyboardMarkup(row_width=2)
                             for months in ("1","3","9","12"):
                                 if months in plans:
                                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
