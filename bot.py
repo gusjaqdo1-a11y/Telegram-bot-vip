@@ -12925,6 +12925,9 @@ def _creator_callback(call):
             body={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
             link=_main_create_invoice_link(body,months)
             _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":link}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
+        except Exception as e:
+            print("Creator Stars invoice failed:",repr(e))
+            _creator_answer(call.get("id"),"Could not create the payment invoice. Please try again.",True)
         return
     if data.startswith("cprem:"):
         parts=data.split(":"); bid=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; d=managed_bots_col.find_one({"bot_id":bid}); price=get_premium_prices().get(months)
