@@ -11347,10 +11347,6 @@ def resolve_user_input(text):
     text=(text or '').strip()
     return text if text in users else find_user_by_botid(text)
 
-def resolve_user_input(text):
-    text=(text or '').strip()
-    return text if text in users else find_user_by_botid(text)
-
 def _parse_premium_duration(text):
     """Parse 1sec, 30s, 5min, 2h, 7d, 3mo, 1y into seconds."""
     raw=(text or '').strip().lower().replace('-', ' ')
@@ -12138,13 +12134,13 @@ def _creator_send(chat_id, text, reply_markup=None, parse_mode="HTML", **extra):
     payload={"chat_id":chat_id,"text":str(text),"parse_mode":parse_mode}
     if reply_markup is not None: payload["reply_markup"]=reply_markup
     payload.update(extra)
-    result=_creator_api("sendMessage",payload)
+    result,err=_creator_api("sendMessage",payload)
     try:
         if isinstance(result,dict) and result.get("message_id"):
             creator_sessions_col.update_one({"_id":str(chat_id)},{"$set":{"last_message_id":int(result["message_id"])}},upsert=True)
     except Exception:
         pass
-    return result
+    return result,err
 
 
 def _creator_answer(call_id, text="", alert=False):
