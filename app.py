@@ -4,6 +4,7 @@ import os
 import uuid
 import html
 import urllib.parse
+import requests
 
 app = Flask(__name__)
 os.makedirs("downloads", exist_ok=True)
@@ -31,7 +32,7 @@ if __name__ == "__main__":
     app.run()
 
 
-// ================= CREATOR DASHBOARD =================
+# ================= CREATOR DASHBOARD =================
 // This dashboard is intentionally small and isolated from the existing
 // downloader endpoint above. It does not change /download behavior.
 import base64
@@ -352,10 +353,11 @@ def creator_dashboard_rotate_pin(doc):
     _dash_bots.update_one({"bot_id":bid},{"$set":{"dashboard_pin_hash":_dash_pin_hash(pin),"dashboard_pin_updated_at":datetime.now(timezone.utc)}})
     owner=str(doc.get("owner_id") or "")
     if owner:
+        dash_url=html.escape(f"{DASHBOARD_BASE_URL}/dashboard/{bid}",quote=True)
         _dash_creator_api("sendMessage",{"chat_id":int(owner),"text":
             f"🔐 <b>Dashboard PIN Updated</b>\n\n"
             f"🤖 <b>@{html.escape(str(doc.get('username') or 'unknown'))}</b>\n"
-            f"🌐 <a href="{html.escape(f'{DASHBOARD_BASE_URL}/dashboard/{bid}',quote=True)}">Open Dashboard</a>\n"
+            f'🌐 <a href="{dash_url}">Open Dashboard</a>\n'
             f"👤 Username: <code>{html.escape(str(doc.get('dashboard_username') or doc.get('username') or ''))}</code>\n"
             f"🔑 New PIN: <code>{pin}</code>\n\n"
             "The old PIN is now revoked."})
