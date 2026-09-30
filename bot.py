@@ -12396,7 +12396,8 @@ def _creator_send(chat_id, text, reply_markup=None, parse_mode="HTML", **extra):
 
 
 def _creator_answer(call_id, text="", alert=False):
-    return _creator_api("answerCallbackQuery",{"callback_query_id":call_id,"text":text[:200],"show_alert":bool(alert)})
+    try: return _creator_api("answerCallbackQuery",{"callback_query_id":call_id,"text":text[:200],"show_alert":bool(alert)},timeout=8)
+    except Exception as e: print("Creator callback answer failed:",repr(e)); return None
 
 
 def _creator_edit(chat_id, message_id, text, reply_markup=None):
@@ -12536,10 +12537,7 @@ def _creator_start_create(uid, chat_id, mid=None):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
-    sess=_creator_session(uid); old_mid=mid or sess.get("last_message_id")
-    data={"state":"type","updated_at":datetime.now(timezone.utc)}
-    if old_mid: data["last_message_id"]=int(old_mid)
-    _creator_set_session(uid,data)
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
     text=("🤖 <b>CREATE YOUR OWN DOWNLOADER BOT</b>\n\n"
           "You have two ways to add your bot:\n\n"
           "🚀 <b>Create with Telegram</b>\n"
@@ -12554,14 +12552,10 @@ def _creator_start_create(uid, chat_id, mid=None):
         [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
         [{"text":"❌ Cancel","callback_data":"ccancel_create"}],
     ]}
-    if old_mid:
-        try: _creator_edit(chat_id,int(old_mid),text,reply_markup=markup); return
-        except Exception: pass
     _creator_send(chat_id,text,reply_markup=markup)
 
 def _creator_request_bot_type(uid,chat_id,mid=None):
-    sess=_creator_session(uid); target=mid or sess.get("last_message_id")
-    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc),"last_message_id":target} if target else {"state":"type","updated_at":datetime.now(timezone.utc)})
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
     text=("🤖 <b>CHOOSE DOWNLOADER TYPE</b>\n\n"
           "Select what this bot should do:\n\n"
           "🎬 <b>Video Downloader</b> — download supported videos/photos from links.\n"
@@ -12572,9 +12566,6 @@ def _creator_request_bot_type(uid,chat_id,mid=None):
         [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
         [{"text":"⬅️ Back","callback_data":"ccreate_back"}],
     ]}
-    if target:
-        try: _creator_edit(chat_id,int(target),text,reply_markup=markup); return
-        except Exception: pass
     _creator_send(chat_id,text,reply_markup=markup)
 
 def _creator_existing_token_prompt(uid,chat_id,btype=None,mid=None):
@@ -12632,8 +12623,8 @@ def _creator_register_existing_token(uid,chat_id,token):
 def _creator_finish_request(uid, chat_id, mid=None):
     d=_creator_session(uid); btype=str(d.get("bot_type") or "video").lower()
     if btype not in {"video","music"}: btype="video"
-    request_id=random.randint(1,2_000_000_000); target=mid or d.get("last_message_id")
-    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"bot_type":btype,"updated_at":datetime.now(timezone.utc),"last_message_id":target})
+    request_id=random.randint(1,2_000_000_000)
+    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"bot_type":btype,"updated_at":datetime.now(timezone.utc)})
     text=(f"<b>STEP 2 — {('🎬 VIDEO DOWNLOADER' if btype=='video' else '🎵 MUSIC DOWNLOADER')}</b>\n\n"
           "Tap the Telegram button below. Telegram opens the official managed-bot creation screen.\n\n"
           "📝 There you enter:\n• Bot <b>Name</b>\n• Bot <b>Username</b> (must end in <code>bot</code>)\n\n"
@@ -13877,11 +13868,10 @@ def _creator_poll_loop():
     last_bot_check=0.0
     while True:
         try:
-            if time.time()-last_bot_check>=60:
+            if time.time()-last_bot_check>=180:
                 last_bot_check=time.time()
-                try: _creator_check_managed_bots()
-                except Exception as e: print("Creator managed-bot checker error:",repr(e))
-            updates,err=_creator_api("getUpdates",{"offset":offset,"timeout":25,"allowed_updates":["message","callback_query","managed_bot"]},timeout=35)
+                threading.Thread(target=_creator_check_managed_bots,daemon=True).start()
+            updates,err=_creator_api("getUpdates",{"offset":offset,"timeout":15,"allowed_updates":["message","callback_query","managed_bot"]},timeout=20)
             if err:
                 print("Creator getUpdates error:",err); time.sleep(3); continue
             for upd in updates or []:
