@@ -1,4 +1,4 @@
-import os,json,time,secrets,hashlib,html,base64,io,urllib.parse
+import os,json,time,secrets,hashlib,html,base64,io,urllib.parse,subprocess,shutil
 from datetime import datetime,timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -143,13 +143,33 @@ async function revokeToken(){if(!confirm('Revoke the current managed-bot token a
 show();
 </script></body></html>"""
 
+
+    def demo_video(h):
+        path=os.path.join("downloads","quickdl_dashboard_demo.mp4")
+        try:
+            os.makedirs(os.path.dirname(path),exist_ok=True)
+            if not os.path.isfile(path) or os.path.getsize(path)<1000:
+                ff=shutil.which("ffmpeg")
+                if not ff:
+                    try:
+                        import imageio_ffmpeg
+                        ff=imageio_ffmpeg.get_ffmpeg_exe()
+                    except Exception: ff=""
+                if not ff:
+                    h._send(404,""); return
+                subprocess.run([ff,"-y","-f","lavfi","-i","testsrc2=size=480x854:rate=24","-t","5","-vf","drawbox=x=20:y=20:w=440:h=814:color=black@0.58:t=fill,drawtext=text='QuickDL Dashboard':fontcolor=white:fontsize=34:x=42:y=65,drawtext=text='Premium  Fast  Custom':fontcolor=white:fontsize=24:x=42:y=120,drawtext=text='Bot control in one place':fontcolor=white:fontsize=22:x=42:y=165,drawtext=text='Ads OFF   •   Speed TURBO':fontcolor=white:fontsize=20:x=42:y=310,drawtext=text='YouTube 180 min':fontcolor=white:fontsize=22:x=42:y=370,drawtext=text='Broadcast  •  Profile  •  Security':fontcolor=white:fontsize=18:x=42:y=450","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p","-movflags","+faststart","-b:v","120k",path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+            if os.path.isfile(path):
+                with open(path,"rb") as f: body=f.read()
+                h._send(200,body,"video/mp4"); return
+        except Exception as e:
+            print("dashboard demo video:",repr(e))
+        h._send(404,"")
+
     old_get=core._AdGateHandler.do_GET
     def do_get(h):
         path=urllib.parse.urlparse(h.path).path
         if path=="/dashboard-demo.mp4":
-            # The actual demo file can be supplied later by the deployment image.
-            # Keep a clean fallback response instead of breaking the dashboard.
-            return old_get(h)
+            return demo_video(h)
         if path.startswith("/dashboard/") and path.endswith("/avatar"):
             bid=path.strip("/").split("/")[1] if len(path.strip("/").split("/"))>=2 else ""; return avatar(h,bid)
         if path.startswith("/dashboard/"):
