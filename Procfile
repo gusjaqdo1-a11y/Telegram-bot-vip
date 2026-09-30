@@ -1,2 +1,2 @@
-worker: python bot.py & support_bot.py
+worker: python launcher.py & python support_bot.py
 web: gunicorn app:app
