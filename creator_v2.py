@@ -87,6 +87,7 @@ def apply(core):
             [{"text":"🎬 Video Downloader","callback_data":"v2type:video"},{"text":"🎵 Music Downloader","callback_data":"v2type:music"}],
             [{"text":"💎 All-in-One Downloader","callback_data":"v2type:all"}],
             [{"text":"🚀 Create with Telegram","callback_data":"v2managed:"+str(rid)}],
+            [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
             [{"text":"❌ Cancel","callback_data":"v2cancel"}]]
         markup={"inline_keyboard":rows}
         image=str(c.get("image") or "").strip()
