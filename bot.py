@@ -1318,6 +1318,7 @@ ad_events_col = db1["ad_events"]
 remove_ads_col = db1["remove_ads_access"]
 remove_ads_payments_col = db1["remove_ads_payments"]
 song_media_cache_col = db2["song_media_cache"]
+broadcast_history_col = db1["broadcast_history"]
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -2453,6 +2454,7 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("🗑 Delete Last Broadcast", "🗑 Delete 2 Last Broadcast")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
@@ -9841,55 +9843,89 @@ def raadi_stats(m):
     except Exception as e:
         print(f"RAADI error: {e}")
 
+def _broadcast_history_start(kind,source_chat_id):
+    return {"_id":uuid.uuid4().hex,"kind":kind,"source_chat_id":int(source_chat_id),"created_at":datetime.now(timezone.utc),"messages":[]}
+
+def _broadcast_history_add(doc_id,user_id,message_id):
+    try: broadcast_history_col.update_one({"_id":doc_id},{"$push":{"messages":{"user_id":str(user_id),"message_id":int(message_id)}}})
+    except Exception as e: print("Broadcast history save failed:",repr(e))
+
+def _broadcast_history_finish(doc_id,sent,failed):
+    try: broadcast_history_col.update_one({"_id":doc_id},{"$set":{"sent":int(sent),"failed":int(failed),"finished_at":datetime.now(timezone.utc)}})
+    except Exception: pass
+
+def _delete_broadcast_record(doc):
+    deleted=failed=0
+    for item in list((doc or {}).get("messages") or []):
+        try:
+            bot.delete_message(int(item["user_id"]),int(item["message_id"])); deleted+=1
+        except Exception: failed+=1
+    try: broadcast_history_col.delete_one({"_id":doc.get("_id")})
+    except Exception: pass
+    return deleted,failed
+
+def _delete_last_broadcasts(count):
+    docs=list(broadcast_history_col.find({}).sort("created_at",-1).limit(max(1,int(count))))
+    total_deleted=total_failed=0
+    for doc in docs:
+        d,f=_delete_broadcast_record(doc); total_deleted+=d; total_failed+=f
+    return len(docs),total_deleted,total_failed
+
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST")
 def broadcast_start(m):
-    if not is_admin(m.from_user.id):
-        return
+    if not is_admin(m.from_user.id): return
     try:
-        msg = bot.send_message(m.chat.id, "📝 Send the broadcast message to all users:")
-        bot.register_next_step_handler(msg, broadcast_send)
+        msg=bot.send_message(m.chat.id,"📝 Send the broadcast message to all users:")
+        bot.register_next_step_handler(msg,broadcast_send)
     except: pass
 
 def broadcast_send(m):
-    if not is_admin(m.from_user.id):
-        return
-    # copyMessage preserves Telegram custom-emoji entities instead of flattening
-    # them into ordinary keyboard emoji. It also preserves the original rich text.
-    sent=failed=0
+    if not is_admin(m.from_user.id): return
+    sent=failed=0; hist=_broadcast_history_start("text",m.chat.id); broadcast_history_col.insert_one(hist)
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid), m.chat.id, m.message_id)
+            out=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            mid=getattr(out,"message_id",None)
+            if mid is not None: _broadcast_history_add(hist["_id"],uid,mid)
             sent+=1
-        except Exception:
-            failed+=1
-    try:
-        bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
-    except Exception: pass
+        except Exception: failed+=1
+    _broadcast_history_finish(hist["_id"],sent,failed)
+    bot.send_message(m.chat.id,f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete Last Broadcast")
+def delete_last_broadcast(m):
+    if not is_admin(m.from_user.id): return
+    n,deleted,failed=_delete_last_broadcasts(1)
+    bot.send_message(m.chat.id,f"🗑 <b>Last Broadcast Deleted</b>\n\nBroadcasts: <b>{n}</b>\nDeleted: <b>{deleted}</b>\nFailed/already gone: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete 2 Last Broadcast")
+def delete_two_last_broadcasts(m):
+    if not is_admin(m.from_user.id): return
+    n,deleted,failed=_delete_last_broadcasts(2)
+    bot.send_message(m.chat.id,f"🗑 <b>Last 2 Broadcasts Deleted</b>\n\nBroadcasts: <b>{n}</b>\nDeleted: <b>{deleted}</b>\nFailed/already gone: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
-    if not is_admin(m.from_user.id):
-        return
-    msg = bot.send_message(m.chat.id, "Send the Video or Photo with caption (or without):")
-    bot.register_next_step_handler(msg, broadcast_media_process)
+    if not is_admin(m.from_user.id): return
+    msg=bot.send_message(m.chat.id,"Send the Video or Photo with caption (or without):")
+    bot.register_next_step_handler(msg,broadcast_media_process)
 
 def broadcast_media_process(m):
-    if not is_admin(m.from_user.id):
-        return
-    
+    if not is_admin(m.from_user.id): return
     if not (m.video or m.photo):
-        bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
-        return
-        
-    # copy_message preserves the original caption entities, including Telegram custom emojis.
-    sent=failed=0
+        bot.send_message(m.chat.id,"❌ Please send a valid Video or Photo."); return
+    sent=failed=0; hist=_broadcast_history_start("media",m.chat.id); broadcast_history_col.insert_one(hist)
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid),m.chat.id,m.message_id); sent+=1
-        except Exception:
-            failed+=1
-    bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+            out=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            mid=getattr(out,"message_id",None)
+            if mid is not None: _broadcast_history_add(hist["_id"],uid,mid)
+            sent+=1
+        except Exception: failed+=1
+    _broadcast_history_finish(hist["_id"],sent,failed)
+    bot.send_message(m.chat.id,f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
+@bot.message_handler(func=lambda m: m.text == "SEND PAY")
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
     if not is_admin(m.from_user.id):
@@ -12211,8 +12247,73 @@ def _creator_start_create(uid, chat_id):
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}]]})
+    _creator_send(chat_id,
+        "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
+        "Choose how you want to add your Downloader Bot:",
+        reply_markup={"inline_keyboard":[
+            [{"text":"🚀 Create with Telegram","callback_data":"ccreate_managed"}],
+            [{"text":"🔑 Use Existing Token","callback_data":"cuse_existing_token"}],
+            [{"text":"❌ Cancel","callback_data":"ccancel_create"}],
+        ]})
 
+def _creator_request_bot_type(uid,chat_id):
+    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
+    _creator_send(chat_id,"🤖 <b>CHOOSE BOT TYPE</b>\n\nSelect the downloader type:",
+        reply_markup={"inline_keyboard":[
+            [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+            [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+            [{"text":"⬅️ Back","callback_data":"ccreate_back"}],
+        ]})
+
+def _creator_existing_token_prompt(uid,chat_id):
+    sess=_creator_session(uid)
+    _creator_set_session(uid,{**sess,"state":"existing_token","updated_at":datetime.now(timezone.utc)})
+    _creator_send(chat_id,
+        "🔑 <b>USE EXISTING BOT TOKEN</b>\n\n"
+        "Send the complete BotFather token in one message.\n\n"
+        "Example: <code>123456789:AAExampleToken...</code>\n\n"
+        "Telegram will be used to validate the token and read the bot name/username. "
+        "The token is saved encrypted and the Downloader Bot starts automatically.",
+        reply_markup={"inline_keyboard":[[{"text":"❌ Cancel","callback_data":"ccancel_create"}]]})
+
+def _creator_register_existing_token(uid,chat_id,token):
+    token=str(token or "").strip()
+    if not re.fullmatch(r"\d{5,20}:[A-Za-z0-9_-]{20,}",token):
+        _creator_send(chat_id,"❌ <b>Invalid Bot Token format.</b>\n\nSend the complete token from @BotFather."); return
+    try:
+        rr=requests.get(f"https://api.telegram.org/bot{token}/getMe",timeout=15)
+        data=rr.json() if rr.content else {}
+        info=data.get("result") if data.get("ok") else None
+        if not info or not info.get("id"):
+            _creator_send(chat_id,"❌ <b>Telegram rejected this token.</b>\n\nCheck it and send again."); return
+        bid=str(info["id"]); username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot")
+        if not username:
+            _creator_send(chat_id,"❌ Telegram did not return a bot username for this token."); return
+        existing=managed_bots_col.find_one({"bot_id":bid})
+        if existing and str(existing.get("owner_id"))!=str(uid):
+            _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
+        sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower()
+        if btype not in {"video","music"}: btype="video"
+        now=datetime.now(timezone.utc)
+        doc={
+            "bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),
+            "username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,
+            "premium_until":(existing or {}).get("premium_until"),"wallet_linked":bool((existing or {}).get("wallet_linked",False)),
+            "created_at":(existing or {}).get("created_at",now),"updated_at":now,
+            "users":list((existing or {}).get("users") or []),"managed_by_telegram":False,"token_source":"existing_token",
+        }
+        managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
+        _creator_clear_session(uid)
+        d=managed_bots_col.find_one({"bot_id":bid}) or doc
+        _managed_bot_start_instance(d)
+        _creator_send(chat_id,
+            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n"
+            f"🔗 @{html.escape(username)}\n🆔 <code>{bid}</code>\n\n"
+            "Your existing bot is now running as a Downloader Bot.",
+            reply_markup=_creator_keyboard(uid))
+    except Exception as e:
+        print("Existing bot token validation failed:",repr(e))
+        _creator_send(chat_id,"❌ <b>Could not connect this bot.</b>\n\nCheck the token and try again.")
 
 def _creator_finish_request(uid, chat_id):
     d=_creator_session(uid)
@@ -12302,6 +12403,8 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state in {"name","username","ready"}:
         _creator_finish_request(uid,chat_id); return
+    if state=="existing_token":
+        _creator_register_existing_token(uid,chat_id,text); return
     if state=="waiting_managed_bot":
         _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
 
@@ -12869,6 +12972,14 @@ def _creator_api_with_token(token, method, payload=None, timeout=10):
 def _creator_callback(call):
     uid=str((call.get("from") or {}).get("id") or ""); chat_id=((call.get("message") or {}).get("chat") or {}).get("id"); mid=((call.get("message") or {}).get("message_id")); data=str(call.get("data") or "")
     _creator_answer(call.get("id"),"")
+    if data=="ccancel_create":
+        _creator_clear_session(uid); _creator_send(chat_id,"↩️ Creation cancelled.",reply_markup=_creator_keyboard(uid)); return
+    if data=="ccreate_managed":
+        _creator_request_bot_type(uid,chat_id); return
+    if data=="ccreate_back":
+        _creator_start_create(uid,chat_id); return
+    if data=="cuse_existing_token":
+        _creator_existing_token_prompt(uid,chat_id); return
     if data=="creatorwallet:request":
         if users.get(uid,{}).get("creator_wallet_linked"):
             _creator_edit(chat_id,mid,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot account and @Downloadvedioytibot share the same balance.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":"cmybots"}]]}); return
@@ -13176,6 +13287,7 @@ def _managed_bot_start_instance(doc):
                         "💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is handled by <b>@Downloadvedioytibot</b>.",
                         parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
             mb.callback_query_handler(func=lambda c:c.data.startswith("mypremium:"))(_managed_premium_menu_cb)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("mpaymethod:") or c.data.startswith("mprem:") or c.data.startswith("mprempay:") or c.data=="mpremcancel")(_managed_premium_callback)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
