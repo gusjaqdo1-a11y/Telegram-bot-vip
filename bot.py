@@ -13160,7 +13160,11 @@ def _managed_bot_start_instance(doc):
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
-                except Exception as e:\n                    print(f"Managed bot {bid} stopped:",repr(e))\n                    for aid in get_admin_ids():\n                        try: bot.send_message(int(aid),f"⚠️ <b>MANAGED BOT STOPPED</b>\\n\\n🤖 @{html.escape(str(doc.get("username") or "unknown"))}\\n🆔 <code>{html.escape(str(bid))}</code>\\n\\n<code>{html.escape(str(e))}</code>",parse_mode="HTML")\n                        except Exception: pass
+                except Exception as e:
+                    print(f"Managed bot {bid} stopped:",repr(e))
+                    for aid in get_admin_ids():
+                        try: bot.send_message(int(aid),"⚠️ Managed bot worker stopped. Check Railway logs.",parse_mode="HTML")
+                        except Exception: pass
             th=threading.Thread(target=_run,daemon=True,name=f"managed-bot-{bid}"); managed_bot_threads[bid]=th; th.start(); return mb
         except Exception as e:
             print("Managed bot start failed:",repr(e)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500]}}); return None
