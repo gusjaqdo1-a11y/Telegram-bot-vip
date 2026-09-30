@@ -1444,11 +1444,7 @@ def _create_ad_premium_invoice(token,uid,bot_id,months):
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[months])*rate)))
     payload=f"ad_gate_premium:{token}:{_ad_bot_key(bot_id)}:{str(uid)}:{months}:{stars}"
     body={"title":f"Premium {months} Month(s)","description":f"Premium/ad-free access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
-    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
-    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
-    link=str(data.get("result") or "")
-    if not link: raise RuntimeError("Telegram returned an empty invoice link")
-    return link,stars
+    return _main_create_invoice_link(body,months),stars
 
 def _show_ad_premium_plans(bot_obj,call,token):
     row=ad_gates_col.find_one({"token":str(token)})
@@ -2523,6 +2519,7 @@ def admin_menu():
     kb.add("♻️ Reset all Verify")
     # Premium administration
     kb.add("💎 PREMIUM PANEL", "💰 PREMIUM PRICES")
+    kb.add("🖼 PREMIUM INVOICE IMAGES")
     kb.add("🔓 OPEN PREMIUM", "🔒 CLOSE PREMIUM")
     kb.add("🎁 GIVE PREMIUM ALL", "🎁 TRIAL PREMIUM")
     kb.add("🎁 OPEN TRIAL DAYS")
@@ -10479,6 +10476,34 @@ def grant_premium_days(uid,days,reason="admin"):
 def get_premium_prices():
     return {k: float(get_setting(f"premium_price_{k}", v)) for k, v in PREMIUM_DEFAULT_PRICES.items()}
 
+def _premium_invoice_photo_url(months):
+    months=str(months)
+    file_id=str(get_setting(f"premium_invoice_photo_{months}","") or "").strip()
+    if not file_id: return ""
+    try:
+        f=bot.get_file(file_id)
+        path=str(getattr(f,"file_path","") or "")
+        if not path: return ""
+        return f"https://api.telegram.org/file/bot{TOKEN}/{path}"
+    except Exception as e:
+        print("Premium invoice photo lookup failed:",repr(e))
+        return ""
+
+def _main_create_invoice_link(body, months=None):
+    payload=dict(body or {})
+    photo_url=_premium_invoice_photo_url(months) if months else ""
+    if photo_url: payload["photo_url"]=photo_url
+    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=payload,timeout=20)
+    data=rr.json() if rr.content else {}
+    if not data.get("ok") and photo_url:
+        payload.pop("photo_url",None)
+        rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=payload,timeout=20)
+        data=rr.json() if rr.content else {}
+    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
+    link=str(data.get("result") or "")
+    if not link: raise RuntimeError("Telegram returned an empty invoice link")
+    return link
+
 def premium_features_text():
     platforms=", ".join(premium_platform_names())
     return (
@@ -10508,11 +10533,7 @@ def _create_main_premium_invoice(uid, months, context="premium"):
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(prices[months])*rate)))
     payload=f"premium_stars:{uid}:{months}:{stars}:{context}"
     body={"title":f"Downloader Premium {months} Month(s)","description":f"Premium access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
-    rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
-    if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
-    link=str(data.get("result") or "")
-    if not link: raise RuntimeError("Telegram returned an empty invoice link")
-    return link,stars
+    return _main_create_invoice_link(body,months),stars
 
 def _premium_invoice_buttons(context="premium"):
     prices=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
@@ -11196,19 +11217,48 @@ def admin_premium_panel(m):
 def premium_prices_admin(m):
     if not is_admin(m.from_user.id): return
     p=get_premium_prices()
-    msg=bot.send_message(m.chat.id, f"💰 Premium prices\n\n1 Month: ${p['1']:.2f}\n3 Months: ${p['3']:.2f}\n9 Months: ${p['9']:.2f}\n12 Months: ${p['12']:.2f}\n\nSend four prices separated by spaces, e.g. 5 12 30 40")
+    def st(k): return "🖼️ set" if get_setting(f"premium_invoice_photo_{k}","") else "—"
+    msg=bot.send_message(m.chat.id,
+        f"💰 <b>Premium prices</b>\n\n"
+        f"1 Month: ${p['1']:.2f} {st('1')}\n"
+        f"3 Months: ${p['3']:.2f} {st('3')}\n"
+        f"9 Months: ${p['9']:.2f} {st('9')}\n"
+        f"12 Months: ${p['12']:.2f} {st('12')}\n\n"
+        "Send four prices separated by spaces, e.g. <code>5 12 30 40</code>.\n"
+        "Use <b>🖼 PREMIUM INVOICE IMAGES</b> to attach a different invoice image to each plan.",
+        parse_mode="HTML")
     bot.register_next_step_handler(msg, set_premium_prices_admin)
 
-def set_premium_prices_admin(m):
+@bot.message_handler(func=lambda m: m.text == "🖼 PREMIUM INVOICE IMAGES")
+def premium_invoice_images_admin(m):
     if not is_admin(m.from_user.id): return
-    try:
-        vals=[float(x) for x in (m.text or '').split()]
-        if len(vals)!=4 or any(x<0 for x in vals): raise ValueError
-        for k,v in zip(["1","3","9","12"],vals): set_setting(f"premium_price_{k}",v)
-        bot.send_message(m.chat.id, "✅ Premium prices updated successfully.")
-    except Exception:
-        bot.send_message(m.chat.id, "❌ Format error. Use: 1 month 3 month 9 month 12 month prices, e.g. 5 12 30 40")
+    msg=bot.send_message(m.chat.id,
+        "🖼️ <b>PREMIUM INVOICE IMAGES</b>\n\n"
+        "Send one photo at a time. Put the plan in the photo caption: <code>1</code>, <code>3</code>, <code>9</code> or <code>12</code>.\n"
+        "Example: send the 1-month image with caption <code>1</code>.\n\n"
+        "To remove an image, send text like <code>remove 1</code> instead.",
+        parse_mode="HTML")
+    bot.register_next_step_handler(msg, set_premium_invoice_image_admin)
 
+def set_premium_invoice_image_admin(m):
+    if not is_admin(m.from_user.id): return
+    caption=str(getattr(m,"caption","") or "").strip().lower()
+    if getattr(m,"photo",None):
+        plan=caption.replace("month","").replace("months","").strip()
+        if plan not in {"1","3","9","12"}:
+            bot.send_message(m.chat.id,"❌ Caption must be exactly <code>1</code>, <code>3</code>, <code>9</code> or <code>12</code>.",parse_mode="HTML"); return
+        set_setting(f"premium_invoice_photo_{plan}",m.photo[-1].file_id)
+        bot.send_message(m.chat.id,f"✅ Invoice image saved for <b>{plan} month(s)</b>.",parse_mode="HTML")
+        return
+    raw=(m.text or "").strip().lower()
+    mm=re.fullmatch(r"remove\s+(1|3|9|12)",raw)
+    if mm:
+        set_setting(f"premium_invoice_photo_{mm.group(1)}","")
+        bot.send_message(m.chat.id,f"🗑️ Removed invoice image for <b>{mm.group(1)} month(s)</b>.",parse_mode="HTML")
+        return
+    bot.send_message(m.chat.id,"❌ Send a photo with caption 1/3/9/12, or <code>remove 1</code>.",parse_mode="HTML")
+
+def resolve_user_input(text):
 def resolve_user_input(text):
     text=(text or '').strip()
     return text if text in users else find_user_by_botid(text)
@@ -12077,17 +12127,12 @@ def _creator_admin_keyboard():
     ],"resize_keyboard":True,"is_persistent":True}
 
 
-def _creator_request_keyboard(request_id, name, username):
-    # This is intentionally raw JSON because older pyTelegramBotAPI releases do
-    # not know KeyboardButtonRequestManagedBot. Telegram clients render it natively.
-    return {"keyboard":[[
-        {"text":"✅ Create @"+username,"request_managed_bot":{
-            "request_id":int(request_id),
-            "suggested_name":name[:64],
-            "suggested_username":username[:32],
-        }}
-    ]],"resize_keyboard":True,"one_time_keyboard":True}
-
+def _creator_request_keyboard(request_id, name="", username=""):
+    managed={"request_id":int(request_id)}
+    if str(name or "").strip(): managed["suggested_name"]=str(name).strip()[:64]
+    if str(username or "").strip(): managed["suggested_username"]=str(username).strip().lstrip("@")[:32]
+    return {"keyboard":[[{"text":"🚀 Create Bot with Telegram","request_managed_bot":managed}]],
+            "resize_keyboard":True,"one_time_keyboard":True}
 
 def _creator_ensure_user(uid):
     uid=str(uid)
@@ -12154,17 +12199,17 @@ def _creator_start_create(uid, chat_id):
 
 
 def _creator_finish_request(uid, chat_id):
-    d=_creator_session(uid); name=str(d.get("name") or "").strip(); username=str(d.get("username") or "").strip().lstrip("@")
-    if not name or not username:
-        _creator_start_create(uid,chat_id); return
+    d=_creator_session(uid)
+    btype=str(d.get("bot_type") or "video").lower()
+    if btype not in {"video","music"}: btype="video"
     request_id=random.randint(1,2_000_000_000)
-    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"updated_at":datetime.now(timezone.utc)})
+    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"bot_type":btype,"updated_at":datetime.now(timezone.utc)})
     _creator_send(chat_id,
-        f"<b>Step 3 of 3</b>\n\nName: <b>{html.escape(name)}</b>\nUsername: <b>@{html.escape(username)}</b>\n\n"
-        "Tap the button below. Telegram will open its official bot-creation screen.\n"
-        "You do <b>not</b> need to open @BotFather or paste a token.",
-        reply_markup=_creator_request_keyboard(request_id,name,username))
-
+        f"<b>Step 2 of 2</b>\n\n"
+        f"{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'} selected.\n\n"
+        "Tap the Telegram button below. Telegram will open the official managed-bot creation screen where you enter the <b>bot name</b> and <b>bot username</b> directly.\n\n"
+        "No manual Name/Username messages, no @BotFather, and no token copying are required.",
+        reply_markup=_creator_request_keyboard(request_id))
 
 def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
@@ -12239,19 +12284,7 @@ def _creator_handle_text(uid, chat_id, text):
 
     if state=="type":
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
-    if state=="name":
-        if not 1<=len(text)<=64:
-            _creator_send(chat_id,"❌ Name must be 1–64 characters. Send it again."); return
-        _creator_set_session(uid,{"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,"<b>Step 2 of 3</b>\n\nSend your bot username. It must end with <code>bot</code>.\n\nExample: <code>my_downloader_bot</code>"); return
-    if state=="username":
-        username=text.lstrip("@").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",username,re.I):
-            _creator_send(chat_id,"❌ Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
-        # Store the requested values. Telegram itself performs the final username check.
-        _creator_set_session(uid,{**sess,"state":"ready","username":username,"updated_at":datetime.now(timezone.utc)})
-        _creator_finish_request(uid,chat_id); return
-    if state=="ready":
+    if state in {"name","username","ready"}:
         _creator_finish_request(uid,chat_id); return
     if state=="waiting_managed_bot":
         _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
@@ -12776,9 +12809,12 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+        _creator_finish_request(uid,chat_id)
+        _creator_answer(call.get("id"),"Open Telegram to enter the bot name and username.")
+        return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
