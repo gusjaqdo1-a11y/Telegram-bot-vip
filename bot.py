@@ -14244,8 +14244,6 @@ for _lang,_d in MAIN_LABELS.items():
 
 
 
-import quickdl_extensions as _quickdl_extensions
-_quickdl_extensions.install(globals())
 
 # ================= MAIN RUN LOOP =================
 
