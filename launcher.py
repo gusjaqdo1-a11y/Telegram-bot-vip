@@ -6,6 +6,7 @@ from creator_v3 import apply as apply_v3
 from creator_v4 import apply as apply_v4
 from creator_v5 import apply as apply_v5
 from creator_v6 import apply as apply_v6
+from creator_v7 import apply as apply_v7
 
 apply(core)
 apply_v2(core)
@@ -13,6 +14,7 @@ apply_v3(core)
 apply_v4(core)
 apply_v5(core)
 apply_v6(core)
+apply_v7(core)
 
 def main():
     try: core._start_ad_http_server()
