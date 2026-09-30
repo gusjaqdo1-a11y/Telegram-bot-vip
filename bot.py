@@ -13339,8 +13339,8 @@ def _ad_premium_plan_managed_cb(mb,call):
         ad_kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]])
         pm=get_premium_media(months)
         if pm and pm.get("file_id"):
-            if pm.get("type")=="video": mb.send_video(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
-            else: mb.send_photo(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
+            if pm.get("type")=="video": bot.send_video(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
+            else: bot.send_photo(call.message.chat.id,pm["file_id"],caption=ad_text,parse_mode="HTML",reply_markup=ad_kb)
             try: mb.delete_message(call.message.chat.id,call.message.message_id)
             except Exception: pass
         else:
