@@ -13019,7 +13019,10 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid or price is None: _creator_answer(call.get("id"),"Invalid plan.",True); return
         stars=max(1,int(round(float(price)*max(1,int(get_setting("stars_per_usd",100) or 100))))); payload=f"managed_creator_premium_stars:{bid}:{months}:{stars}"
         try:
-            rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]},timeout=20); body=rr.json()
+            inv={"title":f"Downloader Premium {months} month(s)","description":f"Premium for @{d.get('username','unknown')}","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
+            media=_premium_media_doc(months); media_url=_premium_media_url(months)
+            if str(media.get("kind"))=="photo" and media_url: inv.update({"photo_url":media_url,"photo_width":int(media.get("width") or 800),"photo_height":int(media.get("height") or 450)})
+            rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=inv,timeout=20); body=rr.json()
             if not body.get("ok"): raise RuntimeError(body.get("description") or "createInvoiceLink failed")
             _creator_edit(chat_id,mid,f"⭐ <b>Telegram Stars Payment</b>\n\nBot: <b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nPlan: <b>{months} month(s)</b>\nPrice: <b>{stars} Stars</b>\n\nPayment is handled by <b>@Downloadvedioytibot</b>.",reply_markup={"inline_keyboard":[[{"text":"⭐ PAY NOW","url":str(body.get('result') or '')}],[{"text":"⬅️ Back","callback_data":f"cpaymethod:{bid}:stars"}]]})
             _creator_answer(call.get("id"),"Payment link ready")
@@ -13198,6 +13201,8 @@ def _managed_bot_start_instance(doc):
                     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(price)*rate)))
                     payload=f"managed_premium_stars:{bid}:{months}:{stars}:{str(call.from_user.id)}"
                     body={"title":f"Downloader Premium — {months} month(s)","description":f"Unlimited YouTube for @{username or 'DownloaderBot'} for {months} month(s).","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} month(s)","amount":stars}]}
+                    media=_premium_media_doc(months); media_url=_premium_media_url(months)
+                    if str(media.get("kind"))=="photo" and media_url: body.update({"photo_url":media_url,"photo_width":int(media.get("width") or 800),"photo_height":int(media.get("height") or 450)})
                     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
                     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
                     link=str(data.get("result") or "")
