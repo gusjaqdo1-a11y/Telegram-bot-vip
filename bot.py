@@ -1454,6 +1454,10 @@ def _create_ad_premium_invoice(token,uid,bot_id,months):
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[months])*rate)))
     payload=f"ad_gate_premium:{token}:{_ad_bot_key(bot_id)}:{str(uid)}:{months}:{stars}"
     body={"title":f"Premium {months} Month(s)","description":f"Premium/ad-free access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
+    media=_premium_media_doc(months); media_url=_premium_media_url(months)
+    if str(media.get("kind"))=="photo" and media_url:
+        body.update({"photo_url":media_url,"photo_width":int(media.get("width") or 800),"photo_height":int(media.get("height") or 450)})
+        if int(media.get("size") or 0)>0: body["photo_size"]=int(media.get("size"))
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
     link=str(data.get("result") or "")
@@ -1698,7 +1702,9 @@ def _ad_premium_plan_callback(call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); bot.answer_callback_query(call.id,"Invoice ready")
-        bot.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        try: bot.delete_message(call.message.chat.id,call.message.message_id)
+        except Exception: pass
+        _send_premium_media_card(bot,call.message.chat.id,months,float(get_premium_prices()[months]),stars,link,back_callback=f"adpremium:{token}")
     except Exception as e: print("Ad Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adplan:"))
@@ -13432,7 +13438,9 @@ def _ad_premium_plan_managed_cb(mb,call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); mb.answer_callback_query(call.id,"Invoice ready")
-        mb.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        try: mb.delete_message(call.message.chat.id,call.message.message_id)
+        except Exception: pass
+        _send_premium_media_card(mb,call.message.chat.id,months,float(get_premium_prices()[months]),stars,link,back_callback=f"adpremium:{token}")
     except Exception as e: print("Managed ad Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 def _ad_premium_back_managed_cb(mb,call):
