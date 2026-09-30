@@ -13205,10 +13205,7 @@ def _managed_bot_start_instance(doc):
                         duration,_=_youtube_duration_fast(link)
                         if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
-                            for months in ("1","3","9","12"):
-                                if months in plans:
-                                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
-                            kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
+                            kb=InlineKeyboardMarkup([[InlineKeyboardButton("💎 OPEN PREMIUM",callback_data=f"mytpremmenu:{bid}")]])
                             msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{youtube_free_limit_minutes()} minutes</b>\n\n💎 This video is longer than the free limit. Choose a Premium plan below to continue.\n\n<b>Premium stays active for the selected period and YouTube is unlimited while Premium is active.</b>"
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
@@ -13227,6 +13224,14 @@ def _managed_bot_start_instance(doc):
                 data["in_progress"]=True; mb.answer_callback_query(call.id,"🎵 Conversion started")
                 status=mb.send_message(call.message.chat.id,"🎵 Converting video to MP3...")
                 ctx=contextvars.copy_context(); download_executor_for(call.from_user.id).submit(ctx.run,convert_link_to_mp3,call.message.chat.id,data.get("link") or "",status.message_id,data.get("local_source"),data.get("cache_dir"),data.get("source_title") or "",data.get("source_artist") or "",token)
+            def _managed_youtube_premium_menu_cb(call):
+                _ctx(); plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
+                for mm in ("1","3","9","12"):
+                    if mm in plans: kb.add(InlineKeyboardButton(f"💎 {mm} Month — ${float(plans[mm]):.2f}",callback_data=f"mytprem:{bid}:{mm}"))
+                kb.add(InlineKeyboardButton("⬅️ Back",callback_data="adback"))
+                mb.answer_callback_query(call.id)
+                mb.edit_message_text(call.message.chat.id,call.message.message_id,"💎 <b>OPEN PREMIUM</b>\n\nChoose how long Premium should remain active:",parse_mode="HTML",reply_markup=kb)
+
             def _managed_youtube_premium_cb(call):
                 _ctx()
                 parts=str(call.data).split(":"); months=parts[2] if len(parts)>2 else ""
@@ -13301,7 +13306,7 @@ def _managed_bot_start_instance(doc):
             mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype in {"music","all"}: mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             if btype in {"video","all"}: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
-            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
+            mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytpremmenu:"))(_managed_youtube_premium_menu_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
