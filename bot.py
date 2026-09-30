@@ -14887,7 +14887,7 @@ def _integrated_creator_v5(core):
             def send(code,body,ctype="text/html; charset=utf-8"):
                 if code==200 and isinstance(body,str) and "QuickDL Dashboard" in body:
                     avatar="/dashboard/"+bid+"/avatar"
-                    badge='<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px"><img src="'+avatar+'" style="width:56px;height:56px;border-radius:18px;object-fit:cover;border:1px solid #ffffff22" onerror="this.style.display=\\'none\\'"><span style="opacity:.7">Telegram profile</span></div>'
+                    badge="""<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px"><img src="""+avatar+"""" style="width:56px;height:56px;border-radius:18px;object-fit:cover;border:1px solid #ffffff22" onerror="this.style.display='none'"><span style="opacity:.7">Telegram profile</span></div>"""
                     body=body.replace('<div id="login"',badge+'<div id="login"',1)
                 return original(code,body,ctype)
             h._send=send
