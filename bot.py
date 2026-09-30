@@ -12778,7 +12778,20 @@ def _creator_on_managed_update(update):
         if not err and token:
             old_token=_decrypt_managed_token(d)
             if old_token and str(token)!=str(old_token):
-                _creator_notify_managed_bot_removed(d,"token_revoked")
+                try:
+                    old_obj=managed_bot_objects.pop(bid,None)
+                    if old_obj: old_obj.stop_polling()
+                except Exception: pass
+                d["token_enc"]=_encrypt_managed_token(token)
+                d["active"]=True; d["suspended"]=False
+                d["username"]=info.get("username") or d.get("username")
+                d["name"]=info.get("first_name") or d.get("name") or "Downloader Bot"
+                d["updated_at"]=datetime.now(timezone.utc)
+                managed_bots_col.update_one({"bot_id":bid},{"$set":d})
+                fresh=managed_bots_col.find_one({"bot_id":bid}) or d
+                _managed_bot_start_instance(fresh)
+                _creator_send(int(old_owner or owner_id or 0),"🔄 <b>Bot Token Updated</b>\n\n🤖 @"+html.escape(str(fresh.get("username") or "unknown"))+"\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in <b>My Bots</b> and continues using the same settings.")
+                _creator_notify_admins("🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @"+html.escape(str(fresh.get("username") or "unknown"))+"\nOwner: <code>"+html.escape(str(old_owner or owner_id or ""))+"</code>")
                 return
             if owner_id and old_owner and str(owner_id)!=old_owner:
                 _creator_notify_managed_bot_removed(d,"owner_changed")
