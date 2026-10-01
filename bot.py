@@ -12350,7 +12350,7 @@ def _creator_type_selection_markup():
         [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
         [{"text":"📥 Media Downloader","callback_data":"ctype:media"}],
         [{"text":"❌ Cancel","callback_data":"ccancel"}]
-    }
+    ]}
 
 def _creator_type_card_text(kind):
     kind=str(kind or "media").lower()
