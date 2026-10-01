@@ -12041,6 +12041,19 @@ def _creator_api(method, payload=None, timeout=30):
     except Exception as e:
         return None, str(e)
 
+def _creator_normalize_text(value):
+    """Normalize Creator Bot text so keyboard labels/commands cannot fail
+    because of Unicode variation selectors, zero-width characters, or spacing.
+    """
+    try:
+        import unicodedata
+        s=unicodedata.normalize("NFKC",str(value or ""))
+    except Exception:
+        s=str(value or "")
+    s=s.replace("\u200b","").replace("\u200c","").replace("\u200d","").replace("\ufeff","")
+    s=s.replace("\ufe0f","")
+    return re.sub(r"\s+"," ",s).strip()
+
 def _creator_api_with_token(token, method, payload=None, timeout=20):
     try:
         r=requests.post(f"https://api.telegram.org/bot{token}/{method}",json=payload or {},timeout=timeout)
@@ -12277,7 +12290,7 @@ def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
     text=(text or "").strip(); low=text.lower()
 
-    if text in ("/start", "/start creator"):
+    if normalized_text in ("/start", "/start creator") or normalized_low in ("/start", "/start creator"):
         if _creator_admin(uid):
             _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
         _creator_send(chat_id,
@@ -12300,7 +12313,12 @@ def _creator_handle_text(uid, chat_id, text):
             reply_markup=_creator_keyboard(uid)); return
     if low.startswith("/start "):
         _creator_send(chat_id,"👋 Welcome to the Bot Creator.",reply_markup=_creator_keyboard(uid)); return
-    if text=="🤖 Create My Bot" or low in {"/create","/addbot","/add bot"}:
+    # Normalize Telegram keyboard labels and commands so /create, /Newbot,
+    # and the Create My Bot button all reach the same handler.
+    normalized_text=_creator_normalize_text(text)
+    normalized_low=normalized_text.casefold()
+    command_match=re.match(r"^/(create|addbot|add|newbot)(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$",normalized_low)
+    if normalized_low=="🤖 create my bot" or command_match:
         _creator_start_create(uid,chat_id); return
     if text=="🤖 My Bots" or low=="/mybots":
         _creator_my_bots(uid,chat_id); return
@@ -13393,8 +13411,19 @@ def _creator_poll_loop():
     if not CREATOR_BOT_TOKEN:
         print("❌ CREATOR_BOT_TOKEN is not configured; managed-bot Creator is DISABLED.")
         return
+    if CREATOR_BOT_TOKEN in {str(TOKEN or "").strip(),str(BOT2_TOKEN or "").strip()}:
+        print("❌ CREATOR_BOT_TOKEN must be different from BOT_TOKEN/BOT2_TOKEN; Creator polling is DISABLED.")
+        return
     offset=0
-    _creator_api("deleteWebhook",{"drop_pending_updates":False},timeout=10)
+    hook,hook_err=_creator_api("getWebhookInfo",{},timeout=10)
+    if hook_err:
+        print("⚠️ Creator getWebhookInfo failed:",hook_err)
+    elif hook and hook.get("url"):
+        print("⚠️ Creator Bot has an outgoing webhook; removing it before long polling.")
+    _,del_err=_creator_api("deleteWebhook",{"drop_pending_updates":False},timeout=10)
+    if del_err:
+        print("❌ Creator deleteWebhook failed:",del_err)
+        time.sleep(3)
     me,me_err=_creator_api("getMe",{},timeout=10)
     if me_err:
         print("❌ Creator Bot getMe failed:",me_err); return
@@ -13412,22 +13441,31 @@ def _creator_poll_loop():
         threading.Thread(target=_creator_health_loop,daemon=True,name="creator-health").start()
     print("🤖 Creator Bot is starting...")
     last_update_error=0.0
+    conflict_count=0
     while True:
         try:
-            updates,err=_creator_api("getUpdates",{
-                "offset":offset,
-                "timeout":15,
-                "allowed_updates":["message","callback_query","managed_bot"]
-            },timeout=22)
+            updates,err=_creator_api("getUpdates",{"offset":offset,"limit":100,"timeout":15,
+                "allowed_updates":["message","callback_query","managed_bot"]},timeout=22)
             if err:
                 now_ts=time.time()
+                if "Conflict" in str(err) or "409" in str(err):
+                    conflict_count+=1
+                    if now_ts-last_update_error>5:
+                        print("❌ Creator getUpdates conflict: another process is polling this Creator token. "
+                              "Keep only ONE Railway replica/deployment for the Creator bot.")
+                        last_update_error=now_ts
+                    time.sleep(min(5,conflict_count)); continue
+                conflict_count=0
                 if now_ts-last_update_error>5:
                     print("Creator getUpdates error:",err); last_update_error=now_ts
                 time.sleep(1); continue
+            conflict_count=0
             for upd in updates or []:
-                offset=int(upd.get("update_id",offset))+1
-                # Never execute Telegram/Mongo work on the polling thread.
-                creator_update_executor.submit(_creator_process_update,upd)
+                try:
+                    offset=max(offset,int(upd.get("update_id",offset))+1)
+                    creator_update_executor.submit(_creator_process_update,upd)
+                except Exception as e:
+                    print("Creator update submit error:",repr(e))
         except Exception as e:
             print("Creator polling loop error:",repr(e)); time.sleep(1)
 
