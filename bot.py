@@ -1750,6 +1750,80 @@ def _ad_gate_bot_token(row):
     except Exception as e:
         print("Ad gate bot token lookup failed:",repr(e)); return ""
 
+DASHBOARD_COOKIE="quickdl_dashboard"
+
+def _dashboard_secret():
+    return str(MANAGED_TOKEN_ENCRYPTION_KEY or TOKEN or CREATOR_BOT_TOKEN or "quickdl-dashboard").encode()
+
+def _dashboard_cookie_make(doc):
+    bid=str(doc.get("bot_id") or ""); user=str(doc.get("dashboard_username") or doc.get("username") or "").lstrip("@"); exp=int(time.time())+86400; nonce=secrets.token_hex(12)
+    payload=f"{bid}|{user}|{exp}|{nonce}"; sig=hmac.new(_dashboard_secret(),payload.encode(),hashlib.sha256).hexdigest()
+    return urllib.parse.quote(f"{payload}|{sig}",safe="")
+
+def _dashboard_cookie_parse(value,bot_id):
+    try:
+        raw=urllib.parse.unquote(str(value or "")); bid,user,exp,nonce,sig=raw.split("|",4)
+        if bid!=str(bot_id) or int(exp)<int(time.time()): return None
+        payload=f"{bid}|{user}|{exp}|{nonce}"; expected=hmac.new(_dashboard_secret(),payload.encode(),hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(expected,sig): return None
+        return {"bot_id":bid,"username":user,"exp":int(exp),"csrf":nonce}
+    except Exception:return None
+
+def _dashboard_doc(bot_id):
+    try:return managed_bots_col.find_one({"bot_id":str(bot_id)})
+    except Exception:return None
+
+def _dashboard_auth(handler,bot_id):
+    cookie=handler.headers.get("Cookie",""); value=""
+    for part in cookie.split(";"):
+        if part.strip().startswith(DASHBOARD_COOKIE+"="): value=part.strip().split("=",1)[1]; break
+    sess=_dashboard_cookie_parse(value,bot_id); d=_dashboard_doc(bot_id)
+    if not sess or not d or not d.get("active",True) or d.get("suspended"):return None
+    expected=str(d.get("dashboard_username") or d.get("username") or "").lstrip("@")
+    return sess if expected and sess["username"].casefold()==expected.casefold() else None
+
+def _dashboard_login_html(bot_id,error=""):
+    err=f'<div class="err">{html.escape(error)}</div>' if error else ""
+    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>QuickDL Dashboard</title>
+<style>body{{margin:0;background:#0b1220;color:#e8eef8;font-family:Arial}}.wrap{{max-width:720px;margin:auto;padding:28px 18px}}.card{{background:#121c2d;border:1px solid #263750;border-radius:20px;padding:24px}}input{{width:100%;box-sizing:border-box;padding:13px;margin:7px 0 14px;border-radius:11px;border:1px solid #30415b;background:#0a1423;color:#fff;font-size:16px}}button{{width:100%;padding:13px;border:0;border-radius:11px;background:#2f80ed;color:#fff;font-weight:700;font-size:16px}}.err{{padding:12px;border-radius:10px;background:#4a1d28;color:#ffb7c5;margin:12px 0}}.muted{{color:#93a6c0}}</style></head><body><div class="wrap"><div class="card"><h1>🤖 QuickDL Dashboard</h1><p class="muted">Secure owner dashboard for bot <code>{html.escape(str(bot_id))}</code>.</p>{err}<form method="post" action="/dashboard/{urllib.parse.quote(str(bot_id))}/login"><label>Username</label><input name="username" autocomplete="username" required><label>6-digit PIN</label><input name="pin" type="password" inputmode="numeric" autocomplete="current-password" required><button>🔐 Login</button></form><p class="muted">Use the username and PIN sent by Creator Bot.</p></div></div></body></html>"""
+
+def _dashboard_page_html(doc,sess,notice=""):
+    bid=str(doc.get("bot_id") or ""); username=str(doc.get("username") or "").lstrip("@"); btype=str(doc.get("bot_type") or "media").lower()
+    if btype=="video":btype="media"
+    stats=doc.get("stats") or {}; disabled={str(x).lower() for x in (doc.get("disabled_platforms") or [])}; prem=_managed_premium_active_doc(doc); notice_html=f'<div class="ok">{html.escape(notice)}</div>' if notice else ""
+    checks=lambda k:"checked" if doc.get(k,True) else ""; platforms=("youtube","tiktok","instagram","facebook","pinterest","snapchat","twitter","reddit","threads","likee","vimeo","dailymotion","soundcloud","twitch")
+    prows=" ".join(f'<label><input type="checkbox" name="platform_{p}" {"checked" if p not in disabled else ""}> {p.title()}</label>' for p in platforms)
+    return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>@{html.escape(username)} Dashboard</title>
+<style>body{{margin:0;background:#07101d;color:#edf4ff;font-family:Arial}}.wrap{{max-width:1080px;margin:auto;padding:18px}}.top{{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}}.card{{background:#111c2d;border:1px solid #24354e;border-radius:18px;padding:18px;margin-bottom:14px}}.muted{{color:#91a4bd}}.metric b{{display:block;font-size:25px;margin-top:5px}}input[type=text],input[type=number],textarea{{width:100%;box-sizing:border-box;padding:12px;margin:6px 0 14px;border-radius:10px;border:1px solid #30435d;background:#0a1423;color:#fff}}textarea{{min-height:120px}}label{{display:inline-block;margin:6px 12px 6px 0}}button{{border:0;border-radius:10px;padding:12px 16px;background:#2f80ed;color:#fff;font-weight:700}}button.gray{{background:#2b394d}}.ok{{padding:12px;border-radius:10px;background:#123c2b;color:#a7f3c7;margin:12px 0}}code{{background:#0a1423;padding:2px 5px;border-radius:5px}}.row{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}@media(max-width:650px){{.row{{grid-template-columns:1fr}}}}</style></head><body><div class="wrap">
+<div class="top"><div><h1>🤖 @{html.escape(username)}</h1><div class="muted">{'🎵 Music Downloader' if btype=='music' else '📥 Media Downloader'} • ID <code>{html.escape(bid)}</code></div></div><form method="post" action="/dashboard/{urllib.parse.quote(bid)}/logout"><button class="gray">Log out</button></form></div>{notice_html}
+<div class="grid"><div class="card metric">Status<b>{'🟢 Active' if doc.get('active',True) and not doc.get('suspended') else '🔴 Offline'}</b></div><div class="card metric">Users<b>{len(doc.get('users') or [])}</b></div><div class="card metric">Downloads<b>{int(stats.get('downloads',0) or 0)}</b></div><div class="card metric">Premium<b>{'💎 Active' if prem else '🆓 Standard'}</b></div></div>
+<form method="post" action="/dashboard/{urllib.parse.quote(bid)}/save"><input type="hidden" name="csrf" value="{html.escape(sess['csrf'])}">
+<div class="card"><h2>⚙️ Bot Settings</h2><div class="row"><div><label>YouTube free limit (minutes)</label><input type="number" min="0" max="1440" name="youtube_max_minutes" value="{int(doc.get('youtube_max_minutes') or 0)}"><div class="muted">0 = Main Admin/global free limit.</div></div><div><label>Speed profile</label><input type="text" name="speed" value="{html.escape(str(doc.get('speed') or 'fast'))}" maxlength="32"></div></div>
+<label>Start message</label><textarea name="start_message">{html.escape(str(doc.get('start_message') or ''))}</textarea></div>
+<div class="card"><h2>🧩 User-facing controls</h2><label><input type="checkbox" name="ads_enabled" {checks("ads_enabled")}> Managed ads</label><label><input type="checkbox" name="powered_by_enabled" {checks("powered_by_enabled")}> Powered by</label><label><input type="checkbox" name="menu_create_enabled" {checks("menu_create_enabled")}> Create button</label><label><input type="checkbox" name="menu_remove_ads_enabled" {checks("menu_remove_ads_enabled")}> Remove Ads</label><label><input type="checkbox" name="menu_premium_enabled" {checks("menu_premium_enabled")}> Premium</label></div>
+<div class="card"><h2>🌐 Platforms</h2><p class="muted">Per-bot restrictions only. Main Admin/global locks remain authoritative.</p>{prows}</div><div class="card"><button type="submit">💾 Save Settings</button></div></form></div></body></html>"""
+
+def _dashboard_read_form(handler):
+    try:
+        n=min(int(handler.headers.get("Content-Length","0") or 0),256000); return urllib.parse.parse_qs(handler.rfile.read(n).decode("utf-8","ignore"),keep_blank_values=True)
+    except Exception:return {}
+
+def _dashboard_redirect(handler,location,cookie=None,clear=False):
+    handler.send_response(303); handler.send_header("Location",location)
+    if cookie:handler.send_header("Set-Cookie",f"{DASHBOARD_COOKIE}={cookie}; Path=/dashboard; Max-Age=86400; HttpOnly; Secure; SameSite=Strict")
+    if clear:handler.send_header("Set-Cookie",f"{DASHBOARD_COOKIE}=; Path=/dashboard; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
+    handler.send_header("Cache-Control","no-store");handler.send_header("Content-Length","0");handler.end_headers()
+
+def _dashboard_save(doc,form):
+    bid=str(doc.get("bot_id") or "")
+    try:yt=max(0,min(1440,int((form.get("youtube_max_minutes") or ["0"])[0] or 0)))
+    except Exception:yt=0
+    speed=str((form.get("speed") or ["fast"])[0] or "fast")[:32]; start=str((form.get("start_message") or [""])[0] or "")[:4000]
+    platforms=("youtube","tiktok","instagram","facebook","pinterest","snapchat","twitter","reddit","threads","likee","vimeo","dailymotion","soundcloud","twitch")
+    disabled=[p for p in platforms if f"platform_{p}" not in form]
+    managed_bots_col.update_one({"bot_id":bid},{"$set":{"youtube_max_minutes":yt,"speed":speed,"start_message":start,"ads_enabled":"ads_enabled" in form,"powered_by_enabled":"powered_by_enabled" in form,"menu_create_enabled":"menu_create_enabled" in form,"menu_remove_ads_enabled":"menu_remove_ads_enabled" in form,"menu_premium_enabled":"menu_premium_enabled" in form,"disabled_platforms":disabled,"updated_at":datetime.now(timezone.utc)}})
+    return "Settings saved successfully."
+
 class _AdGateHandler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): return
     def _send(self,code,body,ctype="text/html; charset=utf-8"):
@@ -1758,6 +1832,19 @@ class _AdGateHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
+
+        dm=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]+)",path)
+        if dm:
+            bid=dm.group(1); doc=_dashboard_doc(bid)
+            if not doc: self._send(404,"Dashboard not found."); return
+            if not doc.get("active",True) or doc.get("suspended"): self._send(410,"This dashboard is disabled."); return
+            sess=_dashboard_auth(self,bid)
+            if sess: self._send(200,_dashboard_page_html(doc,sess))
+            else: self._send(200,_dashboard_login_html(bid))
+            return
+        dl=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]+)/(logout)",path)
+        if dl:
+            self._dashboard_redirect(self,f"/dashboard/{urllib.parse.quote(dl.group(1))}",clear=True); return
         m=re.fullmatch(r"/ad/(?:open|app)/([A-Za-z0-9]{16,64})",path)
         if m:
             token=m.group(1); row=ad_gates_col.find_one({"token":token,"status":{"$in":["pending","opened"]}})
@@ -1886,6 +1973,25 @@ if(gateDelay>0){setTimeout(runAd,gateDelay*1000);}else{runAd();}
             else: self._send(410,"Skip link expired or already used.")
             return
         self._send(404,"Not found")
+
+    def do_POST(self):
+        path=urllib.parse.urlparse(self.path).path
+        m=re.fullmatch(r"/dashboard/([A-Za-z0-9_-]+)/(login|logout|save)",path)
+        if not m: self._send(404,"Not found"); return
+        bid,action=m.group(1),m.group(2); doc=_dashboard_doc(bid)
+        if not doc: self._send(404,"Dashboard not found."); return
+        if action=="login":
+            form=_dashboard_read_form(self); username=str((form.get("username") or [""])[0]).strip().lstrip("@"); pin=str((form.get("pin") or [""])[0]).strip()
+            expected=str(doc.get("dashboard_username") or doc.get("username") or "").lstrip("@")
+            valid=bool(expected and username.casefold()==expected.casefold() and doc.get("dashboard_pin_hash") and secrets.compare_digest(hashlib.sha256(pin.encode()).hexdigest(),str(doc.get("dashboard_pin_hash"))))
+            if not valid: self._send(401,_dashboard_login_html(bid,"Invalid username or PIN.")); return
+            self._dashboard_redirect(self,f"/dashboard/{urllib.parse.quote(bid)}",cookie=_dashboard_cookie_make(doc)); return
+        sess=_dashboard_auth(self,bid)
+        if not sess: self._send(401,"Dashboard session expired. Please log in again."); return
+        if action=="logout": self._dashboard_redirect(self,f"/dashboard/{urllib.parse.quote(bid)}",clear=True); return
+        form=_dashboard_read_form(self); csrf=str((form.get("csrf") or [""])[0] or "")
+        if not secrets.compare_digest(csrf,str(sess.get("csrf") or "")): self._send(403,"Invalid dashboard session."); return
+        notice=_dashboard_save(doc,form); self._send(200,_dashboard_page_html(_dashboard_doc(bid) or doc,sess,notice))
 
 
 def _start_ad_http_server():
@@ -12213,72 +12319,69 @@ def _creator_verify_gate(uid, chat_id):
 
 
 def _creator_card_config(kind):
-    kind=str(kind or "video").lower()
+    kind=str(kind or "media").lower()
+    if kind=="video": kind="media"
     defaults={
-        "video":{"title":"🎬 Video Downloader","description":"Download supported videos and photos from YouTube, TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and more.","suggested_name":"My Video Downloader","suggested_username":"quick_video_downloader_bot"},
-        "music":{"title":"🎵 Music Downloader","description":"Search and download songs with metadata and cover artwork.","suggested_name":"My Music Downloader","suggested_username":"quick_music_downloader_bot"},
-        "social":{"title":"🌐 Social Media Downloader","description":"A multi-platform social downloader preset powered by the existing video engine.","suggested_name":"My Social Downloader","suggested_username":"quick_social_downloader_bot"},
+        "media":{"title":"📥 Media Downloader","description":"Fast video, photo and media downloads from YouTube, TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and other supported platforms.","suggested_name":"My Media Downloader","suggested_username":"quick_media_downloader_bot"},
+        "music":{"title":"🎵 Music Downloader","description":"Fast song search and full MP3/music downloads with artist, title and cover artwork.","suggested_name":"My Music Downloader","suggested_username":"quick_music_downloader_bot"},
     }
-    out=dict(defaults.get(kind,defaults["video"])); saved=get_setting(f"creator_card_{kind}",{}) or {}
+    out=dict(defaults.get(kind,defaults["media"]))
+    saved=get_setting(f"creator_card_{kind}",{}) or {}
+    if kind=="media" and not saved: saved=get_setting("creator_card_video",{}) or {}
     if isinstance(saved,dict): out.update({k:v for k,v in saved.items() if v not in (None,"")})
     return out
 
 def _creator_type_markup(kind):
+    kind=str(kind or "media").lower()
+    if kind=="video": kind="media"
     cfg=_creator_card_config(kind); manager=str(CREATOR_BOT_USERNAME or "").strip().lstrip("@")
     su=re.sub(r"[^A-Za-z0-9_]","_",str(cfg.get("suggested_username") or "quick_downloader_bot"))[:31]
     if not su.lower().endswith("bot"): su=su[:27]+"_bot"
     sn=str(cfg.get("suggested_name") or "My Downloader Bot")[:64]
     url=f"https://t.me/newbot/{manager}/{urllib.parse.quote(su,safe='')}?name={urllib.parse.quote(sn)}" if manager else ""
-    return {"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"},{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"🌐 Social Downloader","callback_data":"ctype:social"}],([{"text":"🚀 Create with Telegram","url":url}] if url else []),[{"text":"🔑 Use Existing Token","callback_data":f"ctoken:{kind}"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}
+    return {"inline_keyboard":[
+        ([{"text":"🚀 Create this bot","url":url}] if url else [{"text":"⚠️ Creator not configured","callback_data":"ccancel"}]),
+        [{"text":"🔑 Use Existing Token","callback_data":f"ctoken:{kind}"}],
+        [{"text":"⬅️ Change Type","callback_data":"ccreate"},{"text":"❌ Cancel","callback_data":"ccancel"}]
+    ]}
+
+def _creator_type_selection_markup():
+    return {"inline_keyboard":[
+        [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+        [{"text":"📥 Media Downloader","callback_data":"ctype:media"}],
+        [{"text":"❌ Cancel","callback_data":"ccancel"}]
+    }
 
 def _creator_type_card_text(kind):
+    kind=str(kind or "media").lower()
+    if kind=="video": kind="media"
     cfg=_creator_card_config(kind)
     return (f"🤖 <b>{html.escape(str(cfg.get('title') or 'Downloader Bot'))}</b>\n\n"
             f"{html.escape(str(cfg.get('description') or 'Choose a downloader type.'))}\n\n"
-            "Telegram opens the official creation screen. The user enters/edits the bot name and username there; Creator Bot no longer asks those questions.")
+            "Choose what you want to create. Then Telegram will open its official bot-creation screen, or you can connect an existing BotFather token.")
 
 def _creator_send_type_card(uid,chat_id,kind,edit=None):
-    # Creator API helpers use raw Telegram JSON. Do not pass a Python dict into
-    # pyTelegramBotAPI's InlineKeyboardMarkup constructor: that raises before
-    # the type card can be sent, which makes /create and the keyboard appear
-    # completely unresponsive.
-    kind=str(kind or "video").lower()
-    text=_creator_type_card_text(kind)
-    markup=_creator_type_markup(kind)
+    kind=str(kind or "media").lower()
+    if kind=="video": kind="media"
+    text=_creator_type_card_text(kind); markup=_creator_type_markup(kind)
     media=(_creator_card_config(kind).get("media") or {})
     if edit:
         cid,mid=edit
         try:
             if media.get("kind")=="photo" and media.get("file_id"):
-                _creator_api("editMessageMedia",{
-                    "chat_id":cid,"message_id":mid,
-                    "media":{"type":"photo","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},
-                    "reply_markup":markup
-                })
+                _creator_api("editMessageMedia",{"chat_id":cid,"message_id":mid,"media":{"type":"photo","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},"reply_markup":markup})
             elif media.get("kind")=="video" and media.get("file_id"):
-                _creator_api("editMessageMedia",{
-                    "chat_id":cid,"message_id":mid,
-                    "media":{"type":"video","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},
-                    "reply_markup":markup
-                })
-            else:
-                _creator_edit(cid,mid,text,reply_markup=markup)
+                _creator_api("editMessageMedia",{"chat_id":cid,"message_id":mid,"media":{"type":"video","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},"reply_markup":markup})
+            else: _creator_edit(cid,mid,text,reply_markup=markup)
             return
-        except Exception as e:
-            print("Creator type card edit failed:",repr(e))
+        except Exception as e: print("Creator type card edit failed:",repr(e))
     if media.get("kind")=="photo" and media.get("file_id"):
-        _creator_api("sendPhoto",{
-            "chat_id":chat_id,"photo":str(media["file_id"]),
-            "caption":text,"parse_mode":"HTML","reply_markup":markup
-        })
+        _creator_api("sendPhoto",{"chat_id":chat_id,"photo":str(media["file_id"]),"caption":text,"parse_mode":"HTML","reply_markup":markup})
     elif media.get("kind")=="video" and media.get("file_id"):
-        _creator_api("sendVideo",{
-            "chat_id":chat_id,"video":str(media["file_id"]),
-            "caption":text,"parse_mode":"HTML","reply_markup":markup
-        })
-    else:
-        _creator_send(chat_id,text,reply_markup=markup,parse_mode="HTML")
+        _creator_api("sendVideo",{"chat_id":chat_id,"video":str(media["file_id"]),"caption":text,"parse_mode":"HTML","reply_markup":markup})
+    else: _creator_send(chat_id,text,reply_markup=markup,parse_mode="HTML")
 
+def _creator_dashboard_credentials(username):
 def _creator_dashboard_credentials(username):
     pin=str(secrets.randbelow(900000)+100000)
     return str(username).lstrip("@"),hashlib.sha256(pin.encode()).hexdigest(),pin
@@ -12297,109 +12400,31 @@ def _creator_add_existing_token(uid,chat_id,token):
         _creator_send(chat_id,"❌ Token verification failed. Send a current BotFather token again."); return
     bid=str(result.get("id")); username=str(result.get("username") or "").lstrip("@"); existing=managed_bots_col.find_one({"bot_id":bid})
     if existing and str(existing.get("owner_id"))!=str(uid): _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
-    sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"
+    sess=_creator_session(uid); btype=str(sess.get("bot_type") or "media").lower(); btype=("media" if btype=="video" else btype); btype=btype if btype in {"media","music"} else "media"
     dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
     doc={"bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),"managed":False,"username":username,"name":str(result.get("first_name") or username),"bot_type":btype,"active":True,"suspended":False,"created_at":existing.get("created_at") if existing else datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":existing.get("users",[]),"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"premium_until":existing.get("premium_until") if existing else None,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
     managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True); _creator_clear_session(uid); _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
     _creator_send(chat_id,f"✅ <b>@{html.escape(username)}</b> connected.\n\nToken verified and stored encrypted.",reply_markup=_creator_keyboard(uid)); _creator_send_dashboard_info(uid,doc,pin)
 
-def _creator_start_create(uid, chat_id):
+def _creator_start_create(uid, chat_id, edit=None):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
-    _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send_type_card(uid,chat_id,"video")
+    state={"state":"type_selection","bot_type":None,"updated_at":datetime.now(timezone.utc)}
+    text="🤖 <b>CREATE YOUR BOT</b>\n\nChoose one type:\n\n🎵 <b>Music Downloader</b> — songs, MP3, metadata and covers.\n📥 <b>Media Downloader</b> — video/photo/media downloads."
+    if edit and edit.get("message_id"):
+        state["message_id"]=int(edit["message_id"]); _creator_set_session(uid,state)
+        _creator_edit(edit.get("chat_id") or chat_id,int(edit["message_id"]),text,reply_markup=_creator_type_selection_markup())
+    else:
+        _creator_set_session(uid,state)
+        result,err=_creator_send(chat_id,text,reply_markup=_creator_type_selection_markup())
+        if result and result.get("message_id"): _creator_set_session(uid,{"message_id":int(result["message_id"]),"updated_at":datetime.now(timezone.utc)})
 
 def _creator_finish_request(uid, chat_id):
-    _creator_send_type_card(uid,chat_id,str(_creator_session(uid).get("bot_type") or "video"))
-
-
-def _creator_handle_text(uid, chat_id, text):
-    _creator_ensure_user(uid)
-    text=(text or "").strip()
-    normalized_text=_creator_normalize_text(text)
-    low=normalized_text.casefold()
-    normalized_low=low
-
-    if normalized_text in ("/start", "/start creator"):
-        if _creator_admin(uid):
-            _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
-        _creator_send(chat_id,
-            "🚀 <b>WELCOME TO BOT CREATOR</b>\n\n"
-            "Build your own Downloader Bot directly through Telegram's official managed-bot system.\n\n"
-            "<b>HOW IT WORKS</b>\n"
-            "1️⃣ Tap <b>🤖 Create My Bot</b>.\n"
-            "2️⃣ Enter your bot name.\n"
-            "3️⃣ Enter your bot username ending in <code>bot</code>.\n"
-            "4️⃣ Tap Telegram's official <b>Create</b> button.\n"
-            "5️⃣ Telegram creates the bot and sends the Creator Bot the managed-bot event.\n"
-            "6️⃣ Your bot is automatically registered, secured and started on the server.\n\n"
-            "<b>YOUR BOT FEATURES</b>\n"
-            "🎬 Video & Shorts downloads\n"
-            "🎵 Full MP3/Music downloads\n"
-            "💰 Shared balance with @Downloadvedioytibot\n"
-            "💎 Premium options\n"
-            "📊 Owner controls\n\n"
-            "Use <b>🤖 My Bots</b> to see your bots in one message, or <b>🗑 Delete Bot</b> to remove a bot from this system.",
-            reply_markup=_creator_keyboard(uid)); return
-    if low.startswith("/start "):
-        _creator_send(chat_id,"👋 Welcome to the Bot Creator.",reply_markup=_creator_keyboard(uid)); return
-    # Normalize Telegram keyboard labels and commands so /create, /Newbot,
-    # and the Create My Bot button all reach the same handler.
-    normalized_text=_creator_normalize_text(text)
-    normalized_low=normalized_text.casefold()
-    command_match=re.match(r"^/(create|addbot|add|newbot)(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$",normalized_low)
-    if normalized_low=="🤖 create my bot" or command_match:
-        _creator_start_create(uid,chat_id); return
-    if text=="🤖 My Bots" or low=="/mybots":
-        _creator_my_bots(uid,chat_id); return
-    if text=="🗑 Delete Bot" or low=="/deletebot":
-        _creator_delete_menu(uid,chat_id); return
-    if text in ("💰 Balance","/balance"):
-        if uid in users:
-            _creator_send(chat_id,f"💰 <b>Shared Balance</b>\n\n{html.escape(money_text(uid,balance_usd_value(uid)))}\n\nThis is the same balance used by @Downloadvedioytibot.")
-        else: _creator_send(chat_id,"Please open @Downloadvedioytibot first so your account can be loaded.")
-        return
-    if text in ("💎 Premium","/premium"):
-        _creator_premium(uid,chat_id); return
-    if text in ("/wallet",):
-        linked=bool(users.get(uid,{}).get("creator_wallet_linked"))
-        if linked:
-            _creator_send(chat_id,"✅ <b>Creator Wallet Connected</b>\n\nYour Creator Bot account and @Downloadvedioytibot use the same balance.",reply_markup=_creator_keyboard(uid))
-        else:
-            _creator_send(chat_id,"💳 <b>CONNECT CREATOR WALLET</b>\n\nConnect your Creator Bot account to @Downloadvedioytibot. The main bot will send a Confirm/Reject request.",reply_markup={"inline_keyboard":[[{"text":"🔗 Connect Wallet","callback_data":"creatorwallet:request"}]]})
-        return
-    if text in ("🆘 Help","/help"):
-        _creator_send(chat_id,"🆘 <b>Creator Help</b>\n\n• Create My Bot\n• My Bots\n• Delete Bot\n• Premium\n• Balance\n\nYour created downloader bot can download videos and MP3s. Premium removes system promotional messages for the bot while active.",reply_markup=_creator_keyboard(uid)); return
-    if (text=="👑 ADMIN PANEL" or low in {"/admin","admin panel","admin"}) and _creator_admin(uid):
-        _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
-
-    # Creator admins must never be trapped by a previous user-creation state.
-    # Any real Creator-admin keyboard button is handled before name/username states.
-    sess=_creator_session(uid); state=sess.get("state")
-    if _creator_admin(uid):
-        admin_text=re.sub(r"\s+"," ",text).strip()
-        if admin_text in _CREATOR_ADMIN_BUTTONS:
-            _creator_clear_session(uid)
-            _creator_admin_text(uid,chat_id,admin_text)
-            return
-        # If an admin is currently entering a value, do NOT route arbitrary
-        # text back into the admin-button dispatcher. The state-specific input
-        # handlers below must receive the value (for example: "5" for Ad
-        # Seconds). Admin keyboard buttons were already handled above.
-        # This is what prevents an input session from trapping the admin.
-        if low in {"/start","/admin","admin","admin panel"} or text=="👑 ADMIN PANEL":
-            _creator_clear_session(uid)
-            _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard())
-            return
-
-    if state=="type":
-        _creator_send_type_card(uid,chat_id,str(sess.get("bot_type") or "video")); return
-    if state=="existing_token":
-        _creator_add_existing_token(uid,chat_id,text); return
-    if state=="waiting_managed_bot":
-        _creator_send(chat_id,"⏳ Finish the Telegram creation screen first. Your new bot will appear in My Bots automatically."); return
-    _creator_send(chat_id,"ℹ️ Use the Creator buttons above to continue."); return
+    sess=_creator_session(uid); btype=str(sess.get("bot_type") or "media").lower()
+    if btype=="video": btype="media"
+    mid=int(sess.get("message_id") or 0)
+    _creator_send_type_card(uid,chat_id,btype,edit=(chat_id,mid) if mid else None)
 
 def _managed_premium_menu(uid, chat_id):
     uid=str(uid)
@@ -12517,7 +12542,7 @@ def _creator_my_bots(uid, chat_id):
     buttons=[]
     for d in rows:
         username=str(d.get("username") or "unknown").lstrip("@")
-        kind=str(d.get("bot_type") or "video").lower()
+        kind=str(d.get("bot_type") or "media").lower()
         icon="🎵" if kind=="music" else ("🌐" if kind=="social" else "🎬")
         active=bool(d.get("active",True)) and not bool(d.get("suspended"))
         premium="💎 Premium" if _managed_premium_active_doc(d) else "🆓 Standard"
@@ -12882,7 +12907,7 @@ def _creator_callback(call):
         _creator_my_bots_edit(uid,chat_id,mid); return
     if data=="ccreate":
         _creator_answer(call.get("id"),"Opening Creator")
-        _creator_start_create(uid,chat_id); return
+        _creator_start_create(uid,chat_id,edit={"chat_id":chat_id,"message_id":int(mid or 0)}); return
     if data=="ccancel":
         _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled")
         try:
@@ -12893,14 +12918,23 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music","social"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"type","bot_type":btype,"updated_at":datetime.now(timezone.utc)}); _creator_answer(call.get("id"),"Selected")
-        _creator_send_type_card(uid,chat_id,btype,edit=(chat_id,int(call.get("message",{}).get("message_id") or 0))); return
+        if btype=="video": btype="media"
+        if btype not in {"media","music"} or sess.get("state") not in {"type","type_selection"}:
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        mid=int(call.get("message",{}).get("message_id") or sess.get("message_id") or 0)
+        _creator_set_session(uid,{**sess,"state":"type","bot_type":btype,"message_id":mid,"updated_at":datetime.now(timezone.utc)})
+        _creator_answer(call.get("id"),"Selected")
+        _creator_send_type_card(uid,chat_id,btype,edit=(chat_id,mid) if mid else None); return
     if data.startswith("ctoken:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music","social"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"existing_token","bot_type":btype,"updated_at":datetime.now(timezone.utc)}); _creator_answer(call.get("id"),"Send token")
-        _creator_send(chat_id,"🔑 <b>Connect Existing Bot Token</b>\n\nSend the BotFather token for the bot you want to manage. It will be verified and stored encrypted."); return
+        if btype=="video": btype="media"
+        if btype not in {"media","music"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        mid=int(call.get("message",{}).get("message_id") or sess.get("message_id") or 0)
+        _creator_set_session(uid,{"state":"existing_token","bot_type":btype,"message_id":mid,"updated_at":datetime.now(timezone.utc)})
+        _creator_answer(call.get("id"),"Send token")
+        if mid: _creator_edit(chat_id,mid,"🔑 <b>CONNECT EXISTING BOT</b>\n\nSend the BotFather token now.\n\nAfter verification, the same bot will be registered and given its dashboard.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":f"ctype:{btype}"},{"text":"❌ Cancel","callback_data":"ccancel"}]]})
+        else: _creator_send(chat_id,"🔑 <b>Connect Existing Bot Token</b>\n\nSend the BotFather token for the bot you want to manage."); return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
@@ -13010,7 +13044,7 @@ def _managed_bot_is_owner(bot_id, uid):
 def _managed_bot_start_instance(doc):
     token=_decrypt_managed_token(doc or {})
     if not token: return None
-    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music"} else "video"
+    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "media").lower(); btype=btype if btype in {"video","music"} else "video"
     if doc.get("suspended"): return None
     with managed_bot_lock:
         if bid in managed_bot_objects: return managed_bot_objects[bid]
