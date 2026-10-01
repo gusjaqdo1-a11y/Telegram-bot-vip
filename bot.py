@@ -12396,10 +12396,18 @@ def _creator_add_existing_token(uid,chat_id,token):
     bid=str(result.get("id")); username=str(result.get("username") or "").lstrip("@"); existing=managed_bots_col.find_one({"bot_id":bid})
     if existing and str(existing.get("owner_id"))!=str(uid): _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
     sess=_creator_session(uid); btype=str(sess.get("bot_type") or "media").lower(); btype=("media" if btype=="video" else btype); btype=btype if btype in {"media","music"} else "media"
-    dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
-    doc={"bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),"managed":False,"username":username,"name":str(result.get("first_name") or username),"bot_type":btype,"active":True,"suspended":False,"created_at":existing.get("created_at") if existing else datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":existing.get("users",[]),"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"premium_until":existing.get("premium_until") if existing else None,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
+    is_new=not bool(existing)
+    if existing and existing.get("dashboard_pin_hash"):
+        dash_user=str(existing.get("dashboard_username") or username).lstrip("@")
+        pin_hash=str(existing.get("dashboard_pin_hash"))
+        pin=""
+    else:
+        dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
+    doc={"bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),"managed":False,"username":username,"name":str(result.get("first_name") or username),"bot_type":btype,"active":True,"suspended":False,"created_at":existing.get("created_at") if existing else datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":existing.get("users",[]),"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"premium_until":existing.get("premium_until") if existing else None,"powered_by_enabled":existing.get("powered_by_enabled",True) if existing else True,"ads_enabled":existing.get("ads_enabled",True) if existing else True,"menu_create_enabled":existing.get("menu_create_enabled",True) if existing else True,"menu_remove_ads_enabled":existing.get("menu_remove_ads_enabled",True) if existing else True,"menu_premium_enabled":existing.get("menu_premium_enabled",True) if existing else True,"disabled_platforms":existing.get("disabled_platforms",[]) if existing else [],"youtube_max_minutes":existing.get("youtube_max_minutes",0) if existing else 0,"speed":existing.get("speed","fast") if existing else "fast"}
     managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True); _creator_clear_session(uid); _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
-    _creator_send(chat_id,f"✅ <b>@{html.escape(username)}</b> connected.\n\nToken verified and stored encrypted.",reply_markup=_creator_keyboard(uid)); _creator_send_dashboard_info(uid,doc,pin)
+    _creator_send(chat_id,f"✅ <b>@{html.escape(username)}</b> connected.\n\nToken verified and stored encrypted.",reply_markup=_creator_keyboard(uid))
+    if is_new and pin:
+        _creator_send_dashboard_info(uid,doc,pin)
 
 def _creator_start_create(uid, chat_id, edit=None):
     if not _creation_open():
