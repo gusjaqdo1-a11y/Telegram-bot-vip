@@ -152,29 +152,49 @@ def _dash_remember_valid(bot_id,value):
         return False
 
 def _dash_resolve_doc(dashboard_id):
-    """Resolve a dashboard URL by bot id, or by owner id for legacy links."""
+    """Resolve dashboard IDs stored by either legacy string or Telegram integer fields."""
     key=str(dashboard_id or "").strip()
-    if not key: return None
-    doc=_dash_bots.find_one({"bot_id":key})
-    if doc: return doc
+    if not key:
+        return None
+
+    # Telegram IDs are commonly stored as integers in MongoDB, while some
+    # older Creator records stored them as strings. Accept both forms so a
+    # valid dashboard link never becomes a false 404 just because of BSON type.
+    candidates=[key]
+    try:
+        candidates.append(int(key))
+    except (TypeError, ValueError):
+        pass
+
+    doc=_dash_bots.find_one({"bot_id":{"$in":candidates}})
+    if doc:
+        return doc
+
     # Older Creator messages sometimes used the owner's Telegram ID in the
-    # dashboard URL. Resolve it only when exactly one bot belongs to that owner.
-    rows=list(_dash_bots.find({"owner_id":key}).sort("created_at",-1).limit(2))
-    if len(rows)==1: return rows[0]
+    # dashboard URL. Resolve that legacy form only when exactly one bot belongs
+    # to the owner, avoiding an ambiguous dashboard selection.
+    rows=list(_dash_bots.find({"owner_id":{"$in":candidates}}).sort("created_at",-1).limit(2))
+    if len(rows)==1:
+        return rows[0]
     return None
 
 def _dash_unavailable_page(dashboard_id):
     key=html.escape(str(dashboard_id or ""),quote=True)
-    return _dash_page("Dashboard unavailable",f"""<div class="wrap unavailable-shell">
+    creator_username=html.escape(str(os.getenv("CREATOR_BOT_USERNAME","")).strip().lstrip("@"),quote=True)
+    creator_link=(f'<a class="btn" href="https://t.me/{creator_username}">🤖 Open Creator Bot</a>' if creator_username else "")
+    page=_dash_page("Dashboard unavailable",f"""<div class="wrap unavailable-shell">
       <div class="glass unavailable">
         <div class="unavailable-icon">◈</div>
         <div class="eyebrow">QUICKDL • CREATOR</div>
         <h1>Dashboard link needs attention</h1>
         <p class="muted">The web service is online, but no active Creator Bot record matches <code>{key}</code>.</p>
         <div class="notice">If this is a newly created bot, open <b>My Bots</b> in Creator Bot and use the fresh Dashboard link. If the bot was deleted, its dashboard is intentionally disabled.</div>
-        <div class="actions"><a class="btn" href="https://t.me/{html.escape(_CREATOR_BOT_TOKEN and os.getenv("CREATOR_BOT_USERNAME","").lstrip("@") or "",quote=True)}">🤖 Open Creator Bot</a><a class="btn secondary" href="/">↩ Back</a></div>
+        <div class="actions">{creator_link}<a class="btn secondary" href="/">↩ Back</a></div>
       </div>
     </div>""")
+    response=Response(page,status=404,mimetype="text/html")
+    response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 def _dash_auth_required(fn):
     @wraps(fn)
@@ -236,6 +256,15 @@ def _dash_css():
 
 def _dash_page(title, body, full=True):
     return f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} • Creator Dashboard</title><style>{_dash_css()}</style></head><body>{body}</body></html>"""
+
+
+
+
+@app.route("/__dashboard_health", methods=["GET"])
+def creator_dashboard_health():
+    response=Response("QUICKDL_DASHBOARD_OK",status=200,mimetype="text/plain")
+    response.headers["Cache-Control"]="no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.route("/dashboard/<bot_id>", methods=["GET","POST"])
