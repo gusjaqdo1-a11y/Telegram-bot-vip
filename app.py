@@ -151,10 +151,42 @@ def _dash_remember_valid(bot_id,value):
     except Exception:
         return False
 
+def _dash_resolve_doc(dashboard_id):
+    """Resolve a dashboard URL by bot id, or by owner id for legacy links."""
+    key=str(dashboard_id or "").strip()
+    if not key: return None
+    doc=_dash_bots.find_one({"bot_id":key})
+    if doc: return doc
+    # Older Creator messages sometimes used the owner's Telegram ID in the
+    # dashboard URL. Resolve it only when exactly one bot belongs to that owner.
+    rows=list(_dash_bots.find({"owner_id":key}).sort("created_at",-1).limit(2))
+    if len(rows)==1: return rows[0]
+    return None
+
+def _dash_unavailable_page(dashboard_id):
+    key=html.escape(str(dashboard_id or ""),quote=True)
+    return _dash_page("Dashboard unavailable",f"""<div class="wrap unavailable-shell">
+      <div class="glass unavailable">
+        <div class="unavailable-icon">◈</div>
+        <div class="eyebrow">QUICKDL • CREATOR</div>
+        <h1>Dashboard link needs attention</h1>
+        <p class="muted">The web service is online, but no active Creator Bot record matches <code>{key}</code>.</p>
+        <div class="notice">If this is a newly created bot, open <b>My Bots</b> in Creator Bot and use the fresh Dashboard link. If the bot was deleted, its dashboard is intentionally disabled.</div>
+        <div class="actions"><a class="btn" href="https://t.me/{html.escape(_CREATOR_BOT_TOKEN and os.getenv("CREATOR_BOT_USERNAME","").lstrip("@") or "",quote=True)}">🤖 Open Creator Bot</a><a class="btn secondary" href="/">↩ Back</a></div>
+      </div>
+    </div>""")
+
 def _dash_auth_required(fn):
     @wraps(fn)
     def wrapped(bot_id, *args, **kwargs):
-        bid=str(bot_id)
+        requested=str(bot_id)
+        doc=_dash_resolve_doc(requested)
+        if not doc or not doc.get("active",True):
+            session.pop("creator_dashboard_bot",None)
+            return _dash_unavailable_page(requested),404
+        bid=str(doc.get("bot_id") or requested)
+        if requested != bid:
+            return redirect(url_for("creator_dashboard_login",bot_id=bid),code=302)
         if str(session.get("creator_dashboard_bot") or "") != bid:
             remembered=_dash_remember_valid(bid,request.cookies.get("creator_dashboard_remember"))
             if remembered:
@@ -162,10 +194,6 @@ def _dash_auth_required(fn):
                 session.permanent=True
             else:
                 return redirect(url_for("creator_dashboard_login", bot_id=bid))
-        doc=_dash_bots.find_one({"bot_id":bid})
-        if not doc or not doc.get("active",True):
-            session.pop("creator_dashboard_bot",None)
-            return render_template_string(_dash_page("Dashboard unavailable","This bot is no longer active in Creator Bot.",False))
         return fn(doc,*args,**kwargs)
     return wrapped
 
@@ -192,8 +220,9 @@ def _dash_css():
     :root{color-scheme:dark;--bg:#07111f;--glass:rgba(20,32,52,.72);--line:rgba(255,255,255,.11);--text:#f7fbff;--muted:#9eacc1;--accent:#8b5cf6;--accent2:#22d3ee;--danger:#fb7185}
     *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);background:radial-gradient(circle at 10% 0%,#263a59 0,transparent 35%),radial-gradient(circle at 90% 10%,#3c245a 0,transparent 30%),linear-gradient(135deg,#050a12,#0a1424 55%,#080d17);min-height:100vh}
     body:before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(120deg,rgba(255,255,255,.025),transparent 30%,rgba(255,255,255,.018));backdrop-filter:blur(2px)}
-    .wrap{width:min(1100px,calc(100% - 28px));margin:0 auto;padding:30px 0 60px}.glass{background:var(--glass);border:1px solid var(--line);box-shadow:0 24px 80px rgba(0,0,0,.34),inset 0 1px rgba(255,255,255,.07);backdrop-filter:blur(22px);border-radius:26px}
-    .top{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 20px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:13px}.avatar{width:56px;height:56px;border-radius:18px;object-fit:cover;border:1px solid rgba(255,255,255,.14);background:#172235}.title{font-size:21px;font-weight:800}.sub{color:var(--muted);font-size:13px;margin-top:3px}
+    .wrap{width:min(1160px,calc(100% - 28px));margin:0 auto;padding:30px 0 70px}.glass{background:linear-gradient(145deg,rgba(24,38,61,.78),rgba(11,20,35,.64));border:1px solid rgba(255,255,255,.12);box-shadow:0 30px 100px rgba(0,0,0,.38),inset 0 1px rgba(255,255,255,.09),0 0 0 1px rgba(139,92,246,.035);backdrop-filter:blur(28px) saturate(130%);border-radius:28px;position:relative;overflow:hidden}.glass:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(120deg,rgba(255,255,255,.055),transparent 28%,transparent 72%,rgba(34,211,238,.025))}
+    .unavailable-shell{min-height:82vh;display:grid;place-items:center}.unavailable{width:min(680px,100% - 10px);padding:42px;text-align:center}.unavailable-icon{width:74px;height:74px;margin:0 auto 18px;display:grid;place-items:center;border-radius:24px;background:linear-gradient(135deg,rgba(139,92,246,.25),rgba(34,211,238,.14));border:1px solid rgba(255,255,255,.14);font-size:34px;box-shadow:0 18px 50px rgba(0,0,0,.28)}.eyebrow{font-size:11px;letter-spacing:.18em;color:#a8b7ca;margin-bottom:10px}.unavailable h1{font-size:30px;margin:0 0 10px}.unavailable .actions{justify-content:center}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 20px;margin-bottom:18px;position:sticky;top:12px;z-index:10}.brand{display:flex;align-items:center;gap:13px}.avatar{width:58px;height:58px;border-radius:19px;object-fit:cover;border:1px solid rgba(255,255,255,.16);background:#172235;box-shadow:0 10px 30px rgba(0,0,0,.25)}.title{font-size:21px;font-weight:850;letter-spacing:-.02em}.sub{color:var(--muted);font-size:13px;margin-top:3px}
     .pill{padding:8px 12px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid var(--line);font-size:12px}.pill.premium{background:rgba(139,92,246,.18);border-color:rgba(167,139,250,.32)}
     .grid{display:grid;grid-template-columns:1.35fr .9fr;gap:18px}.card{padding:22px;margin-bottom:18px}.card h2{margin:0 0 7px;font-size:17px}.muted{color:var(--muted);font-size:13px;line-height:1.55}
     label{display:block;font-size:12px;color:var(--muted);margin:14px 0 7px}input,textarea,select{width:100%;border:1px solid var(--line);background:rgba(0,0,0,.18);color:var(--text);border-radius:14px;padding:12px 13px;outline:none;font:inherit}textarea{min-height:110px;resize:vertical}input:focus,textarea:focus,select:focus{border-color:rgba(139,92,246,.7);box-shadow:0 0 0 3px rgba(139,92,246,.11)}
@@ -211,10 +240,15 @@ def _dash_page(title, body, full=True):
 
 @app.route("/dashboard/<bot_id>", methods=["GET","POST"])
 def creator_dashboard_login(bot_id):
-    bid=str(bot_id)
-    doc=_dash_bots.find_one({"bot_id":bid})
+    requested=str(bot_id)
+    doc=_dash_resolve_doc(requested)
     if not doc:
-        return _dash_page("Not found",'<div class="wrap"><div class="glass card"><h2>Dashboard not found</h2><div class="muted">This bot is not registered in Creator Bot.</div></div></div>'),404
+        return _dash_unavailable_page(requested),404
+    bid=str(doc.get("bot_id") or requested)
+    if not doc.get("active",True) or doc.get("suspended"):
+        return _dash_page("Dashboard disabled",'<div class="wrap unavailable-shell"><div class="glass unavailable"><div class="unavailable-icon">⛔</div><div class="eyebrow">QUICKDL • CREATOR</div><h1>Dashboard disabled</h1><p class="muted">This Downloader Bot is no longer active. Its dashboard has been disabled with the bot record.</p></div></div>'),410
+    if requested!=bid:
+        return redirect(url_for("creator_dashboard_login",bot_id=bid))
     if str(session.get("creator_dashboard_bot") or "")==bid or _dash_remember_valid(bid,request.cookies.get("creator_dashboard_remember")):
         session["creator_dashboard_bot"]=bid
         session.permanent=True
@@ -236,7 +270,7 @@ def creator_dashboard_login(bot_id):
             return response
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")
-    body=f"""<div class="wrap"><div class="glass login"><div class="logo">🤖</div><h1>Creator Dashboard</h1><div class="muted">Secure access for <b>@{botname}</b>.</div>{'<div class="notice err">'+error+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" required><label>PIN</label><input name="pin" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" required><label class="lock"><span>💾 Save login on this device</span><input type="checkbox" name="remember" checked></label><div class="actions"><button class="btn" type="submit">🔐 Open Dashboard</button></div></form><div class="small" style="margin-top:16px">Your PIN is private. Creator Bot can issue a new PIN at any time.</div></div></div>"""
+    body=f"""<div class="wrap unavailable-shell"><div class="glass login"><div class="logo">◈</div><div class="eyebrow">QUICKDL • CREATOR DASHBOARD</div><h1>Welcome back</h1><div class="muted">Secure owner access for <b>@{html.escape(botname)}</b>.</div>{'<div class="notice err">'+html.escape(error)+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" placeholder="@botusername" required><label>6-digit PIN</label><input name="pin" type="password" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" placeholder="••••••" required><label class="lock"><span>💾 Save login on this device</span><input type="checkbox" name="remember" checked></label><div class="actions"><button class="btn" type="submit">⚡ Enter Dashboard</button></div></form><div class="small" style="margin-top:18px">Your PIN stays private. Saved login is signed and expires automatically.</div></div></div>"""
     return _dash_page("Login",body)
 
 
