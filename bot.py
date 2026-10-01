@@ -12542,7 +12542,7 @@ def _creator_my_bots(uid, chat_id):
     for d in rows:
         username=str(d.get("username") or "unknown").lstrip("@")
         kind=str(d.get("bot_type") or "media").lower()
-        icon="🎵" if kind=="music" else ("🌐" if kind=="social" else "🎬")
+        icon="🎵" if kind=="music" else "📥"
         active=bool(d.get("active",True)) and not bool(d.get("suspended"))
         premium="💎 Premium" if _managed_premium_active_doc(d) else "🆓 Standard"
         lines.append(f"{icon} <b>@{html.escape(username)}</b> — {'🟢 Active' if active else '🔴 Offline'} — {premium}")
@@ -12591,11 +12591,11 @@ def _creator_delete_menu(uid, chat_id):
 
 def _creator_premium(uid, chat_id, edit=None):
     uid=str(uid); rows=list(managed_bots_col.find({"owner_id":uid}).sort("created_at",-1))
-    if not rows: _creator_send(chat_id,"🤖 <b>No bots yet</b>\n\nCreate a Video Downloader or Music Downloader first.",reply_markup=_creator_keyboard(uid)); return
+    if not rows: _creator_send(chat_id,"🤖 <b>No bots yet</b>\n\nCreate a Media Downloader or Music Downloader first.",reply_markup=_creator_keyboard(uid)); return
     if premium_verification_required() and not user_is_verified(uid): _creator_send(chat_id,"🔐 <b>Verification Required</b>\n\nVerify your account before purchasing Premium."); return
     buttons=[]
     for d in rows[:50]:
-        typ="🎵" if str(d.get("bot_type"))=="music" else "🎬"; status="💎" if _managed_premium_active_doc(d) else "🆓"
+        typ="🎵" if str(d.get("bot_type"))=="music" else "📥"; status="💎" if _managed_premium_active_doc(d) else "🆓"
         buttons.append([{"text":f"{typ} {status} @{str(d.get('username') or 'unknown')[:30]}","callback_data":f"cpickbot:{d.get('bot_id')}"}])
     text="💎 <b>PREMIUM</b>\n\nFirst choose the bot you want to upgrade.\nThen choose <b>Wallet</b> or <b>Telegram Stars</b>."
     markup={"inline_keyboard":buttons+[[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}
