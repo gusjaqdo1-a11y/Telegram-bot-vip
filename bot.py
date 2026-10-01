@@ -12382,7 +12382,6 @@ def _creator_send_type_card(uid,chat_id,kind,edit=None):
     else: _creator_send(chat_id,text,reply_markup=markup,parse_mode="HTML")
 
 def _creator_dashboard_credentials(username):
-def _creator_dashboard_credentials(username):
     pin=str(secrets.randbelow(900000)+100000)
     return str(username).lstrip("@"),hashlib.sha256(pin.encode()).hexdigest(),pin
 
@@ -12929,7 +12928,7 @@ def _creator_callback(call):
     if data.startswith("ctoken:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
         if btype=="video": btype="media"
-        if btype not in {"media","music"} or sess.get("state")!="type":
+        if btype not in {"media","music"} or sess.get("state") not in {"type","existing_token"}:
             _creator_answer(call.get("id"),"Creation session expired.",True); return
         mid=int(call.get("message",{}).get("message_id") or sess.get("message_id") or 0)
         _creator_set_session(uid,{"state":"existing_token","bot_type":btype,"message_id":mid,"updated_at":datetime.now(timezone.utc)})
