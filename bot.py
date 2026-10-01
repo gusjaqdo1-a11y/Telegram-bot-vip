@@ -1435,11 +1435,10 @@ def _ad_enabled_for(uid, bot_id=None):
     bid0=_ad_bot_key(bot_id)
     if bid0 == "main" and not _main_ads_open(): return True
     if bid0 != "main":
+        # Managed/small-bot ads are controlled by the existing Creator/Admin
+        # master switch only. Do not let newer per-bot dashboard settings
+        # silently disable the original ad-gate behavior.
         if not bool(get_setting("managed_ads_enabled", True)): return True
-        try:
-            d=managed_bots_col.find_one({"bot_id":bid0},{"ads_enabled":1}) or {}
-            if d.get("ads_enabled") is False: return True
-        except Exception: pass
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
