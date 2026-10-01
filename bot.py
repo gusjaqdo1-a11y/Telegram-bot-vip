@@ -609,6 +609,10 @@ def _active_powered_text():
     if not meta or not meta.get("bot_id") or str(meta.get("bot_id")) == "main": return ""
     if not _managed_powered_by_open(): return ""
     if _active_managed_premium(): return ""
+    try:
+        d=managed_bots_col.find_one({"bot_id":str(meta.get("bot_id"))},{"powered_by_enabled":1}) or {}
+        if d.get("powered_by_enabled") is False: return ""
+    except Exception: pass
     return MANAGED_POWERED_BY
 
 def _managed_token_cipher():
@@ -1410,7 +1414,12 @@ def _ad_enabled_for(uid, bot_id=None):
     # have a Creator-admin master switch.
     bid0=_ad_bot_key(bot_id)
     if bid0 == "main" and not _main_ads_open(): return True
-    if bid0 != "main" and not bool(get_setting("managed_ads_enabled", True)): return True
+    if bid0 != "main":
+        if not bool(get_setting("managed_ads_enabled", True)): return True
+        try:
+            d=managed_bots_col.find_one({"bot_id":bid0},{"ads_enabled":1}) or {}
+            if d.get("ads_enabled") is False: return True
+        except Exception: pass
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -3655,6 +3664,15 @@ def _is_audio_file(path):
 def _download_limit_seconds(uid):
     """Return the duration limit, including admin/special YouTube access."""
     uid=str(uid)
+    try:
+        meta=_ACTIVE_MANAGED_META.get() or {}
+        bid=str(meta.get("bot_id") or "")
+        if bid and bid!="main":
+            d=managed_bots_col.find_one({"bot_id":bid},{"youtube_max_minutes":1}) or {}
+            bot_minutes=int(d.get("youtube_max_minutes") or 0)
+            if bot_minutes>0:
+                return max(1,bot_minutes)*60
+    except Exception: pass
     # Quick Access is an admin-granted priority tier: no artificial duration cap.
     # A large practical ceiling is used because yt-dlp expects a numeric filter.
     if is_quick_access(uid):
@@ -4659,6 +4677,15 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
 
 def download_media(chat_id, link, message_id, quality=None):
     platform=detect_platform(link)
+    try:
+        meta=_ACTIVE_MANAGED_META.get() or {}
+        bid=str(meta.get("bot_id") or "")
+        if bid and bid!="main":
+            d=managed_bots_col.find_one({"bot_id":bid},{"disabled_platforms":1}) or {}
+            if platform in set(d.get("disabled_platforms") or []):
+                _current_bot().send_message(chat_id,f"🚫 <b>{html.escape(platform.title())}</b> is disabled by this bot owner.")
+                return
+    except Exception: pass
     if platform=="unknown":
         supported=", ".join(premium_platform_names())
         text=f"❌ Unsupported or invalid link.\n\n🌐 Supported Premium/Trial platforms ({len(premium_platform_names())}): {html.escape(supported)}"
@@ -13194,7 +13221,10 @@ def _managed_bot_start_instance(doc):
                 except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
             th=threading.Thread(target=_run,daemon=True,name=f"managed-bot-{bid}"); managed_bot_threads[bid]=th; th.start(); return mb
         except Exception as e:
-            print("Managed bot start failed:",repr(e)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500]}}); return None
+            print("Managed bot start failed:",repr(e))
+            managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500],"last_runtime_error_at":datetime.now(timezone.utc)}})
+            _creator_notify_admins(f"❌ <b>Managed Bot Runtime Failed</b>\n\n🤖 @{html.escape(str(doc.get('username') or 'unknown'))}\n🆔 <code>{html.escape(bid)}</code>\n👤 Owner: <code>{html.escape(str(doc.get('owner_id') or ''))}</code>\n\nError: <code>{html.escape(str(e)[:500])}</code>")
+            return None
 
 def _run_managed_music_search(mb,chat_id,q,uid,bid,pending=None):
     """Managed Music Downloader uses the exact same YouTube-first engine as the main bot.
