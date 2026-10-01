@@ -2997,7 +2997,8 @@ def start_verify_flow(call):
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(InlineKeyboardButton("📧 Gmail", callback_data="verify_choice_gmail"))
         if sms_enabled:
-            kb.add(InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone"))        if whatsapp_enabled:
+            kb.add(InlineKeyboardButton("📱 SMS", callback_data="verify_choice_phone"))
+        if whatsapp_enabled:
             kb.add(InlineKeyboardButton("🟢 WhatsApp OTP", callback_data="verify_choice_whatsapp"))
         if len(kb.keyboard) > 0:
             bot.edit_message_text(
@@ -10989,7 +10990,8 @@ def multi_checkjoin(call):
                     render_start_message(str(user_id)),
                     parse_mode="HTML"
                 )
-                bot.send_message(user_id, "👇 <b>Main Menu</b>", reply_markup=localized_user_menu(str(user_id)), parse_mode="HTML")            except Exception as e:
+                bot.send_message(user_id, "👇 <b>Main Menu</b>", reply_markup=localized_user_menu(str(user_id)), parse_mode="HTML")
+            except Exception as e:
                 print("MULTI WELCOME AFTER CONFIRM ERROR:", repr(e))
     else:
         try:
@@ -13053,7 +13055,10 @@ def _creator_callback(call):
         _creator_set_session(uid,{"state":"existing_token","bot_type":btype,"message_id":mid,"updated_at":datetime.now(timezone.utc)})
         _creator_answer(call.get("id"),"Send token")
         if mid: _creator_edit(chat_id,mid,"🔑 <b>CONNECT EXISTING BOT</b>\n\nSend the BotFather token now.\n\nAfter verification, the same bot will be registered and given its dashboard.",reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":f"ctype:{btype}"},{"text":"❌ Cancel","callback_data":"ccancel"}]]})
-        else: _creator_send(chat_id,"🔑 <b>Connect Existing Bot Token</b>\n\nSend the BotFather token for the bot you want to manage."); return    if data.startswith("cbotinfo:"):
+        else:
+            _creator_send(chat_id,"🔑 <b>Connect Existing Bot Token</b>\n\nSend the BotFather token for the bot you want to manage.")
+            return
+    if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
