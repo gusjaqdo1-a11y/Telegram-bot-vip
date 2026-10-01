@@ -10626,18 +10626,16 @@ def premium_buy_callback(call):
         link,stars=_create_main_premium_invoice(uid,months,"premium_menu")
         price=float(get_premium_prices()[months])
         text=(f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n"
-              f"💰 Price: <b>${price:.2f}</b>\n"
+              f"💰 Price: <b>__DOLLAR__{price:.2f}</b>\n"
               f"⭐ Payment: <b>{stars} Telegram Stars</b>\n\n"
               "Tap <b>PAY NOW</b> to complete payment securely in Telegram.\n"
               "Premium will activate automatically after successful payment.")
-        kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)], [InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back to Premium",callback_data="premium_menu")]])
         bot.answer_callback_query(call.id,"Invoice ready")
-        try: bot.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=kb)
-        except Exception: bot.send_message(call.message.chat.id,text,parse_mode="HTML",reply_markup=kb)
+        _send_premium_plan_message(bot,call.message.chat.id,months,text.replace("__DOLLAR__","$"),reply_markup=kb,replace_message=(call.message.chat.id,call.message.message_id))
     except Exception as e:
         print("Main Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create payment link.",show_alert=True)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("premium_confirm:"))
 def premium_confirm_callback(call):
     uid = str(call.from_user.id)
     months = call.data.split(":",1)[1]
