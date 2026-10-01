@@ -133,12 +133,35 @@ def _dash_creator_api(method, payload=None, timeout=20):
         return None, str(e)
 
 
+def _dash_remember_value(bot_id, expires_at=None):
+    bid=str(bot_id)
+    exp=int(expires_at or (datetime.now(timezone.utc).timestamp()+31536000))
+    raw=f"{bid}|{exp}"
+    sig=hmac.new(DASHBOARD_SESSION_SECRET.encode(),raw.encode(),hashlib.sha256).hexdigest()
+    return f"{raw}|{sig}"
+
+def _dash_remember_valid(bot_id,value):
+    try:
+        parts=str(value or "").split("|")
+        if len(parts)!=3 or parts[0]!=str(bot_id): return False
+        exp=int(parts[1])
+        if exp<int(datetime.now(timezone.utc).timestamp()): return False
+        expected=_dash_remember_value(bot_id,exp)
+        return hmac.compare_digest(str(value),expected)
+    except Exception:
+        return False
+
 def _dash_auth_required(fn):
     @wraps(fn)
     def wrapped(bot_id, *args, **kwargs):
         bid=str(bot_id)
         if str(session.get("creator_dashboard_bot") or "") != bid:
-            return redirect(url_for("creator_dashboard_login", bot_id=bid))
+            remembered=_dash_remember_valid(bid,request.cookies.get("creator_dashboard_remember"))
+            if remembered:
+                session["creator_dashboard_bot"]=bid
+                session.permanent=True
+            else:
+                return redirect(url_for("creator_dashboard_login", bot_id=bid))
         doc=_dash_bots.find_one({"bot_id":bid})
         if not doc or not doc.get("active",True):
             session.pop("creator_dashboard_bot",None)
@@ -192,21 +215,28 @@ def creator_dashboard_login(bot_id):
     doc=_dash_bots.find_one({"bot_id":bid})
     if not doc:
         return _dash_page("Not found",'<div class="wrap"><div class="glass card"><h2>Dashboard not found</h2><div class="muted">This bot is not registered in Creator Bot.</div></div></div>'),404
-    if str(session.get("creator_dashboard_bot") or "")==bid:
+    if str(session.get("creator_dashboard_bot") or "")==bid or _dash_remember_valid(bid,request.cookies.get("creator_dashboard_remember")):
+        session["creator_dashboard_bot"]=bid
+        session.permanent=True
         return redirect(url_for("creator_dashboard_home",bot_id=bid))
     error=""
+    remember=False
     if request.method=="POST":
         username=str(request.form.get("username") or "").strip().lstrip("@")
         pin=str(request.form.get("pin") or "").strip()
+        remember=bool(request.form.get("remember"))
         expected=str(doc.get("dashboard_username") or doc.get("username") or "").strip().lstrip("@")
         if hmac.compare_digest(username.lower(),expected.lower()) and _dash_pin_ok(doc.get("dashboard_pin_hash"),pin):
             session["creator_dashboard_bot"]=bid
             session.permanent=True
             session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
-            return redirect(url_for("creator_dashboard_home",bot_id=bid))
+            response=redirect(url_for("creator_dashboard_home",bot_id=bid))
+            if remember:
+                response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax")
+            return response
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")
-    body=f"""<div class="wrap"><div class="glass login"><div class="logo">🤖</div><h1>Creator Dashboard</h1><div class="muted">Secure access for <b>@{botname}</b>.</div>{'<div class="notice err">'+error+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" required><label>PIN</label><input name="pin" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" required><div class="actions"><button class="btn" type="submit">🔐 Open Dashboard</button></div></form><div class="small" style="margin-top:16px">Your PIN is private. Creator Bot can issue a new PIN at any time.</div></div></div>"""
+    body=f"""<div class="wrap"><div class="glass login"><div class="logo">🤖</div><h1>Creator Dashboard</h1><div class="muted">Secure access for <b>@{botname}</b>.</div>{'<div class="notice err">'+error+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" required><label>PIN</label><input name="pin" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" required><label class="lock"><span>💾 Save login on this device</span><input type="checkbox" name="remember" checked></label><div class="actions"><button class="btn" type="submit">🔐 Open Dashboard</button></div></form><div class="small" style="margin-top:16px">Your PIN is private. Creator Bot can issue a new PIN at any time.</div></div></div>"""
     return _dash_page("Login",body)
 
 
@@ -277,7 +307,9 @@ def creator_dashboard_home(doc):
 @app.route("/dashboard/<bot_id>/logout",methods=["GET"])
 def creator_dashboard_logout(bot_id):
     session.pop("creator_dashboard_bot",None)
-    return redirect(url_for("creator_dashboard_login",bot_id=str(bot_id)))
+    response=redirect(url_for("creator_dashboard_login",bot_id=str(bot_id)))
+    response.delete_cookie("creator_dashboard_remember")
+    return response
 
 
 @app.route("/dashboard/<bot_id>/profile",methods=["POST"])
