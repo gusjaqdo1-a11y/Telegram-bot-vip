@@ -263,9 +263,28 @@ PREMIUM_YOUTUBE_MAX_MB_DEFAULT = int(os.getenv("PREMIUM_YOUTUBE_MAX_MB", "0"))  
 PREMIUM_CONCURRENT_DOWNLOADS = int(os.getenv("PREMIUM_CONCURRENT_DOWNLOADS", "96"))
 FREE_CONCURRENT_DOWNLOADS = int(os.getenv("FREE_CONCURRENT_DOWNLOADS", str(min(32, MAX_CONCURRENT_DOWNLOADS))))
 QUICK_ACCESS_CONCURRENT_DOWNLOADS = int(os.getenv("QUICK_ACCESS_CONCURRENT_DOWNLOADS", "160"))
+# The main downloader gets its own larger queue. Managed/small bots never
+# consume this pool, so a burst on one side cannot slow the other side down.
+MAIN_CONCURRENT_DOWNLOADS = int(os.getenv("MAIN_CONCURRENT_DOWNLOADS", str(max(128, MAX_CONCURRENT_DOWNLOADS))))
+MANAGED_BOT_CONCURRENT_DOWNLOADS = int(os.getenv("MANAGED_BOT_CONCURRENT_DOWNLOADS", str(max(16, min(48, MAX_CONCURRENT_DOWNLOADS)))))
 vip_executor = ThreadPoolExecutor(max_workers=max(1, PREMIUM_CONCURRENT_DOWNLOADS))
 quick_executor = ThreadPoolExecutor(max_workers=max(1, QUICK_ACCESS_CONCURRENT_DOWNLOADS))
 normal_executor = ThreadPoolExecutor(max_workers=max(1, FREE_CONCURRENT_DOWNLOADS))
+main_executor = ThreadPoolExecutor(max_workers=max(1, MAIN_CONCURRENT_DOWNLOADS))
+managed_bot_executors = {}
+managed_bot_executor_lock = threading.RLock()
+
+def _managed_bot_executor(bot_id):
+    bid=str(bot_id or "")
+    if not bid or bid=="main":
+        return main_executor
+    with managed_bot_executor_lock:
+        ex=managed_bot_executors.get(bid)
+        if ex is None:
+            ex=ThreadPoolExecutor(max_workers=max(1, MANAGED_BOT_CONCURRENT_DOWNLOADS),thread_name_prefix=f"managed-{bid[-8:]}")
+            managed_bot_executors[bid]=ex
+        return ex
+
 
 http_session = requests.Session()
 
@@ -2151,13 +2170,23 @@ def is_priority_user(uid):
     return is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
 
 def download_executor_for(uid):
-    """Return the fastest queue available to this user."""
+    """Return an isolated queue for the active bot.
+    
+    Main @Downloadvedioytibot always uses its dedicated high-capacity pool.
+    Managed/small bots use their own per-bot pool, preventing cross-bot queue
+    contention while preserving the existing user priority tiers for the main bot.
+    """
     uid=str(uid)
+    meta=_ACTIVE_MANAGED_META.get() or {}
+    bid=str(meta.get("bot_id") or "").strip()
+    if bid and bid!="main":
+        return _managed_bot_executor(bid)
+    # No managed context means the request belongs to the main downloader.
     if is_quick_access(uid):
-        return quick_executor
+        return main_executor
     if is_priority_user(uid):
-        return vip_executor
-    return normal_executor
+        return main_executor
+    return main_executor
 
 def find_user_by_botid(bid):
     for u, data in users.items():
