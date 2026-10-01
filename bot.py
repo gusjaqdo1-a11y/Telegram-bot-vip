@@ -13206,6 +13206,14 @@ def _managed_bot_start_instance(doc):
             def _remove_ads_menu(m):
                 _ctx(); _send_remove_ads_plans(mb,str(m.from_user.id),m.chat.id,bid)
 
+            def _premium_menu(m):
+                _ctx(); plans=get_premium_prices(); rows=[]
+                for months in ("1","3","9","12"):
+                    if months in plans:
+                        rows.append([InlineKeyboardButton(f"💎 {months} Month — {float(plans[months]):.2f} USD",callback_data=f"mytprem:{bid}:{months}")])
+                rows.append([InlineKeyboardButton("⬅️ Close",callback_data=f"mbotinfo:{bid}")])
+                mb.send_message(m.chat.id,"💎 <b>PREMIUM</b>\n\nChoose a Premium period. Payment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+
             def _admin(m):
                 _ctx()
                 if str(doc.get("owner_id") or "")!=str(m.from_user.id): mb.send_message(m.chat.id,"🔐 <b>Owner only.</b>",parse_mode="HTML"); return
@@ -13260,13 +13268,15 @@ def _managed_bot_start_instance(doc):
                 try:
                     if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
                         duration,_=_youtube_duration_fast(link)
-                        if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
+                        current_doc=_managed_bot_doc(bid) or {}
+                        free_minutes=int(current_doc.get("youtube_max_minutes") or youtube_free_limit_minutes())
+                        if duration and duration>free_minutes*60 and not youtube_is_short(link):
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
                             for months in ("1","3","9","12"):
                                 if months in plans:
                                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
                             kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
-                            msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{youtube_free_limit_minutes()} minutes</b>\n\n💎 This video is longer than the free limit. Choose a Premium plan below to continue.\n\n<b>Premium stays active for the selected period and YouTube is unlimited while Premium is active.</b>"
+                            msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{free_minutes} minutes</b>\n\n💎 This video is longer than the free limit. Choose a Premium plan below to continue.\n\n<b>Premium stays active for the selected period and YouTube is unlimited while Premium is active.</b>"
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
                 has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
@@ -13353,7 +13363,7 @@ def _managed_bot_start_instance(doc):
                 mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
-            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
+            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="💎 Premium")(_premium_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
