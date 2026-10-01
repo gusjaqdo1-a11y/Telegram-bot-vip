@@ -5996,7 +5996,8 @@ def _top_song_searchers_text(limit=100):
         rows=list(activity_col.aggregate(pipeline))
         lines=["🏆 <b>TOP SONG SEARCHERS</b>","",f"Top <b>{len(rows)}</b> users by song searches.",""]
         if not rows:
-            lines.append("No song downloads recorded yet."); return "\n".join(lines)        for i,row in enumerate(rows,1):
+            lines.append("No song downloads recorded yet."); return "\n".join(lines)
+        for i,row in enumerate(rows,1):
             uid=str(row.get("_id") or ""); u=users.get(uid,{}) or {}; username=str(u.get("username") or "").strip()
             label=f"@{username}" if username else str(u.get("first_name") or "User")
             lines.append(f"<b>{i}.</b> {html.escape(label)} — ID: <code>{html.escape(uid)}</code> — 🔎 <b>{int(row.get('searches',0))}</b>")
