@@ -13045,14 +13045,22 @@ def _managed_bot_start_instance(doc):
             managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username,"bot_type":btype,"active":True,"updated_at":datetime.now(timezone.utc)}},upsert=False); managed_bot_objects[bid]=mb
             def _ctx(): _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta)
             def _menu(owner=False):
+                current=managed_bots_col.find_one({"bot_id":bid}) or doc
                 kb=ReplyKeyboardMarkup(resize_keyboard=True)
-                if _creation_open(): kb.add("🤖 Create Your Own Bot")
-                kb.add("🚫 Remove Ads")
+                if _creation_open() and current.get("menu_create_enabled",True): kb.add("🤖 Create Your Own Bot")
+                if current.get("menu_remove_ads_enabled",True): kb.add("🚫 Remove Ads")
+                if current.get("menu_premium_enabled",True): kb.add("💎 Premium")
                 if owner: kb.add("👑 ADMIN PANEL")
                 return kb
             def _start(m):
-                _ctx(); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); owner=str(doc.get("owner_id") or "")==str(m.from_user.id)
-                if btype=="music":
+                _ctx()
+                current=managed_bots_col.find_one({"bot_id":bid}) or doc
+                managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}})
+                owner=str(current.get("owner_id") or "")==str(m.from_user.id)
+                custom=str(current.get("start_message") or "").strip()
+                if custom:
+                    text=custom
+                elif btype=="music":
                     text="🎵 <b>WELCOME TO MUSIC DOWNLOADER</b> 🎵\n\nSearch and download songs by title, part of title or artist.\n\n🎵 Full song download\n🎤 Artist + title metadata\n🖼 Cover artwork\n⚡ Fast search\n\n🚀 Send a song name now."
                 else:
                     text="🎬 <b>WELCOME TO VIDEO DOWNLOADER</b> 🎬\n\nDownload supported videos and photos quickly.\n\n📥 Copy a supported link and send it here.\n🌐 YouTube • TikTok • Instagram • Facebook • Pinterest • Snapchat • X/Twitter and other supported platforms.\n⚡ The download starts immediately.\n\n🚀 Send your link now."
