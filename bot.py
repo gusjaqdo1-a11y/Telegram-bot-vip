@@ -12615,11 +12615,13 @@ _CREATOR_ADMIN_BUTTONS = {
     "📈 AD DASHBOARD", "🔢 Ads Per User", "⏱️ Ad Seconds", "⚙️ Ad Format", "📊 Ad Settings", "🧩 In-App Settings",
     "🟢 OPEN MANAGED ADS", "🔴 CLOSE MANAGED ADS",
     "🟢 Open Managed Ads", "🔴 Close Managed Ads",
-    "🟢 Open Powered by", "🔴 Close Powered by", "❌ Cancel Input", "🔙 USER MENU",
+    "🟢 Open Powered by", "🔴 Close Powered by", "❌ Cancel Input", "🔙 USER MENU", "👑 ADMIN PANEL",
 }
 
 
 def _creator_admin_text(uid, chat_id, text):
+    if text=="👑 ADMIN PANEL":
+        _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="🟢 Open Creation":
         set_setting("bot_creation_enabled",True); _creation_commands_refresh(); _creator_set_commands(); _refresh_all_user_menus("🤖 Bot creation is now OPEN."); _creator_send(chat_id,"🟢 <b>Creation OPEN</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="🔴 Close Creation":
