@@ -317,6 +317,9 @@ managed_bot_objects = {}
 managed_bot_threads = {}
 managed_bot_lock = threading.RLock()
 creator_sessions = {}
+# Creator updates must never be blocked by slow Mongo/Telegram/API work.
+# Keep the long-poll reader free so button presses and messages are handled immediately.
+creator_update_executor = ThreadPoolExecutor(max_workers=12)
 # SUPPORT_TICKETS_COL is initialized after MongoDB db2 is ready.
 SUPPORT_TICKETS_COL = None
 SUPPORT_ADMIN_IDS = [7983838654, 8668532036]
@@ -12450,6 +12453,68 @@ def _creator_wallet_card(uid, chat_id, regenerate=False):
         "This is an internal virtual wallet card for linking your managed Downloader Bot. "
         "It is <b>not a bank card</b> and has no banking/withdrawal function. The balance always stays synced with @Downloadvedioytibot.")
 
+def _creator_my_bots_data(uid):
+    uid=str(uid)
+    return list(managed_bots_col.find({"owner_id":uid}).sort("created_at",-1).limit(50))
+
+def _creator_my_bots(uid, chat_id):
+    rows=_creator_my_bots_data(uid)
+    if not rows:
+        _creator_send(chat_id,
+            "🤖 <b>MY BOTS</b>\n\nYou have not created or connected a bot yet.\n\nTap <b>🤖 Create My Bot</b> to start.",
+            reply_markup=_creator_keyboard(uid))
+        return
+    lines=["🤖 <b>MY BOTS</b>",""]
+    buttons=[]
+    for d in rows:
+        username=str(d.get("username") or "unknown").lstrip("@")
+        kind=str(d.get("bot_type") or "video").lower()
+        icon="🎵" if kind=="music" else ("🌐" if kind=="social" else "🎬")
+        active=bool(d.get("active",True)) and not bool(d.get("suspended"))
+        premium="💎 Premium" if _managed_premium_active_doc(d) else "🆓 Standard"
+        lines.append(f"{icon} <b>@{html.escape(username)}</b> — {'🟢 Active' if active else '🔴 Offline'} — {premium}")
+        buttons.append([
+            {"text":f"⚙️ @{username[:28]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},
+            {"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}
+        ])
+    buttons.append([{"text":"💎 Premium","callback_data":"cmypremium"}])
+    _creator_send(chat_id,"\n".join(lines),reply_markup={"inline_keyboard":buttons})
+
+def _creator_my_bots_edit(uid, chat_id, message_id):
+    rows=_creator_my_bots_data(uid)
+    if not rows:
+        _creator_edit(chat_id,message_id,
+            "🤖 <b>MY BOTS</b>\n\nYou have not created or connected a bot yet.",
+            reply_markup={"inline_keyboard":[[{"text":"🤖 Create My Bot","callback_data":"ccreate"}]]})
+        return
+    lines=["🤖 <b>MY BOTS</b>",""]
+    buttons=[]
+    for d in rows:
+        username=str(d.get("username") or "unknown").lstrip("@")
+        kind=str(d.get("bot_type") or "video").lower()
+        icon="🎵" if kind=="music" else ("🌐" if kind=="social" else "🎬")
+        active=bool(d.get("active",True)) and not bool(d.get("suspended"))
+        premium="💎 Premium" if _managed_premium_active_doc(d) else "🆓 Standard"
+        lines.append(f"{icon} <b>@{html.escape(username)}</b> — {'🟢 Active' if active else '🔴 Offline'} — {premium}")
+        buttons.append([
+            {"text":f"⚙️ @{username[:28]}","callback_data":f"cbotinfo:{d.get('bot_id')}"},
+            {"text":"🗑 Delete","callback_data":f"cbotdel:{d.get('bot_id')}"}
+        ])
+    buttons.append([{"text":"💎 Premium","callback_data":"cmypremium"}])
+    _creator_edit(chat_id,message_id,"\n".join(lines),reply_markup={"inline_keyboard":buttons})
+
+def _creator_delete_menu(uid, chat_id):
+    rows=_creator_my_bots_data(uid)
+    if not rows:
+        _creator_send(chat_id,"🗑 <b>DELETE BOT</b>\n\nYou have no bots to delete.",reply_markup=_creator_keyboard(uid))
+        return
+    buttons=[]
+    for d in rows:
+        username=str(d.get("username") or "unknown").lstrip("@")
+        buttons.append([{"text":f"🗑 @{username[:32]}","callback_data":f"cbotdel:{d.get('bot_id')}"}])
+    buttons.append([{"text":"⬅️ My Bots","callback_data":"cmybots"}])
+    _creator_send(chat_id,"🗑 <b>DELETE BOT</b>\n\nChoose the bot you want to remove from this Creator system.",reply_markup={"inline_keyboard":buttons})
+
 def _creator_premium(uid, chat_id, edit=None):
     uid=str(uid); rows=list(managed_bots_col.find({"owner_id":uid}).sort("created_at",-1))
     if not rows: _creator_send(chat_id,"🤖 <b>No bots yet</b>\n\nCreate a Video Downloader or Music Downloader first.",reply_markup=_creator_keyboard(uid)); return
@@ -12766,6 +12831,15 @@ def _creator_callback(call):
         return
     if data=="cmybots":
         _creator_my_bots_edit(uid,chat_id,mid); return
+    if data=="ccreate":
+        _creator_answer(call.get("id"),"Opening Creator")
+        _creator_start_create(uid,chat_id); return
+    if data=="ccancel":
+        _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled")
+        try:
+            _creator_edit(chat_id,mid,"❌ <b>Creation cancelled.</b>\n\nChoose an option below.",reply_markup={"inline_keyboard":[]})
+        except Exception: pass
+        _creator_send(chat_id,"👤 <b>Creator Menu</b>",reply_markup=_creator_keyboard(uid)); return
     if data=="cmypremium":
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
@@ -12788,8 +12862,28 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
+        username=str(d.get("username") or "unknown").lstrip("@")
+        _creator_edit(chat_id,mid,
+            f"⚠️ <b>DELETE @{html.escape(username)}?</b>\n\n"
+            "This removes the bot from this Creator system, stops its worker and disables its dashboard. "
+            "Telegram itself is not deleted.",
+            reply_markup={"inline_keyboard":[
+                [{"text":"🗑 Yes, Delete","callback_data":f"cbotdelconfirm:{bid}"}],
+                [{"text":"❌ Cancel","callback_data":"cbotdelcancel"}]
+            ]}); return
+    if data.startswith("cbotdelconfirm:"):
+        bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
+        if not d or str(d.get("owner_id"))!=uid:
+            _creator_answer(call.get("id"),"Not your bot.",True); return
+        username=str(d.get("username") or "unknown").lstrip("@")
         _managed_bot_remove_from_system(bid)
-        _creator_send(chat_id,"🗑 <b>Bot deleted from this system.</b>\n\nIts polling worker, database record and local management entry have been removed. Telegram itself does not provide a Bot API method for deleting the bot account permanently.",reply_markup=_creator_keyboard(uid)); return
+        _creator_send(chat_id,
+            f"🗑 <b>@{html.escape(username)} deleted.</b>\n\n"
+            "The worker, database record and dashboard access have been removed from this system.",
+            reply_markup=_creator_keyboard(uid)); return
+    if data=="cbotdelcancel":
+        _creator_answer(call.get("id"),"Cancelled")
+        _creator_my_bots_edit(uid,chat_id,mid); return
     if data.startswith("cpickbot:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid: _creator_answer(call.get("id"),"Not your bot.",True); return
@@ -13263,61 +13357,79 @@ def _managed_bots_startup():
     except Exception as e: print("Managed bots startup error:",repr(e))
 
 
+def _creator_process_update(upd):
+    try:
+        if upd.get("managed_bot"):
+            _creator_on_managed_update(upd)
+        msg=upd.get("message") or {}
+        if msg.get("managed_bot_created"):
+            _creator_on_managed_bot_created(msg)
+        if upd.get("callback_query"):
+            _creator_callback(upd["callback_query"])
+        if msg.get("text") is not None:
+            uid=str((msg.get("from") or {}).get("id") or ""); chat=msg.get("chat",{}).get("id")
+            if uid and chat:
+                raw_text=str(msg.get("text") or "").strip()
+                normalized=html.unescape(re.sub(r"<[^>]+>","",raw_text)).strip()
+                if _creator_admin(uid) and (normalized in _CREATOR_ADMIN_BUTTONS or normalized in {"/start","/admin","admin","admin panel","/cancel","cancel"}):
+                    _creator_handle_text(uid,chat,normalized)
+                else:
+                    sess=_creator_session(uid); st=str(sess.get("state") or "")
+                    value=_message_entities_to_html(msg) if st.startswith("admin_") else raw_text
+                    _creator_handle_text(uid,chat,value)
+    except Exception as e:
+        print("Creator update worker error:",repr(e))
+
+def _creator_health_loop():
+    while True:
+        try:
+            _creator_check_managed_bots()
+        except Exception as e:
+            print("Creator managed-bot health loop error:",repr(e))
+        time.sleep(60)
+
 def _creator_poll_loop():
+    global CREATOR_BOT_USERNAME
     if not CREATOR_BOT_TOKEN:
         print("❌ CREATOR_BOT_TOKEN is not configured; managed-bot Creator is DISABLED.")
         return
     offset=0
-    _creator_api("deleteWebhook",{"drop_pending_updates":False})
-    me,me_err=_creator_api("getMe",{})
+    _creator_api("deleteWebhook",{"drop_pending_updates":False},timeout=10)
+    me,me_err=_creator_api("getMe",{},timeout=10)
     if me_err:
         print("❌ Creator Bot getMe failed:",me_err); return
+    CREATOR_BOT_USERNAME=str((me or {}).get("username") or "").lstrip("@")
+    if not CREATOR_BOT_USERNAME:
+        print("❌ Creator Bot username could not be resolved; managed creation links are disabled.")
+    else:
+        print(f"🤖 Creator Bot resolved as @{CREATOR_BOT_USERNAME}")
     if not bool((me or {}).get("can_manage_bots")):
         print("⚠️ CREATOR_BOT_TOKEN works, but Bot Management Mode is OFF. Enable it in the @BotFather Mini App.")
     else:
         print("✅ Creator Bot Bot Management Mode is ON.")
     _creator_set_commands()
+    if not any(t.name=="creator-health" for t in threading.enumerate()):
+        threading.Thread(target=_creator_health_loop,daemon=True,name="creator-health").start()
     print("🤖 Creator Bot is starting...")
-    last_bot_check=0.0
+    last_update_error=0.0
     while True:
         try:
-            if time.time()-last_bot_check>=60:
-                last_bot_check=time.time()
-                try: _creator_check_managed_bots()
-                except Exception as e: print("Creator managed-bot checker error:",repr(e))
-            updates,err=_creator_api("getUpdates",{"offset":offset,"timeout":25,"allowed_updates":["message","callback_query","managed_bot"]},timeout=35)
+            updates,err=_creator_api("getUpdates",{
+                "offset":offset,
+                "timeout":15,
+                "allowed_updates":["message","callback_query","managed_bot"]
+            },timeout=22)
             if err:
-                print("Creator getUpdates error:",err); time.sleep(3); continue
+                now_ts=time.time()
+                if now_ts-last_update_error>5:
+                    print("Creator getUpdates error:",err); last_update_error=now_ts
+                time.sleep(1); continue
             for upd in updates or []:
                 offset=int(upd.get("update_id",offset))+1
-                try:
-                    if upd.get("managed_bot"):
-                        _creator_on_managed_update(upd)
-                    msg=upd.get("message") or {}
-                    if msg.get("managed_bot_created"):
-                        _creator_on_managed_bot_created(msg)
-                    if upd.get("callback_query"):
-                        _creator_callback(upd["callback_query"])
-                    if msg.get("text") is not None:
-                        uid=str((msg.get("from") or {}).get("id") or ""); chat=msg.get("chat",{}).get("id")
-                        if uid and chat:
-                            # Creator-admin reply-keyboard buttons must NEVER be routed
-                            # through an old input state.  Telegram sends keyboard taps
-                            # as ordinary text messages, so handle known admin commands
-                            # first and only use the session state for actual input values.
-                            raw_text=str(msg.get("text") or "").strip()
-                            normalized=html.unescape(re.sub(r"<[^>]+>","",raw_text)).strip()
-                            if _creator_admin(uid) and (normalized in _CREATOR_ADMIN_BUTTONS or normalized in {"/start","/admin","admin","admin panel","/cancel","cancel"}):
-                                _creator_handle_text(uid,chat,normalized)
-                            else:
-                                sess=_creator_session(uid); st=str(sess.get("state") or "")
-                                value=_message_entities_to_html(msg) if st.startswith("admin_") else raw_text
-                                _creator_handle_text(uid,chat,value)
-                except Exception as e:
-                    print("Creator update error:",repr(e))
+                # Never execute Telegram/Mongo work on the polling thread.
+                creator_update_executor.submit(_creator_process_update,upd)
         except Exception as e:
-            print("Creator polling loop error:",repr(e)); time.sleep(3)
-
+            print("Creator polling loop error:",repr(e)); time.sleep(1)
 
 def _creation_commands_refresh():
     try:
