@@ -1322,6 +1322,7 @@ ad_events_col = db1["ad_events"]
 remove_ads_col = db1["remove_ads_access"]
 remove_ads_payments_col = db1["remove_ads_payments"]
 song_media_cache_col = db2["song_media_cache"]
+broadcast_history_col = db1["broadcast_history"]
 
 def get_setting(key, default):
     res = settings_col.find_one({"_id": key})
@@ -2480,6 +2481,7 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("🗑 Delete Last Broadcast", "🗑 Delete 2 Last Broadcast")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
@@ -9875,18 +9877,60 @@ def broadcast_start(m):
         bot.register_next_step_handler(msg, broadcast_send)
     except: pass
 
+def _record_main_broadcast(kind, messages, source_chat_id=None, source_message_id=None):
+    try:
+        broadcast_history_col.insert_one({
+            "kind":str(kind),"created_at":datetime.now(timezone.utc),
+            "messages":[{"chat_id":int(x[0]),"message_id":int(x[1])} for x in messages[:100000]],
+            "source_chat_id":int(source_chat_id) if source_chat_id is not None else None,
+            "source_message_id":int(source_message_id) if source_message_id is not None else None,
+            "status":"sent",
+        })
+    except Exception as e:
+        print("Broadcast history save failed:",repr(e))
+
+def _delete_main_broadcasts(count):
+    try:
+        rows=list(broadcast_history_col.find({"status":{"$ne":"deleted"}}).sort("created_at",-1).limit(int(count)))
+    except Exception as e:
+        print("Broadcast history read failed:",repr(e)); return 0,0
+    deleted=failed=0
+    for row in rows:
+        for item in row.get("messages") or []:
+            try:
+                bot.delete_message(int(item.get("chat_id")),int(item.get("message_id"))); deleted+=1
+            except Exception:
+                failed+=1
+        try:
+            broadcast_history_col.update_one({"_id":row.get("_id")},{"$set":{"status":"deleted","deleted_at":datetime.now(timezone.utc),"delete_attempted":True}})
+        except Exception: pass
+    return deleted,failed
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete Last Broadcast")
+def delete_last_broadcast(m):
+    if not is_admin(m.from_user.id): return
+    deleted,failed=_delete_main_broadcasts(1)
+    bot.send_message(m.chat.id,f"🗑 <b>Last Broadcast Deleted</b>\n\n✅ Deleted: <b>{deleted}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete 2 Last Broadcast")
+def delete_two_last_broadcasts(m):
+    if not is_admin(m.from_user.id): return
+    deleted,failed=_delete_main_broadcasts(2)
+    bot.send_message(m.chat.id,f"🗑 <b>2 Last Broadcasts Deleted</b>\n\n✅ Deleted: <b>{deleted}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
+
 def broadcast_send(m):
     if not is_admin(m.from_user.id):
         return
-    # copyMessage preserves Telegram custom-emoji entities instead of flattening
-    # them into ordinary keyboard emoji. It also preserves the original rich text.
-    sent=failed=0
+    sent=failed=0; delivered=[]
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid), m.chat.id, m.message_id)
+            copied=bot.copy_message(int(uid), m.chat.id, m.message_id)
+            mid=getattr(copied,"message_id",None)
+            if mid: delivered.append((int(uid),int(mid)))
             sent+=1
         except Exception:
             failed+=1
+    _record_main_broadcast("text",delivered,m.chat.id,m.message_id)
     try:
         bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
     except Exception: pass
@@ -9901,19 +9945,20 @@ def broadcast_media_start(m):
 def broadcast_media_process(m):
     if not is_admin(m.from_user.id):
         return
-    
     if not (m.video or m.photo):
         bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
         return
-        
-    # copy_message preserves the original caption entities, including Telegram custom emojis.
-    sent=failed=0
+    sent=failed=0; delivered=[]
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid),m.chat.id,m.message_id); sent+=1
+            copied=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            mid=getattr(copied,"message_id",None)
+            if mid: delivered.append((int(uid),int(mid)))
+            sent+=1
         except Exception:
             failed+=1
-    bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+    _record_main_broadcast("media",delivered,m.chat.id,m.message_id)
+    bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
