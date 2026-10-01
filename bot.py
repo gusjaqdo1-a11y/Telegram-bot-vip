@@ -13047,17 +13047,37 @@ def _creator_check_managed_bots():
                 if str(fresh)!=str(token):
                     token_hash=hashlib.sha256(str(fresh).encode()).hexdigest()
                     with _CREATOR_MANAGED_EVENT_LOCK:
-                        claim=managed_bots_col.update_one(
+                        now=datetime.now(timezone.utc)
+                        latest=managed_bots_col.find_one({"bot_id":bid}) or d
+                        old_hash=str(latest.get("last_token_notice_hash") or "")
+                        changed_hash=old_hash!=token_hash
+                        if not changed_hash:
+                            continue
+                        managed_bots_col.update_one(
                             {"bot_id":bid,"last_token_notice_hash":{"$ne":token_hash}},
-                            {"$set":{"token_enc":_encrypt_managed_token(fresh),"active":True,"updated_at":datetime.now(timezone.utc),"last_token_notice_hash":token_hash}}
+                            {"$set":{"token_enc":_encrypt_managed_token(fresh),"active":True,"updated_at":now,"last_token_notice_hash":token_hash}}
                         )
-                        if claim.modified_count:
-                            managed_bot_objects.pop(bid,None); managed_bot_threads.pop(bid,None)
-                            _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
-                            owner=str(d.get("owner_id") or "")
-                            if owner:
-                                _creator_send(int(owner),f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\n\nTelegram changed this managed bot's token. Creator Bot received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and keeps its settings.")
-                                _creator_notify_admins(f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(str(d.get('username') or 'unknown'))}\nOwner: <code>{html.escape(owner)}</code>")
+                        managed_bot_objects.pop(bid,None); managed_bot_threads.pop(bid,None)
+                        _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
+                        latest=managed_bots_col.find_one({"bot_id":bid}) or latest
+                        last_notice=parse_seen_time(latest.get("last_token_notice_at"))
+                        notify=not last_notice or (now-last_notice).total_seconds()>=900
+                        if notify:
+                            claim=managed_bots_col.update_one(
+                                {"bot_id":bid,"last_token_notice_hash":token_hash,"last_token_notice_at":{"$exists":False}},
+                                {"$set":{"last_token_notice_at":now}}
+                            )
+                            if not claim.modified_count and last_notice:
+                                claim=managed_bots_col.update_one(
+                                    {"bot_id":bid,"last_token_notice_hash":token_hash,"last_token_notice_at":last_notice},
+                                    {"$set":{"last_token_notice_at":now}}
+                                )
+                            notify=bool(claim.modified_count)
+                        owner=str(latest.get("owner_id") or "")
+                        if notify and owner:
+                            uname=str(latest.get("username") or d.get("username") or "unknown").lstrip("@")
+                            _creator_send(int(owner),f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(uname)}\n\nTelegram changed this managed bot's token. Creator Bot received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and keeps its settings.")
+                            _creator_notify_admins(f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(uname)}\nOwner: <code>{html.escape(owner)}</code>")
                 continue
             _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
         except Exception as e:
