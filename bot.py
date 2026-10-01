@@ -11267,6 +11267,55 @@ def set_premium_prices_admin(m):
     except Exception:
         bot.send_message(m.chat.id, "❌ Format error. Use: 1 month 3 month 9 month 12 month prices, e.g. 5 12 30 40")
 
+@bot.message_handler(func=lambda m: m.text == "🖼 PREMIUM MEDIA")
+def premium_media_admin(m):
+    if not is_admin(m.from_user.id): return
+    kb=InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        InlineKeyboardButton("1 Month",callback_data="premmedia:1"),
+        InlineKeyboardButton("3 Months",callback_data="premmedia:3"),
+        InlineKeyboardButton("9 Months",callback_data="premmedia:9"),
+        InlineKeyboardButton("12 Months",callback_data="premmedia:12"),
+    )
+    bot.send_message(m.chat.id,
+        "🖼 <b>PREMIUM PLAN MEDIA</b>\n\n"
+        "Choose a Premium plan. Then send one image or video.\n"
+        "That media will appear with that plan's price/invoice button.\n\n"
+        "Send <code>clear</code> to remove the media for a plan.",
+        parse_mode="HTML",reply_markup=kb)
+
+@bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("premmedia:"))
+def premium_media_pick(call):
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(call.id,"Admin only.",show_alert=True); return
+    months=str(call.data).split(":",1)[1]
+    if months not in {"1","3","9","12"}:
+        bot.answer_callback_query(call.id,"Invalid plan.",show_alert=True); return
+    msg=bot.send_message(call.message.chat.id,
+        f"🖼 <b>Premium {months} Month(s)</b>\n\nSend the image or video for this plan.\nSend <code>clear</code> to remove it.",
+        parse_mode="HTML")
+    bot.register_next_step_handler(msg,premium_media_process,months)
+    bot.answer_callback_query(call.id,"Waiting for media")
+
+def premium_media_process(m,months):
+    if not is_admin(m.from_user.id): return
+    months=str(months)
+    if (m.text or "").strip().lower()=="clear":
+        set_setting(f"premium_plan_media_{months}",{})
+        bot.send_message(m.chat.id,f"✅ Premium {months} month media cleared.",reply_markup=admin_menu()); return
+    value={}
+    if getattr(m,"photo",None):
+        value={"media_type":"photo","file_id":m.photo[-1].file_id,"updated_at":datetime.now(timezone.utc).isoformat()}
+    elif getattr(m,"video",None):
+        value={"media_type":"video","file_id":m.video.file_id,"updated_at":datetime.now(timezone.utc).isoformat()}
+    else:
+        bot.send_message(m.chat.id,"❌ Send a photo, video, or <code>clear</code>.",parse_mode="HTML")
+        return
+    set_setting(f"premium_plan_media_{months}",value)
+    bot.send_message(m.chat.id,
+        f"✅ <b>Premium {months} Month(s)</b> media saved.\n\nThe selected image/video will now appear with this plan before the invoice button.",
+        parse_mode="HTML",reply_markup=admin_menu())
+
 def resolve_user_input(text):
     text=(text or '').strip()
     return text if text in users else find_user_by_botid(text)
