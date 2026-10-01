@@ -1300,6 +1300,7 @@ except Exception as e:
 
 settings_col = db1["settings"]
 managed_bots_col = db1["managed_bots"]
+broadcast_history_col = db1["broadcast_history"]
 creator_sessions_col = db1["creator_sessions"]
 premium_logs_col = db1["premium_logs"]
 activity_col = db1["activity_logs"]
@@ -9838,20 +9839,47 @@ def broadcast_start(m):
     except: pass
 
 def broadcast_send(m):
-    if not is_admin(m.from_user.id):
-        return
-    # copyMessage preserves Telegram custom-emoji entities instead of flattening
-    # them into ordinary keyboard emoji. It also preserves the original rich text.
-    sent=failed=0
+    if not is_admin(m.from_user.id): return
+    delivered=[]; sent=failed=0
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid), m.chat.id, m.message_id)
-            sent+=1
-        except Exception:
-            failed+=1
+            copied=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            delivered.append((int(uid),int(copied.message_id))); sent+=1
+        except Exception: failed+=1
     try:
-        bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
+        broadcast_history_col.insert_one({"admin_id":str(m.from_user.id),"source_message_id":int(m.message_id),
+            "delivered":[{"chat_id":int(x[0]),"message_id":int(x[1])} for x in delivered],"created_at":datetime.now(timezone.utc)})
+        broadcast_history_col.delete_many({"created_at":{"$lt":datetime.now(timezone.utc)-timedelta(days=7)}})
+    except Exception as e: print("Broadcast history save failed:",repr(e))
+    try: bot.send_message(m.chat.id,f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
     except Exception: pass
+
+@bot.message_handler(func=lambda m: m.text == "🗑 DELETE LAST BROADCAST")
+def delete_last_broadcast(m):
+    if not is_admin(m.from_user.id): return
+    row=broadcast_history_col.find_one({"admin_id":str(m.from_user.id)},sort=[("created_at",-1)])
+    if not row:
+        bot.send_message(m.chat.id,"ℹ️ No broadcast history found.",reply_markup=admin_menu()); return
+    deleted=failed=0
+    for item in row.get("delivered") or []:
+        try: bot.delete_message(int(item["chat_id"]),int(item["message_id"])); deleted+=1
+        except Exception: failed+=1
+    broadcast_history_col.delete_one({"_id":row["_id"]})
+    bot.send_message(m.chat.id,f"🗑 <b>Last Broadcast Deleted</b>\n\n✅ Deleted: <b>{deleted}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🗑 DELETE 2 LAST BROADCAST")
+def delete_two_last_broadcasts(m):
+    if not is_admin(m.from_user.id): return
+    rows=list(broadcast_history_col.find({"admin_id":str(m.from_user.id)}).sort("created_at",-1).limit(2))
+    if not rows:
+        bot.send_message(m.chat.id,"ℹ️ No broadcast history found.",reply_markup=admin_menu()); return
+    deleted=failed=0
+    for row in rows:
+        for item in row.get("delivered") or []:
+            try: bot.delete_message(int(item["chat_id"]),int(item["message_id"])); deleted+=1
+            except Exception: failed+=1
+        broadcast_history_col.delete_one({"_id":row["_id"]})
+    bot.send_message(m.chat.id,f"🗑 <b>2 Last Broadcasts Deleted</b>\n\n✅ Deleted: <b>{deleted}</b>\n❌ Failed: <b>{failed}</b>",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
@@ -9861,22 +9889,20 @@ def broadcast_media_start(m):
     bot.register_next_step_handler(msg, broadcast_media_process)
 
 def broadcast_media_process(m):
-    if not is_admin(m.from_user.id):
-        return
-    
+    if not is_admin(m.from_user.id): return
     if not (m.video or m.photo):
-        bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
-        return
-        
-    # copy_message preserves the original caption entities, including Telegram custom emojis.
-    sent=failed=0
+        bot.send_message(m.chat.id,"❌ Please send a valid Video or Photo."); return
+    delivered=[]; sent=failed=0
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid),m.chat.id,m.message_id); sent+=1
-        except Exception:
-            failed+=1
-    bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
-
+            copied=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            delivered.append((int(uid),int(copied.message_id))); sent+=1
+        except Exception: failed+=1
+    try:
+        broadcast_history_col.insert_one({"admin_id":str(m.from_user.id),"source_message_id":int(m.message_id),
+            "delivered":[{"chat_id":int(x[0]),"message_id":int(x[1])} for x in delivered],"created_at":datetime.now(timezone.utc)})
+    except Exception as e: print("Broadcast history save failed:",repr(e))
+    bot.send_message(m.chat.id,f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
 def send_pay_start(m):
     if not is_admin(m.from_user.id):
