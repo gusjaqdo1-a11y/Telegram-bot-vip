@@ -4996,7 +4996,8 @@ def download_media(chat_id, link, message_id, quality=None):
                     else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
                 except Exception: pass
                 return
-        msg="❌ Download failed. Please try again."        try:
+        msg="❌ Download failed. Please try again."
+        try:
             if message_id: _current_bot().edit_message_text(msg,chat_id,message_id)
             else: _current_bot().send_message(chat_id,msg)
         except Exception:
