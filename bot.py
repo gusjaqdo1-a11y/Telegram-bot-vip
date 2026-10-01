@@ -1693,14 +1693,24 @@ def _ad_premium_back_callback(call):
 
 @bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("adpremplan:"))
 def _ad_premium_plan_callback(call):
-    parts=str(call.data).split(":"); token=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; row=ad_gates_col.find_one({"token":token})
-    if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
+    parts=str(call.data).split(":"); token=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""
+    row=ad_gates_col.find_one({"token":token})
+    if not row or str(row.get("user_id"))!=str(call.from_user.id):
+        bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
-        link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); bot.answer_callback_query(call.id,"Invoice ready")
-        bot.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
-    except Exception as e: print("Ad Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
+        link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months)
+        price=float(get_premium_prices().get(months,0))
+        caption=(f"💎 <b>PREMIUM — {months} MONTH(S)</b>\n\n"
+                 f"💰 Price: <b>__DOLLAR__{price:.2f}</b>\n"
+                 f"⭐ Payment: <b>{stars} Telegram Stars</b>\n\n"
+                 "Premium activates automatically after successful payment.\n"
+                 "Payment is processed by <b>@Downloadvedioytibot</b>.")
+        kb=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]])
+        bot.answer_callback_query(call.id,"Invoice ready")
+        _send_premium_plan_message(bot,call.message.chat.id,months,caption.replace("__DOLLAR__","$"),reply_markup=kb,replace_message=(call.message.chat.id,call.message.message_id))
+    except Exception as e:
+        print("Ad Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("adplan:"))
 def _main_ad_plan_callback(call):
     parts=call.data.split(":"); bid=parts[1] if len(parts)>1 else "main"; months=parts[2] if len(parts)>2 else ""
     try:
