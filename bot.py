@@ -12685,126 +12685,152 @@ def _creator_on_managed_bot_created(msg):
     info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}
     bot_id=info.get("id"); owner_id=((msg or {}).get("from") or {}).get("id")
     if not bot_id or not owner_id: return
-    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or sess.get("username") or "").lstrip("@"); name=str(info.get("first_name") or sess.get("name") or "Downloader Bot"); bot_type=str(sess.get("bot_type") or "video").lower(); bot_type=bot_type if bot_type in {"video","music"} else "video"
-    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
-    if err:
-        _creator_send(owner_id,"❌ Telegram created the bot, but the Creator Bot could not fetch its management token. Please contact admin.")
+    uid=str(owner_id); sess=_creator_session(uid)
+    username=str(info.get("username") or sess.get("username") or "").lstrip("@")
+    name=str(info.get("first_name") or sess.get("name") or "Downloader Bot")
+    bot_type=str(sess.get("bot_type") or "video").lower()
+    bot_type=bot_type if bot_type in {"video","music"} else "video"
+    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)},timeout=15)
+    if err or not token:
+        _creator_send(owner_id,"❌ Telegram created the bot, but Creator Bot could not fetch its management token. The bot was not started here. Please contact admin.")
+        _creator_notify_admins(f"⚠️ <b>Managed Bot Token Fetch Failed</b>\n\n🤖 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n👤 Owner: <code>{uid}</code>\n\nError: <code>{html.escape(str(err or 'empty token')[:500])}</code>")
         print("getManagedBotToken error:",err); return
+    now=datetime.now(timezone.utc)
+    fields,pin=_creator_dashboard_fields(bot_id,username)
     doc={
         "bot_id":str(bot_id),"owner_id":uid,"token_enc":_encrypt_managed_token(token),
         "username":username,"name":name,"bot_type":bot_type,"active":True,"suspended":False,
-        "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],
+        "managed":True,"premium_until":None,"wallet_linked":False,"created_at":now,"updated_at":now,"users":[],
+        **fields
     }
     managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True)
     _creator_clear_session(uid)
-    d=managed_bots_col.find_one({"bot_id":str(bot_id)}); _managed_bot_start_instance(d)
+    d=managed_bots_col.find_one({"bot_id":str(bot_id)}); started=_managed_bot_start_instance(d)
+    dash=_creator_dashboard_url(bot_id)
+    status="🟢 running" if started else "🟠 saved; runtime will retry"
     _creator_send(owner_id,
-        f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
-        "Your downloader bot is now running.\n\n"
+        f"🎉 <b>Bot Created Successfully!</b>\n\n"
+        f"🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
+        f"Your downloader bot is now <b>{status}</b>.\n\n"
+        f"🌐 <b>Dashboard</b>: <a href=\"{html.escape(dash,quote=True)}\">{html.escape(dash)}</a>\n"
+        f"👤 Username: <code>{html.escape(username)}</code>\n"
+        f"🔑 PIN: <code>{pin}</code>\n\n"
         "💎 Premium uses your shared @Downloadvedioytibot balance.",
         reply_markup=_creator_keyboard(uid))
-
+    if not started:
+        _creator_notify_admins(f"⚠️ <b>Managed Bot Start Failed</b>\n\n🤖 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n👤 Owner: <code>{uid}</code>")
 
 def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
-    """Notify the owner and remove a managed bot from the Creator system.
-
-    Telegram's managed-bot update is also used when a token changes. For this
-    Creator product, a token revoke is treated as the owner removing the bot
-    from this service, so the old entry is removed from My Bots as well.
-    """
     if not doc: return
-    bid=str(doc.get("bot_id") or "")
-    owner=str(doc.get("owner_id") or "")
-    username=str(doc.get("username") or "unknown").lstrip("@")
-    name=str(doc.get("name") or "Downloader Bot")
+    bid=str(doc.get("bot_id") or ""); owner=str(doc.get("owner_id") or "")
+    username=str(doc.get("username") or "unknown").lstrip("@"); name=str(doc.get("name") or "Downloader Bot")
     _managed_bot_remove_from_system(bid)
     if owner:
         if reason=="token_revoked":
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
+            text=(f"⚠️ <b>Bot Removed</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
                   "The bot token was revoked/changed in Telegram.\n"
                   "This bot has been removed from your <b>My Bots</b> list and stopped on this system.")
         else:
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
-                  "Your bot was deleted or is no longer available on Telegram.\n"
-                  "It has been removed from your <b>My Bots</b> list and stopped on this system.")
+            text=(f"⚠️ <b>Bot Deleted</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
+                  "Telegram no longer reports this bot as available.\n"
+                  "Its Creator record, runtime and Dashboard have been disabled.")
         _creator_send(int(owner),text,reply_markup=_creator_keyboard(owner))
+    _creator_notify_admins(
+        f"⚠️ <b>Managed Bot Removed</b>\n\n🤖 @{html.escape(username)}\n🆔 <code>{html.escape(bid)}</code>\n👤 Owner: <code>{html.escape(owner)}</code>\n"
+        f"Reason: <b>{html.escape(reason)}</b>"
+    )
 
+def _creator_notify_managed_bot_token_updated(doc, new_token):
+    if not doc or not new_token: return False
+    bid=str(doc.get("bot_id") or ""); owner=str(doc.get("owner_id") or "")
+    old_obj=managed_bot_objects.pop(bid,None)
+    if old_obj:
+        try: old_obj.stop_polling()
+        except Exception: pass
+    managed_bot_threads.pop(bid,None)
+    me,err=_creator_api_with_token(new_token,"getMe",{},timeout=15)
+    if err or not me:
+        _creator_notify_admins(f"❌ <b>Managed Bot Restart Failed After Token Update</b>\n\n🆔 <code>{html.escape(bid)}</code>\nError: <code>{html.escape(str(err or 'getMe failed')[:500])}</code>")
+        return False
+    username=str(me.get("username") or doc.get("username") or "unknown").lstrip("@")
+    name=str(me.get("first_name") or doc.get("name") or "Downloader Bot")
+    now=datetime.now(timezone.utc)
+    managed_bots_col.update_one({"bot_id":bid},{"$set":{
+        "token_enc":_encrypt_managed_token(new_token),"username":username,"name":name,
+        "managed":True,"active":True,"updated_at":now,"last_token_update_at":now
+    }})
+    newdoc=managed_bots_col.find_one({"bot_id":bid}) or {}
+    started=_managed_bot_start_instance(newdoc)
+    if owner:
+        _creator_send(int(owner),
+            f"🔄 <b>Bot Token Updated</b>\n\n"
+            f"🤖 @{html.escape(username)}\n\n"
+            "Telegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n"
+            "✅ Your bot remains in <b>My Bots</b> and continues using the same settings."
+        )
+    _creator_notify_admins(
+        f"🔄 <b>Managed Bot Token Updated</b>\n\n🤖 @{html.escape(username)}\n🆔 <code>{html.escape(bid)}</code>\n👤 Owner: <code>{html.escape(owner)}</code>\n"
+        f"Restart: <b>{'SUCCESS' if started else 'FAILED'}</b>"
+    )
+    return bool(started)
 
 def _creator_on_managed_update(update):
     obj=(update.get("managed_bot") or {})
-    info=obj.get("bot") or {}; owner=(obj.get("user") or {})
+    info=obj.get("bot") or {}; owner=obj.get("user") or {}
     bot_id=info.get("id"); owner_id=owner.get("id")
     if not bot_id: return
     bid=str(bot_id)
     d=managed_bots_col.find_one({"bot_id":bid}) or {}
-
-    # An update for an already-registered bot means Telegram changed the managed
-    # bot (most importantly its token or owner). A token change is deliberately
-    # treated as a revoke/remove in this Creator system instead of silently
-    # replacing our stored credential and keeping the bot in My Bots.
     if d:
-        old_owner=str(d.get("owner_id") or "")
-        token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
+        token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)},timeout=15)
         if not err and token:
             old_token=_decrypt_managed_token(d)
             if old_token and str(token)!=str(old_token):
-                _creator_notify_managed_bot_removed(d,"token_revoked")
-                return
-            if owner_id and old_owner and str(owner_id)!=old_owner:
-                _creator_notify_managed_bot_removed(d,"owner_changed")
-                return
-            d.update({"username":info.get("username") or d.get("username"),"name":info.get("first_name") or d.get("name") or "Downloader Bot","updated_at":datetime.now(timezone.utc)})
-            managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
+                _creator_notify_managed_bot_token_updated(d,str(token)); return
+            managed_bots_col.update_one({"bot_id":bid},{"$set":{
+                "username":info.get("username") or d.get("username"),
+                "name":info.get("first_name") or d.get("name") or "Downloader Bot",
+                "updated_at":datetime.now(timezone.utc)
+            }})
             return
-        # If Telegram can no longer export the managed token, the bot has been
-        # deleted/unavailable. Remove it instead of leaving a dead My Bots entry.
-        if err:
-            _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
-            return
-
-    # New managed bot update: register it normally.
-    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
+        old_token=_decrypt_managed_token(d)
+        if old_token:
+            _,old_err=_creator_api_with_token(old_token,"getMe",{},timeout=10)
+            if not old_err:
+                return
+        _creator_notify_managed_bot_removed(d,"deleted_or_unavailable")
+        return
+    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)},timeout=15)
     if not err and token:
         uid=str(owner_id or "")
-        sess=_creator_session(uid)
+        sess=_creator_session(uid); now=datetime.now(timezone.utc)
+        fields,pin=_creator_dashboard_fields(bot_id,info.get("username") or sess.get("username") or "")
         d={"bot_id":bid,"owner_id":uid,"token_enc":_encrypt_managed_token(token),
            "username":info.get("username") or sess.get("username") or "",
            "name":info.get("first_name") or sess.get("name") or "Downloader Bot",
-           "bot_type":str(sess.get("bot_type") or "video"),"active":True,"suspended":False,
-           "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),
-           "updated_at":datetime.now(timezone.utc),"users":[]}
+           "bot_type":str(sess.get("bot_type") or "video"),"active":True,"suspended":False,"managed":True,
+           "premium_until":None,"wallet_linked":False,"created_at":now,"updated_at":now,"users":[],**fields}
         managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
-        # Keep the creation session until the managed_bot_created message arrives;
-        # that message contains the selected Video/Music type.
         _managed_bot_start_instance(d)
 
-
 def _creator_check_managed_bots():
-    """Periodically detect bots deleted outside Creator Bot (e.g. BotFather)."""
+    """Health-check managed and existing-token bots without breaking token rotation."""
     for d in list(managed_bots_col.find({"active":True,"suspended":{"$ne":True}})):
-        bid=str(d.get("bot_id") or "")
-        token=_decrypt_managed_token(d)
+        bid=str(d.get("bot_id") or ""); token=_decrypt_managed_token(d)
         if not bid or not token: continue
         try:
             result,err=_creator_api_with_token(token,"getMe",{},timeout=10)
-            if not err and result:
-                continue
-            # A revoked token can briefly fail while Telegram sends the
-            # managed_bot update. Ask the manager for the current token before
-            # deciding the bot is deleted. If it returns a different token, this
-            # is a revoke/change and is removed by the product policy above.
-            fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
-            if not ferr and fresh:
-                if str(fresh)!=str(token):
-                    _creator_notify_managed_bot_removed(d,"token_revoked")
-                # Same token but temporary getMe failure: leave it alone.
-                continue
-            _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+            if not err and result: continue
+            if bool(d.get("managed",True)):
+                fresh,ferr=_creator_api("getManagedBotToken",{"user_id":int(bid)},timeout=10)
+                if not ferr and fresh:
+                    if str(fresh)!=str(token):
+                        _creator_notify_managed_bot_token_updated(d,str(fresh))
+                    continue
+            _creator_notify_managed_bot_removed(d,"deleted_or_unavailable")
         except Exception as e:
             print("Managed bot health check error:",bid,repr(e))
-
+            _creator_notify_admins(f"⚠️ <b>Managed Bot Health Check Error</b>\n\n🆔 <code>{html.escape(bid)}</code>\nError: <code>{html.escape(str(e)[:500])}</code>")
 
 def _creator_api_with_token(token, method, payload=None, timeout=10):
     try:
