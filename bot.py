@@ -12238,18 +12238,46 @@ def _creator_type_card_text(kind):
             "Telegram opens the official creation screen. The user enters/edits the bot name and username there; Creator Bot no longer asks those questions.")
 
 def _creator_send_type_card(uid,chat_id,kind,edit=None):
-    kind=str(kind or "video").lower(); text=_creator_type_card_text(kind); markup=_creator_type_markup(kind); media=(_creator_card_config(kind).get("media") or {})
+    # Creator API helpers use raw Telegram JSON. Do not pass a Python dict into
+    # pyTelegramBotAPI's InlineKeyboardMarkup constructor: that raises before
+    # the type card can be sent, which makes /create and the keyboard appear
+    # completely unresponsive.
+    kind=str(kind or "video").lower()
+    text=_creator_type_card_text(kind)
+    markup=_creator_type_markup(kind)
+    media=(_creator_card_config(kind).get("media") or {})
     if edit:
         cid,mid=edit
         try:
-            if media.get("kind")=="photo" and media.get("file_id"): bot.edit_message_media(cid,mid,InputMediaPhoto(media=str(media["file_id"]),caption=text,parse_mode="HTML"),reply_markup=InlineKeyboardMarkup(markup))
-            elif media.get("kind")=="video" and media.get("file_id"): bot.edit_message_media(cid,mid,InputMediaVideo(media=str(media["file_id"]),caption=text,parse_mode="HTML"),reply_markup=InlineKeyboardMarkup(markup))
-            else: bot.edit_message_text(text,cid,mid,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+            if media.get("kind")=="photo" and media.get("file_id"):
+                _creator_api("editMessageMedia",{
+                    "chat_id":cid,"message_id":mid,
+                    "media":{"type":"photo","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},
+                    "reply_markup":markup
+                })
+            elif media.get("kind")=="video" and media.get("file_id"):
+                _creator_api("editMessageMedia",{
+                    "chat_id":cid,"message_id":mid,
+                    "media":{"type":"video","media":str(media["file_id"]),"caption":text,"parse_mode":"HTML"},
+                    "reply_markup":markup
+                })
+            else:
+                _creator_edit(cid,mid,text,reply_markup=markup)
             return
-        except Exception: pass
-    if media.get("kind")=="photo" and media.get("file_id"): bot.send_photo(chat_id,str(media["file_id"]),caption=text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
-    elif media.get("kind")=="video" and media.get("file_id"): bot.send_video(chat_id,str(media["file_id"]),caption=text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
-    else: bot.send_message(chat_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+        except Exception as e:
+            print("Creator type card edit failed:",repr(e))
+    if media.get("kind")=="photo" and media.get("file_id"):
+        _creator_api("sendPhoto",{
+            "chat_id":chat_id,"photo":str(media["file_id"]),
+            "caption":text,"parse_mode":"HTML","reply_markup":markup
+        })
+    elif media.get("kind")=="video" and media.get("file_id"):
+        _creator_api("sendVideo",{
+            "chat_id":chat_id,"video":str(media["file_id"]),
+            "caption":text,"parse_mode":"HTML","reply_markup":markup
+        })
+    else:
+        _creator_send(chat_id,text,reply_markup=markup,parse_mode="HTML")
 
 def _creator_dashboard_credentials(username):
     pin=str(secrets.randbelow(900000)+100000)
