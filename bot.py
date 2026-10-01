@@ -12288,9 +12288,12 @@ def _creator_finish_request(uid, chat_id):
 
 def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
-    text=(text or "").strip(); low=text.lower()
+    text=(text or "").strip()
+    normalized_text=_creator_normalize_text(text)
+    low=normalized_text.casefold()
+    normalized_low=low
 
-    if normalized_text in ("/start", "/start creator") or normalized_low in ("/start", "/start creator"):
+    if normalized_text in ("/start", "/start creator"):
         if _creator_admin(uid):
             _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
         _creator_send(chat_id,
