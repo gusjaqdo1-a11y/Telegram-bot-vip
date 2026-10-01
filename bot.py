@@ -12108,17 +12108,14 @@ def _creator_admin_keyboard():
     ],"resize_keyboard":True,"is_persistent":True}
 
 
-def _creator_request_keyboard(request_id, name, username):
-    # This is intentionally raw JSON because older pyTelegramBotAPI releases do
-    # not know KeyboardButtonRequestManagedBot. Telegram clients render it natively.
+def _creator_request_keyboard(request_id):
+    # Telegram opens its official managed-bot creation UI. Do not ask the user
+    # for a name or username in Creator Bot; Telegram collects both directly.
     return {"keyboard":[[
-        {"text":"✅ Create @"+username,"request_managed_bot":{
-            "request_id":int(request_id),
-            "suggested_name":name[:64],
-            "suggested_username":username[:32],
-        }}
+        {"text":"🚀 Create with Telegram","request_managed_bot":{"request_id":int(request_id)}}
+    ],[
+        {"text":"❌ Cancel"}
     ]],"resize_keyboard":True,"one_time_keyboard":True}
-
 
 def _creator_ensure_user(uid):
     uid=str(uid)
@@ -12181,8 +12178,14 @@ def _creator_start_create(uid, chat_id):
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}]]})
-
+    _creator_send(chat_id,
+        "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
+        "Choose the Downloader type you want to create. After you choose it, this message changes to the bot-creation options.",
+        reply_markup={"inline_keyboard":[
+            [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
+            [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],
+            [{"text":"❌ Cancel","callback_data":"cmethod:cancel"}]
+        ]})
 
 def _creator_finish_request(uid, chat_id):
     d=_creator_session(uid); name=str(d.get("name") or "").strip(); username=str(d.get("username") or "").strip().lstrip("@")
@@ -12270,22 +12273,46 @@ def _creator_handle_text(uid, chat_id, text):
 
     if state=="type":
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
-    if state=="name":
-        if not 1<=len(text)<=64:
-            _creator_send(chat_id,"❌ Name must be 1–64 characters. Send it again."); return
-        _creator_set_session(uid,{"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,"<b>Step 2 of 3</b>\n\nSend your bot username. It must end with <code>bot</code>.\n\nExample: <code>my_downloader_bot</code>"); return
-    if state=="username":
-        username=text.lstrip("@").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",username,re.I):
-            _creator_send(chat_id,"❌ Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
-        # Store the requested values. Telegram itself performs the final username check.
-        _creator_set_session(uid,{**sess,"state":"ready","username":username,"updated_at":datetime.now(timezone.utc)})
-        _creator_finish_request(uid,chat_id); return
-    if state=="ready":
-        _creator_finish_request(uid,chat_id); return
+    if state=="token":
+        token=text.strip()
+        if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
+            _creator_send(chat_id,"❌ Invalid Telegram bot token format. Send the token copied from @BotFather."); return
+        if token in {str(TOKEN or "").strip(),str(CREATOR_BOT_TOKEN or "").strip(),str(BOT2_TOKEN or "").strip()}:
+            _creator_send(chat_id,"❌ That token belongs to a system bot and cannot be connected here."); return
+        result,err=_creator_api_with_token(token,"getMe",{},timeout=15)
+        if err or not result or not result.get("id"):
+            _creator_send(chat_id,"❌ Telegram rejected this token. Check @BotFather and send the current token again."); return
+        bid=str(result.get("id")); username=str(result.get("username") or "").lstrip("@"); name=str(result.get("first_name") or "Downloader Bot")
+        if not username:
+            _creator_send(chat_id,"❌ Telegram did not return a bot username for this token."); return
+        existing=managed_bots_col.find_one({"bot_id":bid})
+        if existing and str(existing.get("owner_id"))!=str(uid):
+            _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
+        now=datetime.now(timezone.utc); fields,pin=_creator_dashboard_fields(bid,username,existing)
+        doc={
+            "bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),
+            "username":username,"name":name,"bot_type":str(sess.get("bot_type") or "video"),
+            "active":True,"suspended":False,"managed":False,"premium_until":(existing or {}).get("premium_until"),
+            "wallet_linked":False,"created_at":(existing or {}).get("created_at") or now,"updated_at":now,
+            "users":(existing or {}).get("users") or [],**fields
+        }
+        managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
+        _creator_clear_session(uid)
+        started=_managed_bot_start_instance(doc)
+        dash=_creator_dashboard_url(bid)
+        status="🟢 running" if started else "🟠 saved; runtime will retry"
+        _creator_send(chat_id,
+            f"🎉 <b>Bot Connected Successfully!</b>\n\n"
+            f"🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bid}</code>\n\n"
+            f"Runtime: <b>{status}</b>\n\n"
+            f"🌐 <b>Dashboard</b>: <a href=\"{html.escape(dash,quote=True)}\">{html.escape(dash)}</a>\n"
+            f"👤 Username: <code>{html.escape(username)}</code>\n"
+            f"🔑 PIN: <code>{pin}</code>\n\n"
+            "Keep the PIN private. Dashboard access is tied to this bot.",
+            reply_markup=_creator_keyboard(uid))
+        return
     if state=="waiting_managed_bot":
-        _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
+        _creator_send(chat_id,"⏳ <b>Telegram creation is open.</b>\n\nTap <b>🚀 Create with Telegram</b> above. Telegram will ask for the bot name and username directly; Creator Bot will receive the managed-bot event automatically."); return
 
     if _creator_admin(uid):
         _creator_send(chat_id,"Use the Creator Admin buttons below.",reply_markup=_creator_admin_keyboard())
@@ -12807,9 +12834,65 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music"} or sess.get("state")!="type":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"method","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+        title="🎬 <b>Video Downloader</b>" if btype=="video" else "🎵 <b>Music Downloader</b>"
+        _creator_edit(chat_id,mid,
+            "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
+            f"{title} selected.\n\n"
+            "Choose how you want to add it. Telegram will collect the bot name and username for managed creation, so Creator Bot will not ask you for them.",
+            reply_markup={"inline_keyboard":[
+                [{"text":"🚀 Create with Telegram","callback_data":"cmethod:managed"}],
+                [{"text":"🔑 Use Existing Token","callback_data":"cmethod:token"}],
+                [{"text":"❌ Cancel","callback_data":"cmethod:cancel"}]
+            ]})
+        return
+    if data=="cmethod:managed":
+        sess=_creator_session(uid)
+        if sess.get("state")!="method":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        request_id=random.randint(1,2_000_000_000)
+        _creator_set_session(uid,{**sess,"state":"waiting_managed_bot","request_id":request_id,"updated_at":datetime.now(timezone.utc)})
+        _creator_edit(chat_id,mid,
+            "🤖 <b>CREATE YOUR OWN BOT</b>\n\n"
+            "Telegram will now open its official managed-bot creation screen.\n\n"
+            "Enter your bot <b>Name</b> and <b>Username</b> there, then confirm creation.\n"
+            "You do not need to paste a token.",
+            reply_markup={"inline_keyboard":[[{"text":"🚀 Open Telegram Create","callback_data":"cmethod:open"}],[{"text":"⬅️ Back","callback_data":"ctypeback"}]]})
+        _creator_send(chat_id,"Tap the native Telegram button below:",reply_markup=_creator_request_keyboard(request_id))
+        return
+    if data=="cmethod:open":
+        sess=_creator_session(uid)
+        if sess.get("state")!="waiting_managed_bot":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        request_id=int(sess.get("request_id") or random.randint(1,2_000_000_000))
+        _creator_send(chat_id,"🚀 <b>Open Telegram Create</b>",reply_markup=_creator_request_keyboard(request_id))
+        return
+    if data=="cmethod:token":
+        sess=_creator_session(uid)
+        if sess.get("state")!="method":
+            _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"token","updated_at":datetime.now(timezone.utc)})
+        _creator_edit(chat_id,mid,
+            "🔑 <b>USE EXISTING TOKEN</b>\n\n"
+            "Send the BotFather token for the bot you already own.\n"
+            "Creator Bot will verify it with Telegram, save it encrypted, start the bot and create its dashboard.\n\n"
+            "🔐 Never share this token anywhere except this private Creator Bot chat.",
+            reply_markup={"inline_keyboard":[[{"text":"⬅️ Back","callback_data":"ctypeback"}],[{"text":"❌ Cancel","callback_data":"cmethod:cancel"}]]})
+        return
+    if data=="ctypeback":
+        sess=_creator_session(uid)
+        if sess.get("bot_type"):
+            _creator_set_session(uid,{**sess,"state":"type"})
+            _creator_edit(chat_id,mid,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the Downloader type:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"❌ Cancel","callback_data":"cmethod:cancel"}]]})
+        return
+    if data=="cmethod:cancel":
+        _creator_clear_session(uid)
+        _creator_edit(chat_id,mid,"❌ <b>Creation cancelled.</b>\n\nUse <b>🤖 Create My Bot</b> whenever you are ready.",reply_markup={"inline_keyboard":[[{"text":"🤖 Create My Bot","callback_data":"creator_start"}]]})
+        return
+    if data=="creator_start":
+        _creator_start_create(uid,chat_id); return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
