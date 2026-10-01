@@ -12002,6 +12002,37 @@ def _creator_send(chat_id, text, reply_markup=None, parse_mode="HTML", **extra):
     payload.update(extra)
     return _creator_api("sendMessage",payload)
 
+def _creator_notify_admins(text):
+    """Notify all current main-bot admins about managed-bot lifecycle/runtime events."""
+    for aid in get_admin_ids():
+        try:
+            bot.send_message(int(aid),str(text),parse_mode="HTML",disable_web_page_preview=True)
+        except Exception as e:
+            print("Creator admin notification failed:",repr(e))
+
+def _creator_dashboard_pin():
+    return str(secrets.randbelow(900000) + 100000)
+
+def _creator_dashboard_pin_hash(pin):
+    return hashlib.sha256(str(pin).encode("utf-8")).hexdigest()
+
+def _creator_dashboard_url(bot_id):
+    base=os.getenv("DASHBOARD_BASE_URL","https://go.quickdl.site").rstrip("/")
+    return f"{base}/dashboard/{str(bot_id)}"
+
+def _creator_dashboard_fields(bot_id, username, existing=None):
+    existing=existing or {}
+    pin=str(existing.get("dashboard_pin") or "")
+    pin_hash=str(existing.get("dashboard_pin_hash") or "")
+    if not pin_hash:
+        pin=_creator_dashboard_pin()
+        pin_hash=_creator_dashboard_pin_hash(pin)
+    return {
+        "dashboard_username":str(existing.get("dashboard_username") or username or "").lstrip("@"),
+        "dashboard_pin_hash":pin_hash,
+        "dashboard_pin_created_at":existing.get("dashboard_pin_created_at") or datetime.now(timezone.utc),
+    }, pin
+
 
 def _creator_answer(call_id, text="", alert=False):
     return _creator_api("answerCallbackQuery",{"callback_query_id":call_id,"text":text[:200],"show_alert":bool(alert)})
