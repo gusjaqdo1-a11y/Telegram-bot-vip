@@ -997,7 +997,8 @@ def _youtube_duration_fast(link, rapid_data=None):
     """
     if not link or detect_platform(link) != "youtube":
         return None, rapid_data
-    data=rapid_data    if data is None and RAPIDAPI_YT_KEY:
+    data=rapid_data
+    if data is None and RAPIDAPI_YT_KEY:
         try:
             vid=_extract_youtube_video_id(link)
             if vid:
