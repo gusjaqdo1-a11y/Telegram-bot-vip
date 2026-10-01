@@ -2532,6 +2532,7 @@ def admin_menu():
     kb.add("♻️ Reset all Verify")
     # Premium administration
     kb.add("💎 PREMIUM PANEL", "💰 PREMIUM PRICES")
+    kb.add("🖼 PREMIUM MEDIA")
     kb.add("🔓 OPEN PREMIUM", "🔒 CLOSE PREMIUM")
     kb.add("🎁 GIVE PREMIUM ALL", "🎁 TRIAL PREMIUM")
     kb.add("🎁 OPEN TRIAL DAYS")
@@ -10540,6 +10541,36 @@ def _create_main_premium_invoice(uid, months, context="premium"):
     link=str(data.get("result") or "")
     if not link: raise RuntimeError("Telegram returned an empty invoice link")
     return link,stars
+
+def _premium_plan_media(months):
+    raw=get_setting(f"premium_plan_media_{str(months)}",{}) or {}
+    return raw if isinstance(raw,dict) else {}
+
+def _send_premium_plan_message(bot_obj,chat_id,months,caption,reply_markup=None,replace_message=None):
+    """Send the admin-configured image/video for a Premium plan, falling back to text."""
+    media=_premium_plan_media(months)
+    sent=None
+    try:
+        media_type=str(media.get("media_type") or "")
+        file_id=str(media.get("file_id") or media.get("photo_file_id") or "")
+        if file_id and media_type=="video":
+            sent=bot_obj.send_video(chat_id,file_id,caption=caption,parse_mode="HTML",reply_markup=reply_markup)
+        elif file_id:
+            sent=bot_obj.send_photo(chat_id,file_id,caption=caption,parse_mode="HTML",reply_markup=reply_markup)
+        else:
+            sent=bot_obj.send_message(chat_id,caption,parse_mode="HTML",reply_markup=reply_markup)
+    except Exception as e:
+        print("Premium plan media send failed:",repr(e))
+        try:
+            sent=bot_obj.send_message(chat_id,caption,parse_mode="HTML",reply_markup=reply_markup)
+        except Exception:
+            sent=None
+    if replace_message:
+        try:
+            bot_obj.delete_message(replace_message[0],replace_message[1])
+        except Exception:
+            pass
+    return sent
 
 def _premium_invoice_buttons(context="premium"):
     prices=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
