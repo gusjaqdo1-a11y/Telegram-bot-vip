@@ -12347,11 +12347,7 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_add_existing_token(uid,chat_id,text); return
     if state=="waiting_managed_bot":
         _creator_send(chat_id,"⏳ Finish the Telegram creation screen first. Your new bot will appear in My Bots automatically."); return
-    return ("💡 <b>Need more balance?</b>\n\n"
-            f"👥 Share your referral link with friends:\n<code>{html.escape(link)}</code>\n\n"
-            f"🎁 Current referral reward: <b>${reward:.2f}</b> per qualifying referral.\n"
-            "💳 You can also add balance directly in @Downloadvedioytibot.\n\n"
-            "When your shared balance is insufficient, use your referral link to earn according to the current referral rules.")
+    _creator_send(chat_id,"ℹ️ Use the Creator buttons above to continue."); return
 
 def _managed_premium_menu(uid, chat_id):
     uid=str(uid)
@@ -13049,7 +13045,9 @@ def _managed_bot_start_instance(doc):
                 mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
-            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
+            def _premium_menu(m):
+                _ctx(); _managed_premium_menu(str(m.from_user.id),m.chat.id)
+            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="💎 Premium")(_premium_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
