@@ -252,7 +252,16 @@ def creator_dashboard_home(doc):
             <div class="lock" style="margin-top:14px"><span>🏷 Disable Powered By</span><input type="checkbox" name="powered_disabled" {'checked' if premium and doc.get('powered_by_enabled') is False else ''} {'disabled' if not premium else ''}></div>
             <label>⚡ Bot speed</label><select name="speed" {'disabled' if not premium else ''}><option value="normal" {'selected' if doc.get('speed')=='normal' else ''}>Normal</option><option value="fast" {'selected' if doc.get('speed','fast')=='fast' else ''}>Fast</option><option value="turbo" {'selected' if doc.get('speed')=='turbo' else ''}>Turbo</option></select>
             <label>▶️ YouTube maximum minutes (0 = unlimited)</label><input type="number" min="0" max="1440" name="youtube_max_minutes" value="{int(doc.get('youtube_max_minutes') or 0)}" {'disabled' if not premium else ''}>
-            <div class="actions"><button class="btn" type="submit" {'disabled' if not premium else ''}>⚙️ Save Premium Controls</button></div>
+            <label>🎛 Menu buttons</label>
+            <div class="lock"><span>🤖 Create My Bot</span><input type="checkbox" name="menu_create_enabled" {'checked' if doc.get('menu_create_enabled',True) else ''} {'disabled' if not premium else ''}></div>
+            <div class="lock"><span>🚫 Remove Ads</span><input type="checkbox" name="menu_remove_ads_enabled" {'checked' if doc.get('menu_remove_ads_enabled',True) else ''} {'disabled' if not premium else ''}></div>
+            <div class="lock"><span>💎 Premium</span><input type="checkbox" name="menu_premium_enabled" {'checked' if doc.get('menu_premium_enabled',True) else ''} {'disabled' if not premium else ''}></div>
+            <label>🌐 Disable platforms</label>
+            <div class="lock"><span>TikTok</span><input type="checkbox" name="disabled_platforms" value="tiktok" {'checked' if 'tiktok' in set(doc.get('disabled_platforms') or []) else ''} {'disabled' if not premium else ''}></div>
+            <div class="lock"><span>Instagram</span><input type="checkbox" name="disabled_platforms" value="instagram" {'checked' if 'instagram' in set(doc.get('disabled_platforms') or []) else ''} {'disabled' if not premium else ''}></div>
+            <div class="lock"><span>Facebook</span><input type="checkbox" name="disabled_platforms" value="facebook" {'checked' if 'facebook' in set(doc.get('disabled_platforms') or []) else ''} {'disabled' if not premium else ''}></div>
+            <div class="lock"><span>YouTube</span><input type="checkbox" name="disabled_platforms" value="youtube" {'checked' if 'youtube' in set(doc.get('disabled_platforms') or []) else ''} {'disabled' if not premium else ''}></div>
+            <div class="actions"><button class="btn" type="submit" {'disabled' if not premium else ''}>⚙️ Save Dashboard Controls</button></div>
           </form>
         </div>
         <div class="glass card"><h2>Security</h2><div class="muted">PIN and managed-token controls stay separate from profile customization.</div>
@@ -350,11 +359,11 @@ def creator_dashboard_controls(doc):
     if speed not in {"normal","fast","turbo"}: speed="fast"
     try: yt=max(0,min(1440,int(request.form.get("youtube_max_minutes") or 0)))
     except Exception: yt=0
-    ads_enabled=not bool(request.form.get("ads_disabled"))
-    powered=not bool(request.form.get("powered_disabled"))
+    ads_enabled=not bool(request.form.get("ads_disabled")); powered=not bool(request.form.get("powered_disabled"))
+    disabled=[x for x in request.form.getlist("disabled_platforms") if x in {"tiktok","instagram","facebook","youtube","pinterest","snapchat","twitter"}]
     _dash_bots.update_one({"bot_id":bid},{"$set":{
-        "ads_enabled":ads_enabled,"powered_by_enabled":powered,"speed":speed,
-        "youtube_max_minutes":yt,"updated_at":datetime.now(timezone.utc)
+        "ads_enabled":ads_enabled,"powered_by_enabled":powered,"speed":speed,"youtube_max_minutes":yt,"disabled_platforms":disabled,
+        "menu_create_enabled":bool(request.form.get("menu_create_enabled")),"menu_remove_ads_enabled":bool(request.form.get("menu_remove_ads_enabled")),"menu_premium_enabled":bool(request.form.get("menu_premium_enabled")),"updated_at":datetime.now(timezone.utc)
     }})
     return redirect(url_for("creator_dashboard_home",bot_id=bid)+"?notice=Premium controls saved.")
 

@@ -604,12 +604,13 @@ def _active_managed_caption():
     return f"Downloaded Via: @{username}" if username else DOWNLOAD_CAPTION
 
 def _active_powered_text():
-    # Powered by is a managed/small-bot feature only. The main downloader must
-    # never emit it, even if a worker accidentally inherited managed context.
     meta=_ACTIVE_MANAGED_META.get() or {}
     if not meta or not meta.get("bot_id") or str(meta.get("bot_id")) == "main": return ""
-    if not _managed_powered_by_open(): return ""
-    if _active_managed_premium(): return ""
+    if not _managed_powered_by_open() or _active_managed_premium(): return ""
+    try:
+        d=managed_bots_col.find_one({"bot_id":str(meta.get("bot_id"))},{"powered_by_enabled":1}) or {}
+        if d.get("powered_by_enabled") is False: return ""
+    except Exception: pass
     return MANAGED_POWERED_BY
 
 def _managed_token_cipher():
@@ -1408,11 +1409,14 @@ def _remove_ads_active(uid, bot_id=None):
 
 
 def _ad_enabled_for(uid, bot_id=None):
-    # Main downloader ads are globally controlled by Admin. Managed bots also
-    # have a Creator-admin master switch.
     bid0=_ad_bot_key(bot_id)
     if bid0 == "main" and not _main_ads_open(): return True
     if bid0 != "main" and not bool(get_setting("managed_ads_enabled", True)): return True
+    if bid0 != "main":
+        try:
+            d=managed_bots_col.find_one({"bot_id":bid0},{"ads_enabled":1}) or {}
+            if d.get("ads_enabled") is False: return True
+        except Exception: pass
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -12873,9 +12877,10 @@ def _managed_bot_start_instance(doc):
             managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username,"bot_type":btype,"active":True,"updated_at":datetime.now(timezone.utc)}},upsert=False); managed_bot_objects[bid]=mb
             def _ctx(): _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta)
             def _menu(owner=False):
-                kb=ReplyKeyboardMarkup(resize_keyboard=True)
-                if _creation_open(): kb.add("🤖 Create Your Own Bot")
-                kb.add("🚫 Remove Ads")
+                dmenu=_managed_bot_doc(bid) or doc; kb=ReplyKeyboardMarkup(resize_keyboard=True)
+                if _creation_open() and dmenu.get("menu_create_enabled",True): kb.add("🤖 Create Your Own Bot")
+                if dmenu.get("menu_remove_ads_enabled",True): kb.add("🚫 Remove Ads")
+                if dmenu.get("menu_premium_enabled",True): kb.add("💎 Premium")
                 if owner: kb.add("👑 ADMIN PANEL")
                 return kb
             def _start(m):
@@ -12945,15 +12950,19 @@ def _managed_bot_start_instance(doc):
                 _ctx(); uid=str(m.from_user.id); managed_bots_col.update_one({"bot_id":bid},{"$addToSet":{"users":int(m.from_user.id)}}); link=extract_url(str(m.text or ""))
                 if not link: return
                 try:
-                    if detect_platform(link)=="youtube" and not _managed_premium_active_doc(_managed_bot_doc(bid) or {}) and not is_admin(uid) and not is_quick_access(uid):
-                        duration,_=_youtube_duration_fast(link)
-                        if duration and duration>youtube_free_limit_minutes()*60 and not youtube_is_short(link):
+                    platform=detect_platform(link); d2=_managed_bot_doc(bid) or doc
+                    disabled={str(x).lower() for x in (d2.get("disabled_platforms") or [])}
+                    if platform in disabled:
+                        mb.send_message(m.chat.id,f"🚫 <b>{html.escape(str(platform).title())}</b> downloads are disabled by this bot owner.",parse_mode="HTML"); return
+                    if platform=="youtube" and not _managed_premium_active_doc(d2) and not is_admin(uid) and not is_quick_access(uid):
+                        duration,_=_youtube_duration_fast(link); limit_minutes=int(d2.get("youtube_max_minutes") or 0)
+                        if limit_minutes<=0: limit_minutes=youtube_free_limit_minutes()
+                        if duration and duration>limit_minutes*60 and not youtube_is_short(link):
                             plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
                             for months in ("1","3","9","12"):
-                                if months in plans:
-                                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"mytprem:{bid}:{months}"))
-                            kb.row(InlineKeyboardButton("💎 Open Premium in Creator Bot",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
-                            msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{youtube_free_limit_minutes()} minutes</b>\n\n💎 This video is longer than the free limit. Choose a Premium plan below to continue.\n\n<b>Premium stays active for the selected period and YouTube is unlimited while Premium is active.</b>"
+                                if months in plans: kb.add(InlineKeyboardButton(f"💎 {months} Month — {float(plans[months]):.2f} USD",callback_data=f"mytprem:{bid}:{months}"))
+                            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",url=_creator_bot_url() or "https://t.me/Downloadvedioytibot"))
+                            msg=f"▶️ <b>YouTube Premium Required</b>\n\n⏱️ Required: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 This bot limit: <b>{limit_minutes} minutes</b>\n\n💎 Choose a Premium plan below to continue."
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
                 has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
@@ -13046,7 +13055,11 @@ def _managed_bot_start_instance(doc):
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
             def _run():
                 try: mb.infinity_polling(skip_pending=True,timeout=30,long_polling_timeout=25)
-                except Exception as e: print(f"Managed bot {bid} stopped:",repr(e))
+                except Exception as e:
+                    errtxt=str(e)[:500]
+                    _creator_notify_admins(f"⚠️ <b>Managed bot stopped / failed</b>\n\n🤖 @{html.escape(username or 'unknown')}\n🆔 <code>{bid}</code>\nError: {html.escape(errtxt)}")
+                    managed_bots_col.update_one({"bot_id":bid},{"$set":{"last_error":errtxt,"last_error_at":datetime.now(timezone.utc)}})
+                    managed_bot_objects.pop(bid,None); managed_bot_threads.pop(bid,None)
             th=threading.Thread(target=_run,daemon=True,name=f"managed-bot-{bid}"); managed_bot_threads[bid]=th; th.start(); return mb
         except Exception as e:
             print("Managed bot start failed:",repr(e)); managed_bots_col.update_one({"bot_id":bid},{"$set":{"active":False,"error":str(e)[:500]}}); return None
