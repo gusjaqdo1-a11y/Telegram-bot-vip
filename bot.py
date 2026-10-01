@@ -1997,7 +1997,8 @@ if(gateDelay>0){setTimeout(runAd,gateDelay*1000);}else{runAd();}
 def _start_ad_http_server():
     try:
         server=ThreadingHTTPServer((AD_HTTP_HOST,AD_HTTP_PORT),_AdGateHandler)
-        threading.Thread(target=server.serve_forever,daemon=True,name="ad-gate-http").start()        print(f"Ad gate server listening on {AD_HTTP_HOST}:{AD_HTTP_PORT}")
+        threading.Thread(target=server.serve_forever,daemon=True,name="ad-gate-http").start()
+        print(f"Ad gate server listening on {AD_HTTP_HOST}:{AD_HTTP_PORT}")
     except Exception as e:
         print("Ad gate HTTP server failed:",repr(e))
 
