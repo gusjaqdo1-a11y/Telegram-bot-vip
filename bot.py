@@ -1778,6 +1778,81 @@ def _ad_gate_bot_token(row):
     except Exception as e:
         print("Ad gate bot token lookup failed:",repr(e)); return ""
 
+_DASHBOARD_FLASK_APP=None
+_DASHBOARD_FLASK_LOCK=threading.RLock()
+
+def _dashboard_flask_app():
+    """Load the Creator Dashboard Flask app inside the worker's HTTP server.
+    Railway currently routes go.quickdl.site to this worker, so dashboard paths
+    must be served here as well as by the dedicated web service.
+    """
+    global _DASHBOARD_FLASK_APP
+    if _DASHBOARD_FLASK_APP is not None:
+        return _DASHBOARD_FLASK_APP
+    with _DASHBOARD_FLASK_LOCK:
+        if _DASHBOARD_FLASK_APP is None:
+            try:
+                from app import app as dashboard_app
+                _DASHBOARD_FLASK_APP=dashboard_app
+            except Exception as e:
+                print("Dashboard Flask load failed:",repr(e))
+                return None
+    return _DASHBOARD_FLASK_APP
+
+
+def _proxy_dashboard_request(handler):
+    """Serve dashboard requests through app.py from the worker HTTP port."""
+    app_obj=_dashboard_flask_app()
+    if app_obj is None:
+        handler._send(503,"Dashboard service is starting. Please retry shortly.")
+        return True
+
+    target=handler.path
+    body=b""
+    try:
+        length=int(handler.headers.get("Content-Length","0") or 0)
+        if length>0:
+            body=handler.rfile.read(length)
+    except Exception:
+        body=b""
+
+    headers={}
+    for key,value in handler.headers.items():
+        if key.lower() in {"host","content-length","connection"}:
+            continue
+        headers[key]=value
+    headers["Host"]=handler.headers.get("Host","go.quickdl.site")
+    headers["X-Forwarded-Proto"]="https"
+
+    try:
+        with app_obj.test_client() as client:
+            response=client.open(
+                target,
+                method=handler.command,
+                headers=headers,
+                data=body if body else None,
+                environ_base={"wsgi.url_scheme":"https","REMOTE_ADDR":handler.client_address[0] if handler.client_address else "0.0.0.0"},
+            )
+            payload=response.get_data()
+            handler.send_response(int(response.status_code))
+            for key,value in response.headers.items():
+                if key.lower() in {"content-length","connection","transfer-encoding","server","date"}:
+                    continue
+                if key.lower()=="set-cookie":
+                    continue
+                handler.send_header(key,value)
+            for cookie in response.headers.getlist("Set-Cookie"):
+                handler.send_header("Set-Cookie",cookie)
+            handler.send_header("Content-Length",str(len(payload)))
+            handler.end_headers()
+            if payload:
+                handler.wfile.write(payload)
+    except Exception as e:
+        print("Dashboard proxy failed:",repr(e))
+        handler._send(502,"Dashboard proxy error. Please retry.")
+    return True
+
+
 class _AdGateHandler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): return
     def _send(self,code,body,ctype="text/html; charset=utf-8"):
@@ -1785,6 +1860,10 @@ class _AdGateHandler(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type",ctype); self.send_header("Cache-Control","no-store"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         path=urllib.parse.urlparse(self.path).path
+        if path.startswith("/dashboard/") or path in {"/__dashboard_health"}:
+            _proxy_dashboard_request(self); return
+        if path.startswith("/media/premium/"):
+            _proxy_dashboard_request(self); return
         if path in {"/","/health"}: self._send(200,b"ok","text/plain; charset=utf-8"); return
         m=re.fullmatch(r"/ad/(?:open|app)/([A-Za-z0-9]{16,64})",path)
         if m:
@@ -1913,6 +1992,12 @@ if(gateDelay>0){setTimeout(runAd,gateDelay*1000);}else{runAd();}
                     self._send(503,"SmartLink is not configured.")
             else: self._send(410,"Skip link expired or already used.")
             return
+        self._send(404,"Not found")
+
+    def do_POST(self):
+        path=urllib.parse.urlparse(self.path).path
+        if path.startswith("/dashboard/"):
+            _proxy_dashboard_request(self); return
         self._send(404,"Not found")
 
 
