@@ -1586,7 +1586,7 @@ def _dispatch_ad_action(doc):
             return
         d=managed_bots_col.find_one({"bot_id":bid}); mb=managed_bot_objects.get(bid) or (_managed_bot_start_instance(d) if d else None)
         if not mb: return
-        meta={"bot_id":bid,"owner_id":str((d or {}).get("owner_id") or ""),"username":str((d or {}).get("username") or "").lstrip("@"),"name":str((d or {}).get("name") or "Downloader Bot"),"bot_type":str((d or {}).get("bot_type") or "video")}
+        meta={"bot_id":bid,"owner_id":str((d or {}).get("owner_id") or ""),"username":str((d or {}).get("username") or "").lstrip("@"),"name":str((d or {}).get("name") or "Downloader Bot"),"bot_type":("media" if str((d or {}).get("bot_type") or "media")=="video" else str((d or {}).get("bot_type") or "media"))}
         def run_in_managed_context(fn,*args):
             _ACTIVE_BOT.set(mb); _ACTIVE_MANAGED_META.set(meta); return fn(*args)
         if action=="download":
@@ -4942,7 +4942,7 @@ def download_media(chat_id, link, message_id, quality=None):
         sent=0
         for path in media[:50 if platform=="tiktok" else 20]:
             # A managed Video Downloader never returns standalone audio files.
-            if _is_audio_file(path) and str((_ACTIVE_MANAGED_META.get() or {}).get("bot_type") or "video") == "video":
+            if _is_audio_file(path) and str((_ACTIVE_MANAGED_META.get() or {}).get("bot_type") or "media") == "media":
                 continue
             # Stop the resolving/typing action before upload, then show the exact
             # native Telegram upload action for the file being sent.
@@ -12565,8 +12565,9 @@ def _creator_my_bots_edit(uid, chat_id, message_id):
     buttons=[]
     for d in rows:
         username=str(d.get("username") or "unknown").lstrip("@")
-        kind=str(d.get("bot_type") or "video").lower()
-        icon="🎵" if kind=="music" else ("🌐" if kind=="social" else "🎬")
+        kind=str(d.get("bot_type") or "media").lower()
+        if kind=="video": kind="media"
+        icon="🎵" if kind=="music" else "📥"
         active=bool(d.get("active",True)) and not bool(d.get("suspended"))
         premium="💎 Premium" if _managed_premium_active_doc(d) else "🆓 Standard"
         lines.append(f"{icon} <b>@{html.escape(username)}</b> — {'🟢 Active' if active else '🔴 Offline'} — {premium}")
@@ -12815,7 +12816,7 @@ def _creator_broadcast_creator_users(text_msg):
 def _creator_on_managed_bot_created(msg):
     info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}; bot_id=info.get("id"); owner_id=((msg or {}).get("from") or {}).get("id")
     if not bot_id or not owner_id: return
-    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot"); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"
+    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot"); btype=str(sess.get("bot_type") or "media").lower(); btype=("media" if btype=="video" else btype); btype=btype if btype in {"media","music"} else "media"
     token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
     if err: _creator_send(owner_id,"❌ Telegram created the bot, but Creator Bot could not fetch its token. Admin has been notified."); _creator_notify_admins(f"⚠️ <b>Managed token fetch failed</b>\nBot ID: <code>{bot_id}</code>"); return
     existing=managed_bots_col.find_one({"bot_id":str(bot_id)}) or {}
@@ -12848,7 +12849,7 @@ def _creator_on_managed_update(update):
             _creator_send(target,f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(username)}\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and continues using the same settings.",reply_markup=_creator_keyboard(str(target)))
             _creator_notify_admins(f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(username)}\nOwner: <code>{target}</code>")
         return
-    uid=str(owner_id or ""); sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"; dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
+    uid=str(owner_id or ""); sess=_creator_session(uid); btype=str(sess.get("bot_type") or "media").lower(); btype=("media" if btype=="video" else btype); btype=btype if btype in {"media","music"} else "media"; dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
     doc={"bot_id":bid,"owner_id":uid,"token_enc":_encrypt_managed_token(token),"managed":True,"username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,"premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
     managed_bots_col.insert_one(doc); _creator_send_dashboard_info(uid,doc,pin)
 
@@ -12939,7 +12940,7 @@ def _creator_callback(call):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
-        typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
+        typ="🎵 Music Downloader" if str(d.get("bot_type") or "media")=="music" else "📥 Media Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
         _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
@@ -13044,7 +13045,7 @@ def _managed_bot_is_owner(bot_id, uid):
 def _managed_bot_start_instance(doc):
     token=_decrypt_managed_token(doc or {})
     if not token: return None
-    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "media").lower(); btype=btype if btype in {"video","music"} else "video"
+    bid=str(doc.get("bot_id")); btype=str(doc.get("bot_type") or "media").lower(); btype=("media" if btype=="video" else btype); btype=btype if btype in {"media","music"} else "media"
     if doc.get("suspended"): return None
     with managed_bot_lock:
         if bid in managed_bot_objects: return managed_bot_objects[bid]
@@ -13434,7 +13435,7 @@ def _managed_bots_startup():
                 if old_until:
                     managed_bots_col.update_one({"bot_id":str(d.get("bot_id"))},{"$set":{"premium_until":old_until,"premium_source":"legacy_migration"}})
                     d["premium_until"]=old_until
-            d.setdefault("bot_type","video")
+            d.setdefault("bot_type","media")
             d.setdefault("wallet_linked",False)
             _managed_bot_start_instance(d)
     except Exception as e: print("Managed bots startup error:",repr(e))
