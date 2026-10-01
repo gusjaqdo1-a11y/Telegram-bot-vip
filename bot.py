@@ -12933,47 +12933,106 @@ def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
     if owner: _creator_send(int(owner),f"🗑 <b>Bot Deleted</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\nThe bot is no longer available on Telegram. Its dashboard was disabled and its Creator Bot record was removed.",reply_markup=_creator_keyboard(owner))
 
 def _creator_on_managed_update(update):
-    obj=(update.get("managed_bot") or {}); info=obj.get("bot") or {}; owner=obj.get("user") or {}; bot_id=info.get("id"); owner_id=owner.get("id")
-    if not bot_id: return
+    """Handle Telegram managed-bot updates idempotently.
+
+    Telegram sends managed_bot updates for creation and token changes.  The
+    creation service message is the single source of truth for first-time
+    registration; a managed_bot update that arrives before that message is
+    only logged and is not allowed to create a second dashboard/PIN.
+    """
+    obj=(update.get("managed_bot") or {})
+    info=obj.get("bot") or {}
+    owner= obj.get("user") or {}
+    bot_id=info.get("id")
+    owner_id=owner.get("id")
+    if not bot_id:
+        return
     with _CREATOR_MANAGED_EVENT_LOCK:
-        bid=str(bot_id); d=managed_bots_col.find_one({"bot_id":bid}) or {}
+        bid=str(bot_id)
+        d=managed_bots_col.find_one({"bot_id":bid}) or {}
         token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
         if err or not token:
-            if d: _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+            if d:
+                _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
             return
         username=str(info.get("username") or d.get("username") or "").lstrip("@")
         name=str(info.get("first_name") or d.get("name") or "Downloader Bot")
-        old=_decrypt_managed_token(d) if d else ""
+        now=datetime.now(timezone.utc)
+
+        # Do not create a second record/PIN from the managed_bot update.
+        # Telegram also sends managed_bot_created for a newly-created bot.
+        if not d:
+            print("Managed bot update received before creation event; waiting for managed_bot_created:",bid)
+            return
+
+        old=_decrypt_managed_token(d)
         changed=bool(old and str(old)!=str(token))
         token_hash=hashlib.sha256(str(token).encode()).hexdigest()
-        now=datetime.now(timezone.utc)
-        if d:
-            if changed:
-                claim=managed_bots_col.update_one(
-                    {"bot_id":bid,"last_token_notice_hash":{"$ne":token_hash}},
-                    {"$set":{"token_enc":_encrypt_managed_token(token),"username":username or d.get("username"),"name":name,"active":True,"updated_at":now,"last_token_notice_hash":token_hash}}
-                )
-                notify=bool(claim.modified_count)
-            else:
-                managed_bots_col.update_one({"bot_id":bid},{"$set":{"username":username or d.get("username"),"name":name,"active":True,"updated_at":now,"last_token_notice_hash":d.get("last_token_notice_hash") or token_hash}})
-                notify=False
-            if changed:
-                managed_bot_objects.pop(bid,None); managed_bot_threads.pop(bid,None)
-                _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
-            target=int(owner_id or d.get("owner_id") or 0)
-            if changed and notify and target:
-                _creator_send(target,f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(username or str(d.get('username') or 'unknown'))}\n\nTelegram changed this managed bot's token. Creator Bot received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and keeps its settings.",reply_markup=_creator_keyboard(str(target)))
-                _creator_notify_admins(f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(username or str(d.get('username') or 'unknown'))}\nOwner: <code>{target}</code>")
+        if not changed:
+            managed_bots_col.update_one(
+                {"bot_id":bid},
+                {"$set":{
+                    "username":username or d.get("username"),
+                    "name":name,
+                    "active":True,
+                    "updated_at":now,
+                    "last_token_notice_hash":d.get("last_token_notice_hash") or token_hash
+                }}
+            )
             return
-        uid=str(owner_id or ""); sess=_creator_session(uid); btype=str(sess.get("bot_type") or "media").lower()
-        if btype=="video": btype="media"
-        if btype not in {"media","music"}: btype="media"
-        dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
-        doc={"bot_id":bid,"owner_id":uid,"token_enc":_encrypt_managed_token(token),"managed":True,"username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,"premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast","last_token_notice_hash":token_hash,"creation_notified":True}
-        managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True)
+
+        managed_bots_col.update_one(
+            {"bot_id":bid},
+            {"$set":{
+                "token_enc":_encrypt_managed_token(token),
+                "username":username or d.get("username"),
+                "name":name,
+                "active":True,
+                "updated_at":now,
+                "last_token_notice_hash":token_hash
+            }}
+        )
+
+        # Rebuild the running bot immediately, but debounce user/admin notices.
+        managed_bot_objects.pop(bid,None)
+        managed_bot_threads.pop(bid,None)
         _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
-        _creator_send(int(owner_id or uid),f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n\nYour downloader bot is now running.",reply_markup=_creator_keyboard(uid))
-        _creator_send_dashboard_info(uid,doc,pin)
+
+        latest=managed_bots_col.find_one({"bot_id":bid}) or {}
+        last_notice=parse_seen_time(latest.get("last_token_notice_at"))
+        notify=not last_notice or (now-last_notice).total_seconds() >= 900
+        if notify:
+            claim=managed_bots_col.update_one(
+                {"bot_id":bid,"last_token_notice_hash":token_hash,"last_token_notice_at":{"$exists":False}},
+                {"$set":{"last_token_notice_at":now}}
+            )
+            if not claim.modified_count and last_notice:
+                notify=(now-last_notice).total_seconds() >= 900
+                if notify:
+                    claim=managed_bots_col.update_one(
+                        {"bot_id":bid,"last_token_notice_hash":token_hash,"last_token_notice_at":last_notice},
+                        {"$set":{"last_token_notice_at":now}}
+                    )
+                    notify=bool(claim.modified_count)
+            else:
+                notify=bool(claim.modified_count)
+
+        target=int(owner_id or latest.get("owner_id") or 0)
+        if notify and target:
+            final_username=username or str(latest.get("username") or "unknown")
+            _creator_send(
+                target,
+                f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(final_username)}\n\n"
+                "Telegram changed this managed bot's token. Creator Bot received the new token, "
+                "saved it securely and restarted the bot.\n\n"
+                "✅ Your bot remains in My Bots and keeps its settings.",
+                reply_markup=_creator_keyboard(str(target))
+            )
+            _creator_notify_admins(
+                f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(final_username)}\nOwner: <code>{target}</code>"
+            )
+        elif target:
+            print("Managed bot token changed; notification debounced:",bid)
 
 def _creator_check_managed_bots():
     """Periodically detect deleted/revoked managed bots without notification spam."""
