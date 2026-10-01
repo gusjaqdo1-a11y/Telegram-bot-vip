@@ -13001,7 +13001,8 @@ def _creator_callback(call):
         if not d or str(d.get("owner_id"))!=uid:
             _creator_answer(call.get("id"),"Not your bot.",True); return
         typ="🎵 Music Downloader" if str(d.get("bot_type") or "media")=="music" else "📥 Media Downloader"; prem="💎 Active" if _managed_premium_active_doc(d) else "🆓 Standard"
-        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"}],[{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
+        dash_url=f"{DASHBOARD_BASE_URL}/dashboard/{urllib.parse.quote(str(bid))}"
+        _creator_edit(chat_id,mid,f"🤖 <b>{typ}</b>\n\n<b>@{html.escape(str(d.get('username') or 'unknown'))}</b>\nStatus: {'🟢 Active' if d.get('active',True) and not d.get('suspended') else '🔴 Suspended'}\nPremium: <b>{prem}</b>",reply_markup={"inline_keyboard":[[{"text":"🖥 Open Dashboard","url":dash_url}],[{"text":"💎 Premium","callback_data":f"cpickbot:{bid}"},{"text":"⬅️ My Bots","callback_data":"cmybots"}]]}); return
     if data.startswith("cbotdel:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
