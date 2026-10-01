@@ -12759,6 +12759,68 @@ def _creator_admin_text(uid, chat_id, text):
     _creator_send(chat_id,"Use the admin buttons.",reply_markup=_creator_admin_keyboard())
 
 
+def _creator_handle_text(uid, chat_id, text):
+    """Single, defensive dispatcher for every Creator Bot text update."""
+    uid=str(uid); chat_id=int(chat_id); _creator_ensure_user(uid)
+    raw=str(text or "").strip()
+    normalized_text=_creator_normalize_text(raw)
+    normalized_low=normalized_text.casefold()
+
+    # Global commands/buttons must always escape any stale input session.
+    command_match=re.match(r"^/(create|newbot|addbot|add)(?:@[A-Za-z0-9_]+)?(?:\s+.*)?$",normalized_low)
+    if normalized_low in {"/start","/start creator"}:
+        _creator_clear_session(uid)
+        welcome=("🚀 <b>WELCOME TO BOT CREATOR</b>\n\n"
+                 "Create and manage your own Downloader Bot through Telegram's official Managed Bot system.\n\n"
+                 "🎵 <b>Music Downloader</b> — songs, MP3, metadata and covers.\n"
+                 "📥 <b>Media Downloader</b> — video, photo and media downloads.\n\n"
+                 "Your bot is registered securely, started automatically and gets its own dashboard.")
+        _creator_send(chat_id,welcome,reply_markup=_creator_keyboard(uid))
+        return
+    if normalized_low in {"/help","help","🆘 help"}:
+        _creator_clear_session(uid)
+        _creator_send(chat_id,
+            "🆘 <b>CREATOR HELP</b>\n\n"
+            "🤖 <b>Create My Bot</b> → choose Music or Media → create through Telegram or connect an existing token.\n"
+            "🤖 <b>My Bots</b> → view and manage your bots.\n"
+            "🗑 <b>Delete Bot</b> → remove a bot from this system and disable its dashboard.\n"
+            "💎 <b>Premium</b> → upgrade a selected bot.\n\n"
+            "Dashboard credentials are sent automatically after a bot is registered.",
+            reply_markup=_creator_keyboard(uid))
+        return
+    if normalized_low in {"/cancel","cancel","❌ cancel"}:
+        _creator_clear_session(uid); _creator_send(chat_id,"❌ <b>Cancelled.</b>",reply_markup=_creator_keyboard(uid)); return
+    if normalized_low in {"/mybots","my bots","🤖 my bots"}:
+        _creator_clear_session(uid); _creator_my_bots(uid,chat_id); return
+    if normalized_low in {"/premium","premium","💎 premium"}:
+        _creator_clear_session(uid); _creator_premium(uid,chat_id); return
+    if normalized_low in {"/balance","balance","💰 balance"}:
+        _creator_clear_session(uid)
+        amount=balance_usd_value(uid)
+        _creator_send(chat_id,f"💰 <b>CREATOR BALANCE</b>\n\nShared @Downloadvedioytibot balance: <b>{html.escape(money_text(uid,amount))}</b>",reply_markup=_creator_keyboard(uid))
+        return
+    if normalized_low in {"🤖 create my bot","create my bot"} or command_match:
+        _creator_start_create(uid,chat_id); return
+    if _creator_admin(uid) and (normalized_text in _CREATOR_ADMIN_BUTTONS or normalized_low in {"/admin","admin","admin panel"}):
+        if normalized_low in {"/admin","admin","admin panel"}:
+            _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>",reply_markup=_creator_admin_keyboard(uid)); return
+        _creator_admin_text(uid,chat_id,normalized_text); return
+
+    sess=_creator_session(uid); state=str(sess.get("state") or "")
+    # The only free-text creation state is an existing BotFather token.
+    if state=="existing_token":
+        if normalized_low in {"/cancel","cancel","❌ cancel"}:
+            _creator_clear_session(uid); _creator_send(chat_id,"❌ <b>Token connection cancelled.</b>",reply_markup=_creator_keyboard(uid)); return
+        _creator_add_existing_token(uid,chat_id,raw); return
+
+    if state in {"type","type_selection"}:
+        _creator_send(chat_id,"Choose <b>Music Downloader</b> or <b>Media Downloader</b> using the buttons above.")
+        return
+
+    # If the message is an unknown free-text value, do not crash or leave the
+    # user without feedback. Keep the persistent Creator menu available.
+    _creator_send(chat_id,"Use the Creator buttons below or send <code>/create</code> to start.",reply_markup=_creator_keyboard(uid))
+
 def _creator_admin_bots(chat_id):
     rows=list(managed_bots_col.find().sort("created_at",-1).limit(100));
     if not rows: _creator_send(chat_id,"🤖 No managed bots yet.",reply_markup=_creator_admin_keyboard()); return
@@ -12910,10 +12972,9 @@ def _creator_callback(call):
         _creator_start_create(uid,chat_id,edit={"chat_id":chat_id,"message_id":int(mid or 0)}); return
     if data=="ccancel":
         _creator_clear_session(uid); _creator_answer(call.get("id"),"Cancelled")
-        try:
-            _creator_edit(chat_id,mid,"❌ <b>Creation cancelled.</b>\n\nChoose an option below.",reply_markup={"inline_keyboard":[]})
+        try: _creator_edit(chat_id,mid,"❌ <b>Creation cancelled.</b>\n\nUse <b>🤖 Create My Bot</b> to start again.",reply_markup={"inline_keyboard":[]})
         except Exception: pass
-        _creator_send(chat_id,"👤 <b>Creator Menu</b>",reply_markup=_creator_keyboard(uid)); return
+        return
     if data=="cmypremium":
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
