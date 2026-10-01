@@ -7,6 +7,9 @@ import urllib.parse
 import requests
 
 app = Flask(__name__)
+from datetime import timedelta
+app.permanent_session_lifetime=timedelta(days=365)
+app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SECURE=True,SESSION_COOKIE_SAMESITE="Lax")
 os.makedirs("downloads", exist_ok=True)
 
 @app.route("/download", methods=["GET"])
@@ -147,6 +150,19 @@ def _dash_auth_required(fn):
 def _dash_photo_url(bot_id):
     return url_for("creator_dashboard_avatar",bot_id=str(bot_id),_external=True)
 
+@app.route("/media/premium/<months>")
+def premium_plan_media(months):
+    months=str(months)
+    if months not in {"1","3","9","12"}: return "",404
+    raw=_dash_db["settings"].find_one({"key":f"premium_plan_media_{months}"}) or {}; value=raw.get("value") or {}; file_id=str(value.get("photo_file_id") or ""); token=os.getenv("BOT_TOKEN","").strip()
+    if not file_id or not token: return "",404
+    result,err=_dash_bot_api(token,"getFile",{"file_id":file_id},timeout=15)
+    if err or not result or not result.get("file_path"): return "",404
+    try:
+        rr=requests.get(f"https://api.telegram.org/file/bot{token}/{result['file_path']}",timeout=20); rr.raise_for_status()
+        return Response(rr.content,content_type=rr.headers.get("content-type","image/jpeg"),headers={"Cache-Control":"public,max-age=300"})
+    except Exception: return "",404
+
 
 def _dash_css():
     return """
@@ -186,6 +202,7 @@ def creator_dashboard_login(bot_id):
         if hmac.compare_digest(username.lower(),expected.lower()) and _dash_pin_ok(doc.get("dashboard_pin_hash"),pin):
             session["creator_dashboard_bot"]=bid
             session.permanent=True
+            session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
             return redirect(url_for("creator_dashboard_home",bot_id=bid))
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")

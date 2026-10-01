@@ -1,7 +1,7 @@
 import telebot
 from pymongo import MongoClient
 import requests
-from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LabeledPrice, KeyboardButton, KeyboardButtonRequestChat, ChatAdministratorRights, ReplyKeyboardRemove, BotCommand, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo, LabeledPrice, KeyboardButton, KeyboardButtonRequestChat, ChatAdministratorRights, ReplyKeyboardRemove, BotCommand, WebAppInfo
 import os, json, random, secrets, string, hmac
 from datetime import datetime, timedelta, timezone
 try:
@@ -178,6 +178,7 @@ AD_PUBLIC_BASE_URL="https://go.quickdl.site"
 MONETAG_REWARDED_ZONE_ID="11912358"
 MONETAG_SDK_URL="//libtl.com/sdk.js"
 AD_SMARTLINK_URL="https://omg10.com/4/11909123"
+DASHBOARD_BASE_URL=os.getenv("DASHBOARD_BASE_URL","https://go.quickdl.site").rstrip("/")
 AD_COOLDOWN_SECONDS=5400
 AD_GATE_SECONDS=0
 AD_REQUIRED_COUNT=1
@@ -1445,6 +1446,8 @@ def _create_ad_premium_invoice(token,uid,bot_id,months):
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(plans[months])*rate)))
     payload=f"ad_gate_premium:{token}:{_ad_bot_key(bot_id)}:{str(uid)}:{months}:{stars}"
     body={"title":f"Premium {months} Month(s)","description":f"Premium/ad-free access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
+    photo_url=_premium_invoice_photo_url(months)
+    if photo_url: body["photo_url"]=photo_url
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
     link=str(data.get("result") or "")
@@ -10505,6 +10508,14 @@ def grant_premium_days(uid,days,reason="admin"):
 def get_premium_prices():
     return {k: float(get_setting(f"premium_price_{k}", v)) for k, v in PREMIUM_DEFAULT_PRICES.items()}
 
+def _premium_plan_media(months):
+    raw=get_setting(f"premium_plan_media_{str(months)}",{}) or {}
+    return raw if isinstance(raw,dict) else {}
+
+def _premium_invoice_photo_url(months):
+    if not _premium_plan_media(months).get("photo_file_id"): return ""
+    return f"{DASHBOARD_BASE_URL}/media/premium/{urllib.parse.quote(str(months))}"
+
 def premium_features_text():
     platforms=", ".join(premium_platform_names())
     return (
@@ -10534,6 +10545,8 @@ def _create_main_premium_invoice(uid, months, context="premium"):
     rate=max(1,int(get_setting("stars_per_usd",100) or 100)); stars=max(1,int(round(float(prices[months])*rate)))
     payload=f"premium_stars:{uid}:{months}:{stars}:{context}"
     body={"title":f"Downloader Premium {months} Month(s)","description":f"Premium access for {months} month(s) via @Downloadvedioytibot.","payload":payload,"provider_token":"","currency":"XTR","prices":[{"label":f"Premium {months} Month(s)","amount":stars}]}
+    photo_url=_premium_invoice_photo_url(months)
+    if photo_url: body["photo_url"]=photo_url
     rr=requests.post(f"https://api.telegram.org/bot{TOKEN}/createInvoiceLink",json=body,timeout=20); data=rr.json() if rr.content else {}
     if not data.get("ok"): raise RuntimeError(data.get("description") or "createInvoiceLink failed")
     link=str(data.get("result") or "")
@@ -12021,6 +12034,14 @@ def _creator_api(method, payload=None, timeout=30):
     except Exception as e:
         return None, str(e)
 
+def _creator_api_with_token(token, method, payload=None, timeout=20):
+    try:
+        r=requests.post(f"https://api.telegram.org/bot{token}/{method}",json=payload or {},timeout=timeout)
+        data=r.json() if r.content else {}
+        if data.get("ok"): return data.get("result"),None
+        return None,str(data.get("description") or f"{method} failed")
+    except Exception as e: return None,str(e)
+
 
 def _creator_send(chat_id, text, reply_markup=None, parse_mode="HTML", **extra):
     payload={"chat_id":chat_id,"text":str(text),"parse_mode":parse_mode}
@@ -12171,25 +12192,78 @@ def _creator_verify_gate(uid, chat_id):
     return False
 
 
+def _creator_card_config(kind):
+    kind=str(kind or "video").lower()
+    defaults={
+        "video":{"title":"🎬 Video Downloader","description":"Download supported videos and photos from YouTube, TikTok, Instagram, Facebook, Pinterest, Snapchat, X/Twitter and more.","suggested_name":"My Video Downloader","suggested_username":"quick_video_downloader_bot"},
+        "music":{"title":"🎵 Music Downloader","description":"Search and download songs with metadata and cover artwork.","suggested_name":"My Music Downloader","suggested_username":"quick_music_downloader_bot"},
+        "social":{"title":"🌐 Social Media Downloader","description":"A multi-platform social downloader preset powered by the existing video engine.","suggested_name":"My Social Downloader","suggested_username":"quick_social_downloader_bot"},
+    }
+    out=dict(defaults.get(kind,defaults["video"])); saved=get_setting(f"creator_card_{kind}",{}) or {}
+    if isinstance(saved,dict): out.update({k:v for k,v in saved.items() if v not in (None,"")})
+    return out
+
+def _creator_type_markup(kind):
+    cfg=_creator_card_config(kind); manager=str(CREATOR_BOT_USERNAME or "").strip().lstrip("@")
+    su=re.sub(r"[^A-Za-z0-9_]","_",str(cfg.get("suggested_username") or "quick_downloader_bot"))[:31]
+    if not su.lower().endswith("bot"): su=su[:27]+"_bot"
+    sn=str(cfg.get("suggested_name") or "My Downloader Bot")[:64]
+    url=f"https://t.me/newbot/{manager}/{urllib.parse.quote(su,safe='')}?name={urllib.parse.quote(sn)}" if manager else ""
+    return {"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"},{"text":"🎵 Music Downloader","callback_data":"ctype:music"}],[{"text":"🌐 Social Downloader","callback_data":"ctype:social"}],([{"text":"🚀 Create with Telegram","url":url}] if url else []),[{"text":"🔑 Use Existing Token","callback_data":f"ctoken:{kind}"}],[{"text":"❌ Cancel","callback_data":"ccancel"}]]}
+
+def _creator_type_card_text(kind):
+    cfg=_creator_card_config(kind)
+    return (f"🤖 <b>{html.escape(str(cfg.get('title') or 'Downloader Bot'))}</b>\n\n"
+            f"{html.escape(str(cfg.get('description') or 'Choose a downloader type.'))}\n\n"
+            "Telegram opens the official creation screen. The user enters/edits the bot name and username there; Creator Bot no longer asks those questions.")
+
+def _creator_send_type_card(uid,chat_id,kind,edit=None):
+    kind=str(kind or "video").lower(); text=_creator_type_card_text(kind); markup=_creator_type_markup(kind); media=(_creator_card_config(kind).get("media") or {})
+    if edit:
+        cid,mid=edit
+        try:
+            if media.get("kind")=="photo" and media.get("file_id"): bot.edit_message_media(cid,mid,InputMediaPhoto(media=str(media["file_id"]),caption=text,parse_mode="HTML"),reply_markup=InlineKeyboardMarkup(markup))
+            elif media.get("kind")=="video" and media.get("file_id"): bot.edit_message_media(cid,mid,InputMediaVideo(media=str(media["file_id"]),caption=text,parse_mode="HTML"),reply_markup=InlineKeyboardMarkup(markup))
+            else: bot.edit_message_text(text,cid,mid,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+            return
+        except Exception: pass
+    if media.get("kind")=="photo" and media.get("file_id"): bot.send_photo(chat_id,str(media["file_id"]),caption=text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+    elif media.get("kind")=="video" and media.get("file_id"): bot.send_video(chat_id,str(media["file_id"]),caption=text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+    else: bot.send_message(chat_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(markup))
+
+def _creator_dashboard_credentials(username):
+    pin=str(secrets.randbelow(900000)+100000)
+    return str(username).lstrip("@"),hashlib.sha256(pin.encode()).hexdigest(),pin
+
+def _creator_send_dashboard_info(owner_id,doc,pin):
+    username=str(doc.get("username") or "unknown").lstrip("@"); bid=str(doc.get("bot_id") or "")
+    url=f"{DASHBOARD_BASE_URL}/dashboard/{urllib.parse.quote(bid)}"; safe=html.escape(url,quote=True)
+    _creator_send(int(owner_id),f'🖥 <b>Dashboard Ready</b>\n\n🤖 @{html.escape(username)}\n🌐 <a href="{safe}">Open Dashboard</a>\n👤 Username: <code>{html.escape(username)}</code>\n🔑 PIN: <code>{pin}</code>\n\nKeep this PIN private.',parse_mode="HTML")
+
+def _creator_add_existing_token(uid,chat_id,token):
+    token=str(token or "").strip()
+    if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{20,}",token):
+        _creator_send(chat_id,"❌ Invalid BotFather token format."); return
+    result,err=_creator_api_with_token(token,"getMe",{},timeout=15)
+    if err or not result or not result.get("is_bot"):
+        _creator_send(chat_id,"❌ Token verification failed. Send a current BotFather token again."); return
+    bid=str(result.get("id")); username=str(result.get("username") or "").lstrip("@"); existing=managed_bots_col.find_one({"bot_id":bid})
+    if existing and str(existing.get("owner_id"))!=str(uid): _creator_send(chat_id,"❌ This bot is already connected to another Creator account."); return
+    sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"
+    dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
+    doc={"bot_id":bid,"owner_id":str(uid),"token_enc":_encrypt_managed_token(token),"managed":False,"username":username,"name":str(result.get("first_name") or username),"bot_type":btype,"active":True,"suspended":False,"created_at":existing.get("created_at") if existing else datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":existing.get("users",[]),"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"premium_until":existing.get("premium_until") if existing else None,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
+    managed_bots_col.update_one({"bot_id":bid},{"$set":doc},upsert=True); _creator_clear_session(uid); _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
+    _creator_send(chat_id,f"✅ <b>@{html.escape(username)}</b> connected.\n\nToken verified and stored encrypted.",reply_markup=_creator_keyboard(uid)); _creator_send_dashboard_info(uid,doc,pin)
+
 def _creator_start_create(uid, chat_id):
     if not _creation_open():
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,"🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",reply_markup={"inline_keyboard":[[{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],[{"text":"🎵 Music Downloader","callback_data":"ctype:music"}]]})
-
+    _creator_send_type_card(uid,chat_id,"video")
 
 def _creator_finish_request(uid, chat_id):
-    d=_creator_session(uid); name=str(d.get("name") or "").strip(); username=str(d.get("username") or "").strip().lstrip("@")
-    if not name or not username:
-        _creator_start_create(uid,chat_id); return
-    request_id=random.randint(1,2_000_000_000)
-    _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,
-        f"<b>Step 3 of 3</b>\n\nName: <b>{html.escape(name)}</b>\nUsername: <b>@{html.escape(username)}</b>\n\n"
-        "Tap the button below. Telegram will open its official bot-creation screen.\n"
-        "You do <b>not</b> need to open @BotFather or paste a token.",
-        reply_markup=_creator_request_keyboard(request_id,name,username))
+    _creator_send_type_card(uid,chat_id,str(_creator_session(uid).get("bot_type") or "video"))
 
 
 def _creator_handle_text(uid, chat_id, text):
@@ -12264,61 +12338,11 @@ def _creator_handle_text(uid, chat_id, text):
             return
 
     if state=="type":
-        _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
-    if state=="name":
-        if not 1<=len(text)<=64:
-            _creator_send(chat_id,"❌ Name must be 1–64 characters. Send it again."); return
-        _creator_set_session(uid,{"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,"<b>Step 2 of 3</b>\n\nSend your bot username. It must end with <code>bot</code>.\n\nExample: <code>my_downloader_bot</code>"); return
-    if state=="username":
-        username=text.lstrip("@").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",username,re.I):
-            _creator_send(chat_id,"❌ Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
-        # Store the requested values. Telegram itself performs the final username check.
-        _creator_set_session(uid,{**sess,"state":"ready","username":username,"updated_at":datetime.now(timezone.utc)})
-        _creator_finish_request(uid,chat_id); return
-    if state=="ready":
-        _creator_finish_request(uid,chat_id); return
+        _creator_send_type_card(uid,chat_id,str(sess.get("bot_type") or "video")); return
+    if state=="existing_token":
+        _creator_add_existing_token(uid,chat_id,text); return
     if state=="waiting_managed_bot":
-        _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
-
-    if _creator_admin(uid):
-        _creator_send(chat_id,"Use the Creator Admin buttons below.",reply_markup=_creator_admin_keyboard())
-    else:
-        _creator_send(chat_id,"Use the buttons below.",reply_markup=_creator_keyboard(uid))
-
-
-def _creator_my_bots_edit(uid, chat_id, mid=None):
-    rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
-    if not rows:
-        text="🤖 <b>MY BOTS</b>\n\nYou have no bots yet."; markup={"inline_keyboard":[]}
-    else:
-        lines=["🤖 <b>MY BOTS</b>",""]; buttons=[]
-        for i,d in enumerate(rows[:50],1):
-            typ="🎵 Music Downloader" if str(d.get("bot_type") or "video")=="music" else "🎬 Video Downloader"
-            status="🟢 Active" if d.get("active",True) and not d.get("suspended") else "🔴 Suspended"
-            lines += [f"<b>{i}. {typ}</b>",f"   @{html.escape(str(d.get('username') or 'unknown'))} • {status}",""]
-            buttons.append([{"text":f"⚙️ @{str(d.get('username') or 'unknown')[:24]}","callback_data":f"cbotinfo:{d.get('bot_id')}"}])
-        text="\n".join(lines); markup={"inline_keyboard":buttons}
-    if mid is not None: _creator_edit(chat_id,mid,text,reply_markup=markup)
-    else: _creator_send(chat_id,text,reply_markup=markup)
-
-def _creator_my_bots(uid, chat_id):
-    _creator_my_bots_edit(uid,chat_id,None)
-
-def _creator_delete_menu(uid, chat_id):
-    rows=list(managed_bots_col.find({"owner_id":str(uid)}).sort("created_at",-1))
-    if not rows:
-        _creator_send(chat_id,"🗑 <b>Delete Bot</b>\n\nNo created bots found."); return
-    kb={"inline_keyboard":[[{"text":f"🗑 @{str(d.get('username') or 'unknown')[:30]}","callback_data":f"cbotdel:{d.get('bot_id')}"}] for d in rows[:20]]}
-    _creator_send(chat_id,"🗑 <b>Remove a Bot</b>\n\nThis removes the downloader bot from this system and stops its worker. Telegram's bot account itself remains owned by you.",reply_markup=kb)
-
-
-def _premium_balance_help(uid):
-    uid=str(uid); reward=referral_reward_amount(); ref=str(users.get(uid,{}).get("ref") or "").strip()
-    try: uname=str(_main_bot_username() or "Downloadvedioytibot")
-    except Exception: uname="Downloadvedioytibot"
-    link=f"https://t.me/{uname}?start={urllib.parse.quote(ref)}" if ref else f"https://t.me/{uname}"
+        _creator_send(chat_id,"⏳ Finish the Telegram creation screen first. Your new bot will appear in My Bots automatically."); return
     return ("💡 <b>Need more balance?</b>\n\n"
             f"👥 Share your referral link with friends:\n<code>{html.escape(link)}</code>\n\n"
             f"🎁 Current referral reward: <b>${reward:.2f}</b> per qualifying referral.\n"
@@ -12650,104 +12674,44 @@ def _creator_broadcast_creator_users(text_msg):
 
 
 def _creator_on_managed_bot_created(msg):
-    info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}
-    bot_id=info.get("id"); owner_id=((msg or {}).get("from") or {}).get("id")
+    info=((msg or {}).get("managed_bot_created") or {}).get("bot") or {}; bot_id=info.get("id"); owner_id=((msg or {}).get("from") or {}).get("id")
     if not bot_id or not owner_id: return
-    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or sess.get("username") or "").lstrip("@"); name=str(info.get("first_name") or sess.get("name") or "Downloader Bot"); bot_type=str(sess.get("bot_type") or "video").lower(); bot_type=bot_type if bot_type in {"video","music"} else "video"
+    uid=str(owner_id); sess=_creator_session(uid); username=str(info.get("username") or "").lstrip("@"); name=str(info.get("first_name") or "Downloader Bot"); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"
     token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
-    if err:
-        _creator_send(owner_id,"❌ Telegram created the bot, but the Creator Bot could not fetch its management token. Please contact admin.")
-        print("getManagedBotToken error:",err); return
-    doc={
-        "bot_id":str(bot_id),"owner_id":uid,"token_enc":_encrypt_managed_token(token),
-        "username":username,"name":name,"bot_type":bot_type,"active":True,"suspended":False,
-        "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],
-    }
-    managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True)
-    _creator_clear_session(uid)
-    d=managed_bots_col.find_one({"bot_id":str(bot_id)}); _managed_bot_start_instance(d)
-    _creator_send(owner_id,
-        f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n🆔 <code>{bot_id}</code>\n\n"
-        "Your downloader bot is now running.\n\n"
-        "💎 Premium uses your shared @Downloadvedioytibot balance.",
-        reply_markup=_creator_keyboard(uid))
-
+    if err: _creator_send(owner_id,"❌ Telegram created the bot, but Creator Bot could not fetch its token. Admin has been notified."); _creator_notify_admins(f"⚠️ <b>Managed token fetch failed</b>\nBot ID: <code>{bot_id}</code>"); return
+    existing=managed_bots_col.find_one({"bot_id":str(bot_id)}) or {}
+    if existing.get("dashboard_pin_hash"): dash_user=str(existing.get("dashboard_username") or username); pin=""
+    else: dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
+    doc={"bot_id":str(bot_id),"owner_id":uid,"token_enc":_encrypt_managed_token(token),"managed":True,"username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,"premium_until":existing.get("premium_until"),"wallet_linked":False,"created_at=existing.get("created_at") or datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":existing.get("users",[]),"dashboard_username":dash_user,"dashboard_pin_hash":existing.get("dashboard_pin_hash") or pin_hash,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
+    managed_bots_col.update_one({"bot_id":str(bot_id)},{"$set":doc},upsert=True); _creator_clear_session(uid); _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":str(bot_id)}))
+    _creator_send(owner_id,f"🎉 <b>Bot Created Successfully!</b>\n\n🤖 <b>{html.escape(name)}</b>\n🔗 @{html.escape(username or 'unknown')}\n\nYour downloader bot is now running.",reply_markup=_creator_keyboard(uid))
+    if pin: _creator_send_dashboard_info(owner_id,doc,pin)
 
 def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
-    """Notify the owner and remove a managed bot from the Creator system.
-
-    Telegram's managed-bot update is also used when a token changes. For this
-    Creator product, a token revoke is treated as the owner removing the bot
-    from this service, so the old entry is removed from My Bots as well.
-    """
     if not doc: return
-    bid=str(doc.get("bot_id") or "")
-    owner=str(doc.get("owner_id") or "")
-    username=str(doc.get("username") or "unknown").lstrip("@")
-    name=str(doc.get("name") or "Downloader Bot")
+    bid=str(doc.get("bot_id") or ""); owner=str(doc.get("owner_id") or ""); username=str(doc.get("username") or "unknown").lstrip("@"); name=str(doc.get("name") or "Downloader Bot")
     _managed_bot_remove_from_system(bid)
-    if owner:
-        if reason=="token_revoked":
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
-                  "The bot token was revoked/changed in Telegram.\n"
-                  "This bot has been removed from your <b>My Bots</b> list and stopped on this system.")
-        else:
-            text=(f"⚠️ <b>Bot Removed</b>\n\n"
-                  f"🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
-                  "Your bot was deleted or is no longer available on Telegram.\n"
-                  "It has been removed from your <b>My Bots</b> list and stopped on this system.")
-        _creator_send(int(owner),text,reply_markup=_creator_keyboard(owner))
-
+    if owner: _creator_send(int(owner),f"🗑 <b>Bot Deleted</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\nThe bot is no longer available on Telegram. Its dashboard was disabled and its Creator Bot record was removed.",reply_markup=_creator_keyboard(owner))
 
 def _creator_on_managed_update(update):
-    obj=(update.get("managed_bot") or {})
-    info=obj.get("bot") or {}; owner=(obj.get("user") or {})
-    bot_id=info.get("id"); owner_id=owner.get("id")
+    obj=(update.get("managed_bot") or {}); info=obj.get("bot") or {}; owner=obj.get("user") or {}; bot_id=info.get("id"); owner_id=owner.get("id")
     if not bot_id: return
-    bid=str(bot_id)
-    d=managed_bots_col.find_one({"bot_id":bid}) or {}
-
-    # An update for an already-registered bot means Telegram changed the managed
-    # bot (most importantly its token or owner). A token change is deliberately
-    # treated as a revoke/remove in this Creator system instead of silently
-    # replacing our stored credential and keeping the bot in My Bots.
+    bid=str(bot_id); d=managed_bots_col.find_one({"bot_id":bid}) or {}; token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
+    if err or not token:
+        if d: _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
+        return
+    username=str(info.get("username") or d.get("username") or "").lstrip("@"); name=str(info.get("first_name") or d.get("name") or "Downloader Bot"); old=_decrypt_managed_token(d) if d else ""; changed=bool(old and str(old)!=str(token))
     if d:
-        old_owner=str(d.get("owner_id") or "")
-        token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
-        if not err and token:
-            old_token=_decrypt_managed_token(d)
-            if old_token and str(token)!=str(old_token):
-                _creator_notify_managed_bot_removed(d,"token_revoked")
-                return
-            if owner_id and old_owner and str(owner_id)!=old_owner:
-                _creator_notify_managed_bot_removed(d,"owner_changed")
-                return
-            d.update({"username":info.get("username") or d.get("username"),"name":info.get("first_name") or d.get("name") or "Downloader Bot","updated_at":datetime.now(timezone.utc)})
-            managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
-            return
-        # If Telegram can no longer export the managed token, the bot has been
-        # deleted/unavailable. Remove it instead of leaving a dead My Bots entry.
-        if err:
-            _creator_notify_managed_bot_removed(d,"deleted_or_revoked")
-            return
-
-    # New managed bot update: register it normally.
-    token,err=_creator_api("getManagedBotToken",{"user_id":int(bot_id)})
-    if not err and token:
-        uid=str(owner_id or "")
-        sess=_creator_session(uid)
-        d={"bot_id":bid,"owner_id":uid,"token_enc":_encrypt_managed_token(token),
-           "username":info.get("username") or sess.get("username") or "",
-           "name":info.get("first_name") or sess.get("name") or "Downloader Bot",
-           "bot_type":str(sess.get("bot_type") or "video"),"active":True,"suspended":False,
-           "premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),
-           "updated_at":datetime.now(timezone.utc),"users":[]}
-        managed_bots_col.update_one({"bot_id":bid},{"$set":d},upsert=True)
-        # Keep the creation session until the managed_bot_created message arrives;
-        # that message contains the selected Video/Music type.
-        _managed_bot_start_instance(d)
-
+        managed_bots_col.update_one({"bot_id":bid},{"$set":{"token_enc":_encrypt_managed_token(token),"username":username or d.get("username"),"name":name,"active":True,"updated_at":datetime.now(timezone.utc)}})
+        managed_bot_objects.pop(bid,None); managed_bot_threads.pop(bid,None); _managed_bot_start_instance(managed_bots_col.find_one({"bot_id":bid}))
+        target=int(owner_id or d.get("owner_id") or 0)
+        if changed and target:
+            _creator_send(target,f"🔄 <b>Bot Token Updated</b>\n\n🤖 @{html.escape(username)}\n\nTelegram changed this managed bot's token. Creator Bot automatically received the new token, saved it securely and restarted the bot.\n\n✅ Your bot remains in My Bots and continues using the same settings.",reply_markup=_creator_keyboard(str(target)))
+            _creator_notify_admins(f"🔄 <b>Managed bot token updated</b>\n🤖 @{html.escape(username)}\nOwner: <code>{target}</code>")
+        return
+    uid=str(owner_id or ""); sess=_creator_session(uid); btype=str(sess.get("bot_type") or "video").lower(); btype=btype if btype in {"video","music","social"} else "video"; dash_user,pin_hash,pin=_creator_dashboard_credentials(username)
+    doc={"bot_id":bid,"owner_id":uid,"token_enc":_encrypt_managed_token(token),"managed":True,"username":username,"name":name,"bot_type":btype,"active":True,"suspended":False,"premium_until":None,"wallet_linked":False,"created_at":datetime.now(timezone.utc),"updated_at":datetime.now(timezone.utc),"users":[],"dashboard_username":dash_user,"dashboard_pin_hash":pin_hash,"powered_by_enabled":True,"ads_enabled":True,"menu_create_enabled":True,"menu_remove_ads_enabled":True,"menu_premium_enabled":True,"disabled_platforms":[],"youtube_max_minutes":0,"speed":"fast"}
+    managed_bots_col.insert_one(doc); _creator_send_dashboard_info(uid,doc,pin)
 
 def _creator_check_managed_bots():
     """Periodically detect bots deleted outside Creator Bot (e.g. BotFather)."""
@@ -12802,9 +12766,14 @@ def _creator_callback(call):
         _creator_premium(uid,chat_id,edit=(chat_id,mid)); return
     if data.startswith("ctype:"):
         btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
-        if btype not in {"video","music"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
-        _creator_set_session(uid,{**sess,"state":"name","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_send(chat_id,f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n<b>Step 1 of 3</b>\nSend the name you want for your bot."); return
+        if btype not in {"video","music","social"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"type","bot_type":btype,"updated_at":datetime.now(timezone.utc)}); _creator_answer(call.get("id"),"Selected")
+        _creator_send_type_card(uid,chat_id,btype,edit=(chat_id,int(call.get("message",{}).get("message_id") or 0))); return
+    if data.startswith("ctoken:"):
+        btype=data.split(":",1)[1].lower(); sess=_creator_session(uid)
+        if btype not in {"video","music","social"} or sess.get("state")!="type": _creator_answer(call.get("id"),"Creation session expired.",True); return
+        _creator_set_session(uid,{**sess,"state":"existing_token","bot_type":btype,"updated_at":datetime.now(timezone.utc)}); _creator_answer(call.get("id"),"Send token")
+        _creator_send(chat_id,"🔑 <b>Connect Existing Bot Token</b>\n\nSend the BotFather token for the bot you want to manage. It will be verified and stored encrypted."); return
     if data.startswith("cbotinfo:"):
         bid=data.split(":",1)[1]; d=managed_bots_col.find_one({"bot_id":bid})
         if not d or str(d.get("owner_id"))!=uid:
