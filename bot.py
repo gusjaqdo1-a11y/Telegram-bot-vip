@@ -661,17 +661,21 @@ def _decrypt_managed_token(doc):
     return str(doc.get("token") or "").strip()
 
 def _creator_bot_url():
+    """Build the Creator Bot link from the actual Creator Bot token.
+    Never trust a separately hard-coded username: the token is the source of truth.
+    """
     global CREATOR_BOT_USERNAME
-    if CREATOR_BOT_USERNAME:
-        return f"https://t.me/{CREATOR_BOT_USERNAME}"
     if not CREATOR_BOT_TOKEN:
         return ""
     try:
         r=requests.post(f"https://api.telegram.org/bot{CREATOR_BOT_TOKEN}/getMe",timeout=10)
-        data=r.json().get("result") or {}; CREATOR_BOT_USERNAME=str(data.get("username") or "").lstrip("@")
-        if CREATOR_BOT_USERNAME:
-            return f"https://t.me/{CREATOR_BOT_USERNAME}"
-    except Exception as e: print("Creator getMe failed:",repr(e))
+        data=r.json().get("result") or {}
+        username=str(data.get("username") or "").strip().lstrip("@")
+        if username:
+            CREATOR_BOT_USERNAME=username
+            return f"https://t.me/{username}"
+    except Exception as e:
+        print("Creator getMe failed:",repr(e))
     return ""
 
 
@@ -1496,12 +1500,12 @@ def _show_ad_premium_plans(bot_obj,call,token):
     except Exception as e: print("Ad premium menu edit failed:",repr(e))
 
 def _ad_gate_keyboard(token, premium_url=None):
-    """Three-action ad gate: Watch Ad opens a Telegram Mini App, Premium opens premium, Skip uses a one-time go.quickdl.site token."""
+    """Managed-bot ad gate: Watch Ad, Remove Ads, or Skip."""
     web_url=f"{AD_PUBLIC_BASE_URL}/ad/open/{token}"
     skip_url=f"{AD_PUBLIC_BASE_URL}/ad/skip/{token}"
     kb=InlineKeyboardMarkup(row_width=1)
     kb.add(InlineKeyboardButton("👉 Watch ad", web_app=WebAppInfo(url=web_url)))
-    kb.add(InlineKeyboardButton("💎 Premium", callback_data=f"adpremium:{token}"))
+    kb.add(InlineKeyboardButton("🚫 Remove Ads", callback_data=f"adremove:{token}"))
     kb.add(InlineKeyboardButton("⏭️ Skip", url=skip_url))
     return kb
 
@@ -1542,7 +1546,7 @@ def _send_ad_gate(bot_obj,uid,chat_id,bot_id,action,payload,premium_url=None):
     gate_seconds=_ad_gate_seconds()
     ad_gates_col.insert_one({"token":token,"user_id":uid,"chat_id":int(chat_id),"bot_id":bid,"action":str(action),"payload":payload or {},"message_id":None,"status":"pending","ad_views":0,"required_ads":required_ads,"completed_view_ids":[],"gate_seconds":gate_seconds,"created_at":now})
     try:
-        msg=bot_obj.send_message(chat_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token,premium_url))
+        msg=bot_obj.send_message(chat_id,"To continue, watch the short ad, remove ads, or skip.",reply_markup=_ad_gate_keyboard(token,premium_url))
         ad_gates_col.update_one({"token":token},{"$set":{"message_id":int(msg.message_id)}})
         return True
     except Exception as e:
@@ -13294,8 +13298,9 @@ def _managed_bot_start_instance(doc):
                 current=managed_bots_col.find_one({"bot_id":bid}) or doc
                 kb=ReplyKeyboardMarkup(resize_keyboard=True)
                 if _creation_open() and current.get("menu_create_enabled",True): kb.add("🤖 Create Your Own Bot")
+                # Small/managed bots intentionally expose Remove Ads, not Premium.
+                # Keep the existing Monetag ad gate unchanged.
                 if current.get("menu_remove_ads_enabled",True): kb.add("🚫 Remove Ads")
-                if current.get("menu_premium_enabled",True): kb.add("💎 Premium")
                 if owner: kb.add("👑 ADMIN PANEL")
                 return kb
             def _start(m):
@@ -13476,7 +13481,7 @@ def _managed_bot_start_instance(doc):
                 mb.register_next_step_handler(prompt,_broadcast_process)
             def _info(call):
                 _ctx(); d2=_managed_bot_doc(bid) or {}; mb.answer_callback_query(call.id); mb.send_message(call.message.chat.id,f"🤖 <b>{html.escape(str(d2.get('name') or 'Downloader Bot'))}</b>\n@{html.escape(username or 'unknown')}\n\nType: <b>{'Music Downloader' if btype=='music' else 'Video Downloader'}</b>",parse_mode="HTML")
-            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="💎 Premium")(_premium_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
+            mb.message_handler(commands=["start"])(_start); mb.message_handler(commands=["help"])(_help); mb.message_handler(func=lambda m:m.text=="🤖 Create Your Own Bot")(_create); mb.message_handler(func=lambda m:m.text=="🚫 Remove Ads")(_remove_ads_menu); mb.message_handler(func=lambda m:m.text=="👑 ADMIN PANEL")(_admin)
             if btype=="music": mb.message_handler(func=lambda m:bool(m.text and not str(m.text).startswith("/") and m.text not in {"🤖 Create Your Own Bot","🚫 Remove Ads","👑 ADMIN PANEL"} and not extract_url(str(m.text))))(_music_search)
             else: mb.message_handler(func=lambda m:bool(m.text and extract_url(str(m.text))))(_text)
             mb.callback_query_handler(func=lambda c:c.data.startswith("msongcancel:"))(_music_cancel); mb.callback_query_handler(func=lambda c:c.data.startswith("msong:"))(_music_pick); mb.callback_query_handler(func=lambda c:c.data.startswith("mspage:"))(_music_page); mb.callback_query_handler(func=lambda c:c.data.startswith("music:"))(_music_convert); mb.callback_query_handler(func=lambda c:c.data.startswith("adplan:"))(_remove_ads_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("adremove:"))(_ad_remove_from_gate); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremium:"))(lambda c, _mb=mb: _ad_premium_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremplan:"))(lambda c, _mb=mb: _ad_premium_plan_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("adpremback:"))(lambda c, _mb=mb: _ad_premium_back_managed_cb(_mb,c)); mb.callback_query_handler(func=lambda c:c.data.startswith("mytprem:"))(_managed_youtube_premium_cb); mb.callback_query_handler(func=lambda c:c.data.startswith("mbotinfo:"))(_info); mb.callback_query_handler(func=lambda c:c.data.startswith("mstats:"))(_stats); mb.callback_query_handler(func=lambda c:c.data.startswith("mbroadcast:"))(_broadcast)
