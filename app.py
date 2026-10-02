@@ -224,7 +224,7 @@ def _dash_photo_url(bot_id):
 @app.route("/media/premium/<months>")
 def premium_plan_media(months):
     months=str(months)
-    if months not in {"1","3","9","12"}: return "",404
+    if months not in {"1","3","6","9","12"}: return "",404
     raw=_dash_db["settings"].find_one({"key":f"premium_plan_media_{months}"}) or {}; value=raw.get("value") or {}; file_id=str(value.get("photo_file_id") or ""); token=os.getenv("BOT_TOKEN","").strip()
     if not file_id or not token: return "",404
     result,err=_dash_bot_api(token,"getFile",{"file_id":file_id},timeout=15)
@@ -303,14 +303,14 @@ def creator_dashboard_login(bot_id):
                     print("Dashboard PIN migration skipped:",repr(e))
         username_ok=bool(username) and hmac.compare_digest(username.lower(),expected.lower())
         if username_ok and pin_ok:
-        session.clear()
-        session["creator_dashboard_bot"]=bid
-        session.permanent=True
-        session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
-        response=redirect(url_for("creator_dashboard_home",bot_id=bid),code=302)
-        if remember:
-            response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax",path="/")
-        return response
+            session.clear()
+            session["creator_dashboard_bot"]=bid
+            session.permanent=True
+            session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
+            response=redirect(url_for("creator_dashboard_home",bot_id=bid),code=302)
+            if remember:
+                response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax",path="/")
+            return response
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")
     body=f"""<div class="wrap unavailable-shell"><div class="glass login"><div class="logo">◈</div><div class="eyebrow">QUICKDL • CREATOR DASHBOARD</div><h1>Welcome back</h1><div class="muted">Secure owner access for <b>@{html.escape(botname)}</b>.</div>{'<div class="notice err">'+html.escape(error)+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" placeholder="@botusername" required><label>6-digit PIN</label><input name="pin" type="password" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" placeholder="••••••" required><label class="lock"><span>💾 Save login on this device</span><input type="checkbox" name="remember" checked></label><div class="actions"><button class="btn" type="submit">⚡ Enter Dashboard</button></div></form><div class="small" style="margin-top:18px">Your PIN stays private. Saved login is signed and expires automatically.</div></div></div>"""

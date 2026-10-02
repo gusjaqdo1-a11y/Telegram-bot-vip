@@ -12554,6 +12554,12 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="token":
         token=text.strip()
+        # Best-effort immediate removal of the BotFather token message.
+        # The token is never written to logs or user-facing error messages.
+        try:
+            _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":int(m.message_id)},timeout=10)
+        except Exception:
+            pass
         if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
             _creator_send(chat_id,"❌ Invalid Telegram bot token format. Send the token copied from @BotFather."); return
         if token in {str(TOKEN or "").strip(),str(CREATOR_BOT_TOKEN or "").strip(),str(BOT2_TOKEN or "").strip()}:
@@ -13036,7 +13042,7 @@ def _creator_notify_managed_bot_token_updated(doc, new_token):
     now=datetime.now(timezone.utc)
     managed_bots_col.update_one({"bot_id":bid},{"$set":{
         "token_enc":_encrypt_managed_token(new_token),"username":username,"name":name,
-        "managed":True,"active":True,"updated_at":now,"last_token_update_at":now
+        "dashboard_username":username,"managed":True,"active":True,"updated_at":now,"last_token_update_at":now
     }})
     newdoc=managed_bots_col.find_one({"bot_id":bid}) or {}
     started=_managed_bot_start_instance(newdoc)
