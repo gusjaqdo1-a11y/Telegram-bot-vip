@@ -12240,6 +12240,54 @@ def _creator_finish_request(uid, chat_id):
         reply_markup=_creator_request_keyboard(request_id,name,username))
 
 
+def _creator_connect_token_worker(uid, chat_id, token, btype="video"):
+    """Validate, persist and start a user-supplied BotFather token off the Creator polling loop."""
+    uid=str(uid); token=str(token or "").strip()
+    try:
+        result,err=_creator_api_with_token(token,"getMe",{},timeout=6)
+        if err or not result or not result.get("id"):
+            _creator_flow_update(uid,chat_id,"❌ <b>Token rejected</b>\n\nTelegram did not accept this Bot Token. Send a fresh token from @BotFather.")
+            _creator_set_session(uid,{"state":"token","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+            return
+        bot_id=str(result.get("id")); username=str(result.get("username") or "").lstrip("@")
+        if not username:
+            _creator_flow_update(uid,chat_id,"❌ Telegram returned no bot username for this token.")
+            _creator_set_session(uid,{"state":"token","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+            return
+        existing=managed_bots_col.find_one({"bot_id":bot_id})
+        if existing and str(existing.get("owner_id") or "")!=uid:
+            _creator_flow_update(uid,chat_id,"❌ <b>This bot is already registered</b>\n\nThat bot is connected to another Creator account.")
+            _creator_set_session(uid,{"state":"token","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+            return
+        now=datetime.now(timezone.utc); btype=btype if btype in {"video","music"} else "video"
+        doc={
+            "bot_id":bot_id,"owner_id":uid,"token_enc":_encrypt_managed_token(token),
+            "username":username,"name":str(result.get("first_name") or username or "Downloader Bot"),
+            "bot_type":btype,"managed":False,"active":True,"suspended":False,
+            "premium_until":(existing or {}).get("premium_until"),
+            "wallet_linked":bool((existing or {}).get("wallet_linked",False)),
+            "created_at":(existing or {}).get("created_at",now),"updated_at":now,
+            "users":(existing or {}).get("users",[]),
+        }
+        managed_bots_col.update_one({"bot_id":bot_id},{"$set":doc},upsert=True)
+        started=_managed_bot_start_instance(doc)
+        if not started:
+            managed_bots_col.update_one({"bot_id":bot_id},{"$set":{"active":False,"error":"Bot could not be started"}})
+            _creator_flow_update(uid,chat_id,"❌ <b>Token accepted, but the bot could not be started.</b>\n\nThe token is valid. Please try again or contact Admin.")
+            _creator_set_session(uid,{"state":"token","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+            return
+        _creator_clear_session(uid)
+        _creator_send(chat_id,
+            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(str(doc.get("name") or username))}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bot_id}</code>\n\n"
+            "Your token-based downloader bot is now running.\n\n"
+            "📢 <b>Ads</b> follow the Creator Bot's Managed Ads switch.",
+            reply_markup=_creator_keyboard(uid)
+        )
+    except Exception as e:
+        print("Creator token worker error:",repr(e))
+        _creator_set_session(uid,{"state":"token","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
+        _creator_flow_update(uid,chat_id,"❌ <b>Could not start the bot</b>\n\nThe token was not exposed again. Send it again to retry.")
+
 def _creator_handle_text(uid, chat_id, text):
     _creator_ensure_user(uid)
     text=(text or "").strip(); low=text.lower()
@@ -12310,51 +12358,25 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_flow_update(uid,chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="mode":
         _creator_flow_update(uid,chat_id,"Choose <b>☁️ Managed by Creator Bot</b> or <b>🔑 Use My Bot Token</b> using the buttons above."); return
-    if state=="token":
+    if state in {"token","token_processing"}:
         token=str(text or "").strip()
+        if state=="token_processing":
+            _creator_flow_update(uid,chat_id,"⏳ <b>Token is already being processed.</b>\n\nPlease wait a moment for your bot to start.")
+            return
         if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{20,}",token):
             _creator_flow_update(uid,chat_id,"❌ <b>Invalid Bot Token</b>\n\nSend the complete token from @BotFather."); return
-        result,err=_creator_api_with_token(token,"getMe",{},timeout=12)
-        if err or not result or not result.get("id"):
-            _creator_flow_update(uid,chat_id,"❌ <b>Token rejected</b>\n\nTelegram did not accept this Bot Token. Send a fresh token from @BotFather."); return
-        bot_id=str(result.get("id"))
-        username=str(result.get("username") or "").lstrip("@")
-        if not username:
-            _creator_flow_update(uid,chat_id,"❌ Telegram returned no bot username for this token."); return
-        existing=managed_bots_col.find_one({"bot_id":bot_id})
-        if existing and str(existing.get("owner_id") or "")!=uid:
-            _creator_flow_update(uid,chat_id,"❌ <b>This bot is already registered</b>\n\nThat bot is connected to another Creator account."); return
-        btype=str(sess.get("bot_type") or "video").lower()
-        now=datetime.now(timezone.utc)
-        doc={
-            "bot_id":bot_id,
-            "owner_id":uid,
-            "token_enc":_encrypt_managed_token(token),
-            "username":username,
-            "name":str(result.get("first_name") or username or "Downloader Bot"),
-            "bot_type":btype if btype in {"video","music"} else "video",
-            "managed":False,
-            "active":True,
-            "suspended":False,
-            "premium_until":(existing or {}).get("premium_until"),
-            "wallet_linked":bool((existing or {}).get("wallet_linked",False)),
-            "created_at":(existing or {}).get("created_at",now),
-            "updated_at":now,
-            "users":(existing or {}).get("users",[]),
-        }
-        managed_bots_col.update_one({"bot_id":bot_id},{"$set":doc},upsert=True)
-        _creator_clear_session(uid)
-        started=_managed_bot_start_instance(doc)
-        if not started:
-            managed_bots_col.update_one({"bot_id":bot_id},{"$set":{"active":False,"error":"Bot could not be started"}})
-            _creator_send(chat_id,"❌ The token was valid, but the bot could not be started on the server. Check the token and try again.",reply_markup=_creator_keyboard(uid)); return
-        _creator_send(
-            chat_id,
-            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(str(doc.get('name') or username))}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bot_id}</code>\n\n"
-            "Your token-based downloader bot is now running.\n\n"
-            "📢 <b>Ads</b> follow the Creator Bot's Managed Ads switch.",
-            reply_markup=_creator_keyboard(uid)
+        _creator_set_session(uid,{**sess,"state":"token_processing","updated_at":datetime.now(timezone.utc)})
+        _creator_flow_update(uid,chat_id,
+            "⚡ <b>Token received securely.</b>\n\n"
+            "The token message is removed immediately and your bot is being started now.\n"
+            "Please wait…"
         )
+        threading.Thread(
+            target=_creator_connect_token_worker,
+            args=(uid,chat_id,token,str(sess.get("bot_type") or "video").lower()),
+            daemon=True,
+            name=f"creator-token-{uid}",
+        ).start()
         return
     if state=="name":
         if not 1<=len(text)<=64:
@@ -12951,8 +12973,8 @@ def _creator_callback(call):
                 "🔑 <b>Use My Bot Token</b>\n\n"
                 "Create the bot with @BotFather first, then send its <b>full Bot Token</b> here.\n\n"
                 "Your bot will run using the token you provide; Creator Bot does not create that token for you.\n\n"
-                "Example format: <code>123456789:AA...</code>\n"
-                "The token is stored encrypted when <code>MANAGED_TOKEN_ENCRYPTION_KEY</code> is configured."
+                "Example format: <code>123456789:AA...</code>\n\n"
+                "🔐 <b>Security:</b> Bot tokens are private credentials. Send the token only to this Creator Bot."
             )
         return
     if data.startswith("cbotinfo:"):
@@ -13440,8 +13462,27 @@ def _managed_download_song(mb,chat_id,song,uid,bid,status_id=None):
 
 
 def _ad_premium_managed_cb(mb, call):
-    try: _show_ad_premium_plans(mb,call,str(call.data).split(":",1)[1])
-    except Exception as e: print("Managed ad premium callback failed:",repr(e))
+    """Open Premium from a managed/token bot ad gate without leaving the callback spinner hanging."""
+    try:
+        token=str(call.data).split(":",1)[1]
+        row=ad_gates_col.find_one({"token":token})
+        if not row or str(row.get("user_id"))!=str(call.from_user.id):
+            mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True)
+            return
+        mb.answer_callback_query(call.id)
+        plans=get_premium_prices(); rows=[]
+        for months in ("1","3","9","12"):
+            if months in plans:
+                rows.append([InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"adpremplan:{token}:{months}")])
+        rows.append([InlineKeyboardButton("⬅️ Back",callback_data=f"adpremback:{token}")])
+        text=("💎 <b>PREMIUM</b>\n\nChoose a Premium period.\n\n"+
+              "\n".join(f"• <b>{m} month(s)</b> — ${float(plans[m]):.2f}" for m in ("1","3","9","12") if m in plans)+
+              "\n\nPayment is handled by <b>@Downloadvedioytibot</b> with Telegram Stars.")
+        mb.edit_message_text(call.message.chat.id,call.message.message_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+    except Exception as e:
+        print("Managed ad premium callback failed:",repr(e))
+        try: mb.answer_callback_query(call.id,"Could not open Premium. Please try again.",show_alert=True)
+        except Exception: pass
 
 def _ad_premium_plan_managed_cb(mb,call):
     parts=str(call.data).split(":"); token=parts[1] if len(parts)>1 else ""; months=parts[2] if len(parts)>2 else ""; row=ad_gates_col.find_one({"token":token})
@@ -13523,6 +13564,13 @@ def _creator_poll_loop():
                                 _creator_handle_text(uid,chat,normalized)
                             else:
                                 sess=_creator_session(uid); st=str(sess.get("state") or "")
+                                # Bot tokens are secrets. Delete the incoming token message before
+                                # validation/network work so it is not left visible in the chat.
+                                if st in {"token","token_processing"}:
+                                    try:
+                                        _creator_api("deleteMessage",{"chat_id":chat,"message_id":msg.get("message_id")},timeout=5)
+                                    except Exception as e:
+                                        print("Creator token message deletion failed:",repr(e))
                                 value=_message_entities_to_html(msg) if st.startswith("admin_") else raw_text
                                 _creator_handle_text(uid,chat,value)
                 except Exception as e:
