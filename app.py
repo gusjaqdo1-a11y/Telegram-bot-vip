@@ -9,7 +9,7 @@ import requests
 app = Flask(__name__)
 from datetime import timedelta
 app.permanent_session_lifetime=timedelta(days=365)
-app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SECURE=True,SESSION_COOKIE_SAMESITE="Lax")
+app.config.update(SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SECURE=True,SESSION_COOKIE_SAMESITE="Lax",SESSION_COOKIE_NAME="quickdl_creator_session",SESSION_COOKIE_PATH="/")
 os.makedirs("downloads", exist_ok=True)
 
 @app.route("/download", methods=["GET"])
@@ -303,14 +303,14 @@ def creator_dashboard_login(bot_id):
                     print("Dashboard PIN migration skipped:",repr(e))
         username_ok=bool(username) and hmac.compare_digest(username.lower(),expected.lower())
         if username_ok and pin_ok:
-            session.clear()
-            session["creator_dashboard_bot"]=bid
-            session.permanent=True
-            session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
-            response=redirect(url_for("creator_dashboard_home",bot_id=bid),code=302)
-            if remember:
-                response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax",path="/")
-            return response
+        session.clear()
+        session["creator_dashboard_bot"]=bid
+        session.permanent=True
+        session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
+        response=redirect(url_for("creator_dashboard_home",bot_id=bid),code=302)
+        if remember:
+            response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax",path="/")
+        return response
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")
     body=f"""<div class="wrap unavailable-shell"><div class="glass login"><div class="logo">◈</div><div class="eyebrow">QUICKDL • CREATOR DASHBOARD</div><h1>Welcome back</h1><div class="muted">Secure owner access for <b>@{html.escape(botname)}</b>.</div>{'<div class="notice err">'+html.escape(error)+'</div>' if error else ''}<form method="post"><label>Dashboard Username</label><input name="username" autocomplete="username" placeholder="@botusername" required><label>6-digit PIN</label><input name="pin" type="password" inputmode="numeric" autocomplete="current-password" minlength="6" maxlength="6" placeholder="••••••" required><label class="lock"><span>💾 Save login on this device</span><input type="checkbox" name="remember" checked></label><div class="actions"><button class="btn" type="submit">⚡ Enter Dashboard</button></div></form><div class="small" style="margin-top:18px">Your PIN stays private. Saved login is signed and expires automatically.</div></div></div>"""
