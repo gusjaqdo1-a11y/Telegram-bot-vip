@@ -12515,6 +12515,13 @@ def _creator_admin_text(uid, chat_id, text):
         set_setting("bot_creation_enabled",True); _creation_commands_refresh(); _creator_set_commands(); _refresh_all_user_menus("🤖 Bot creation is now OPEN."); _creator_send(chat_id,"🟢 <b>Creation OPEN</b>",reply_markup=_creator_admin_keyboard()); return
     if text=="🔴 Close Creation":
         set_setting("bot_creation_enabled",False); _creation_commands_refresh(); _creator_set_commands(); _refresh_all_user_menus("🔒 Bot creation is now CLOSED."); _creator_send(chat_id,"🔴 <b>Creation CLOSED</b>\nExisting bots continue running.",reply_markup=_creator_admin_keyboard()); return
+    if text=="✏️ Create Start Message":
+        current=str(get_setting("creator_start_message_text","") or "").strip()
+        if not current:
+            current="🚀 <b>WELCOME TO BOT CREATOR</b>\n\nCreate your own Video or Music Downloader Bot.\n\nChoose <b>🤖 Create My Bot</b> to begin."
+        _creator_set_session(uid,{"state":"admin_creator_start"})
+        _creator_send(chat_id,"✏️ <b>CREATE START MESSAGE</b>\n\nSend the exact text for Creator Bot /start. HTML is allowed.\n\n<b>Current:</b>\n"+current,reply_markup=_creator_admin_keyboard())
+        return
     if text=="🟢 Open Verify Create Bot":
         set_setting("create_bot_verify_required",True); _creator_send(chat_id,"🟢 <b>Verify-before-create OPEN</b>"); return
     if text=="🔴 Close Verify Create Bot":
@@ -12635,6 +12642,14 @@ def _creator_admin_text(uid, chat_id, text):
         plans={"3":max(1,int(float(vals[0]))),"6":max(1,int(float(vals[1]))),"12":max(1,int(float(vals[2])))}
         set_setting("remove_ads_plans_stars",plans); _creator_clear_session(uid)
         _creator_send(chat_id,"✅ <b>Remove Ads prices updated</b>\n\n"+"\n".join(f"{m} months = {plans[m]} Stars" for m in ("3","6","12")),reply_markup=_creator_admin_keyboard()); return
+    if state=="admin_creator_start":
+        clean=str(text or "").strip()
+        if not clean:
+            _creator_send(chat_id,"❌ Start message cannot be empty. Send it again.",reply_markup=_creator_admin_keyboard()); return
+        set_setting("creator_start_message_text",clean)
+        _creator_clear_session(uid)
+        _creator_send(chat_id,"✅ <b>Creator /start message saved.</b>",reply_markup=_creator_admin_keyboard())
+        return
     if state=="admin_caption":
         set_setting("create_bot_caption_text",text); set_setting("create_bot_caption_enabled",True); _creator_clear_session(uid); _creator_send(chat_id,"✅ Create caption saved and opened.",reply_markup=_creator_admin_keyboard()); return
     if state=="admin_send_create":
