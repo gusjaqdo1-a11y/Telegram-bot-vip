@@ -12205,24 +12205,19 @@ def _creator_handle_text(uid, chat_id, text):
     if text in ("/start", "/start creator"):
         if _creator_admin(uid):
             _creator_clear_session(uid); _creator_send(chat_id,"👑 <b>CREATOR ADMIN PANEL</b>\n\nChoose a control:",reply_markup=_creator_admin_keyboard()); return
-        _creator_send(chat_id,
-            "🚀 <b>WELCOME TO BOT CREATOR</b>\n\n"
-            "Build your own Downloader Bot from the Creator Bot. You can run it in two ways.\n\n"
-            "<b>HOW IT WORKS</b>\n"
-            "1️⃣ Tap <b>🤖 Create My Bot</b>.\n"
-            "2️⃣ Choose Video or Music.\n"
-            "3️⃣ Choose <b>☁️ Managed by Creator Bot</b> or <b>🔑 Use My Bot Token</b>.\n"
-            "4️⃣ Managed mode uses Telegram's official managed-bot creation flow.\n"
-            "5️⃣ Token mode lets you connect a bot you already created with @BotFather.\n"
-            "6️⃣ The selected downloader starts automatically on the server.\n\n"
-            "<b>YOUR BOT FEATURES</b>\n"
-            "🎬 Video & Shorts downloads\n"
-            "🎵 Full MP3/Music downloads\n"
-            "💰 Shared balance with @Downloadvedioytibot\n"
-            "💎 Premium options\n"
-            "📊 Owner controls\n\n"
-            "Use <b>🤖 My Bots</b> to see your bots in one message, or <b>🗑 Delete Bot</b> to remove a bot from this system.",
-            reply_markup=_creator_keyboard(uid)); return
+        start_text=str(get_setting("creator_start_message_text","") or "").strip()
+        if not start_text:
+            start_text=("🚀 <b>WELCOME TO BOT CREATOR</b>\n\n"
+                "Build your own Downloader Bot from the Creator Bot. You can run it in two ways.\n\n"
+                "<b>HOW IT WORKS</b>\n"
+                "1️⃣ Tap <b>🤖 Create My Bot</b>.\n"
+                "2️⃣ Choose Video or Music.\n"
+                "3️⃣ Choose <b>☁️ Managed by Creator Bot</b> or <b>🔑 Use My Bot Token</b>.\n"
+                "4️⃣ Managed mode uses Telegram's official managed-bot creation flow.\n"
+                "5️⃣ Token mode lets you connect a bot you already created with @BotFather.\n"
+                "6️⃣ The selected downloader starts automatically on the server.")
+        _creator_send(chat_id,start_text,reply_markup=_creator_keyboard(uid)); return
+
     if low.startswith("/start "):
         _creator_send(chat_id,"👋 Welcome to the Bot Creator.",reply_markup=_creator_keyboard(uid)); return
     if text=="🤖 Create My Bot" or low in {"/create","/addbot","/add bot"}:
