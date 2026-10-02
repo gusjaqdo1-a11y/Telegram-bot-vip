@@ -11425,7 +11425,7 @@ def admin_premium_panel(m):
 def premium_prices_admin(m):
     if not is_admin(m.from_user.id): return
     p=get_premium_prices()
-    msg=bot.send_message(m.chat.id, f"💰 Premium prices\n\n1 Month: ${p['1']:.2f}\n3 Months: ${p['3']:.2f}\n9 Months: ${p['9']:.2f}\n12 Months: ${p['12']:.2f}\n\nSend four prices separated by spaces, e.g. 5 12 30 40")
+    msg=bot.send_message(m.chat.id, f"💰 Premium prices\n\n1 Month: ${p['1']:.2f}\n3 Months: ${p['3']:.2f}\n6 Months: ${p['6']:.2f}\n9 Months: ${p['9']:.2f}\n12 Months: ${p['12']:.2f}\n\nSend five prices separated by spaces, e.g. 5 12 20 30 40")
     bot.register_next_step_handler(msg, set_premium_prices_admin)
 
 def set_premium_prices_admin(m):
@@ -13263,6 +13263,15 @@ def _managed_bot_remove_from_system(bot_id):
         try: mb.stop_polling()
         except Exception: pass
     managed_bot_threads.pop(bid,None)
+    with managed_bot_executor_lock:
+        executor=managed_bot_executors.pop(bid,None)
+    if executor:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            try: executor.shutdown(wait=False)
+            except Exception: pass
+        except Exception: pass
     # Ask Telegram to close the managed bot's cloud session when possible.
     try:
         token=_decrypt_managed_token(doc)
