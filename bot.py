@@ -12554,6 +12554,13 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="token":
         token=text.strip()
+        # Remove the incoming BotFather token message immediately. Telegram
+        # allows bots to delete incoming private-chat messages; failure is
+        # deliberately non-fatal so token processing can continue safely.
+        try:
+            _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":int(msg.get("message_id") or 0)},timeout=10)
+        except Exception:
+            pass
         if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
             _creator_send(chat_id,"❌ Invalid Telegram bot token format. Send the token copied from @BotFather."); return
         if token in {str(TOKEN or "").strip(),str(CREATOR_BOT_TOKEN or "").strip(),str(BOT2_TOKEN or "").strip()}:
@@ -13003,7 +13010,11 @@ def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
     if not doc: return
     bid=str(doc.get("bot_id") or ""); owner=str(doc.get("owner_id") or "")
     username=str(doc.get("username") or "unknown").lstrip("@"); name=str(doc.get("name") or "Downloader Bot")
-    _managed_bot_remove_from_system(bid)
+    # Telegram-side deletion/revocation is a lifecycle disable, not an
+    # application record deletion. Keep the record so the owner can still see
+    # an explicit disabled/unavailable Dashboard and the system can retain the
+    # audit identity of the bot.
+    _managed_bot_remove_from_system(bid, delete_record=False)
     if owner:
         if reason=="token_revoked":
             text=(f"⚠️ <b>Bot Removed</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
@@ -13022,15 +13033,18 @@ def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
 def _creator_notify_managed_bot_token_updated(doc, new_token):
     if not doc or not new_token: return False
     bid=str(doc.get("bot_id") or ""); owner=str(doc.get("owner_id") or "")
+    # Validate the replacement token before stopping the currently running
+    # instance. A transient/invalid replacement must not take a healthy bot
+    # offline.
+    me,err=_creator_api_with_token(new_token,"getMe",{},timeout=15)
+    if err or not me:
+        _creator_notify_admins(f"❌ <b>Managed Bot Restart Failed After Token Update</b>\n\n🆔 <code>{html.escape(bid)}</code>\nError: <code>{html.escape(str(err or 'getMe failed')[:500])}</code>")
+        return False
     old_obj=managed_bot_objects.pop(bid,None)
     if old_obj:
         try: old_obj.stop_polling()
         except Exception: pass
     managed_bot_threads.pop(bid,None)
-    me,err=_creator_api_with_token(new_token,"getMe",{},timeout=15)
-    if err or not me:
-        _creator_notify_admins(f"❌ <b>Managed Bot Restart Failed After Token Update</b>\n\n🆔 <code>{html.escape(bid)}</code>\nError: <code>{html.escape(str(err or 'getMe failed')[:500])}</code>")
-        return False
     username=str(me.get("username") or doc.get("username") or "unknown").lstrip("@")
     name=str(me.get("first_name") or doc.get("name") or "Downloader Bot")
     now=datetime.now(timezone.utc)
@@ -13256,7 +13270,7 @@ def _creator_callback(call):
 
 
 
-def _managed_bot_remove_from_system(bot_id):
+def _managed_bot_remove_from_system(bot_id, delete_record=True):
     bid=str(bot_id); doc=managed_bots_col.find_one({"bot_id":bid}) or {}
     mb=managed_bot_objects.pop(bid,None)
     if mb:
@@ -13279,10 +13293,27 @@ def _managed_bot_remove_from_system(bot_id):
             requests.post(f"https://api.telegram.org/bot{token}/close",json={},timeout=10)
     except Exception as e:
         print("Managed bot close on delete skipped:",repr(e))
-    # Remove the bot completely from this application's database/system. Telegram
-    # does not expose a Bot API method for deleting the bot account itself.
-    try: managed_bots_col.delete_one({"bot_id":bid})
-    except Exception: pass
+    if delete_record:
+        # Explicit owner/admin deletion removes the application record. A
+        # Telegram-side revoke/unavailable event uses delete_record=False so
+        # Dashboard can render its disabled state instead of becoming a
+        # misleading "not found" page.
+        try: managed_bots_col.delete_one({"bot_id":bid})
+        except Exception: pass
+    else:
+        try:
+            managed_bots_col.update_one(
+                {"bot_id":bid},
+                {"$set":{
+                    "active":False,
+                    "suspended":True,
+                    "disabled_reason":str(doc.get("disabled_reason") or "telegram_unavailable"),
+                    "disabled_at":datetime.now(timezone.utc),
+                    "updated_at":datetime.now(timezone.utc)
+                }}
+            )
+        except Exception as e:
+            print("Managed bot disable record update skipped:",repr(e))
 
 
 def _managed_bot_doc(bot_id):
