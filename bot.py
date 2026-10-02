@@ -1415,6 +1415,17 @@ def _ad_bot_key(bot_id=None):
     return str(bot_id or "main")
 
 
+def _managed_ads_open():
+    """Single master switch for every Managed/Small Bot.
+    It is intentionally global: bot creation never copies this into a per-bot
+    setting, so newly-created bots immediately inherit the current state.
+    """
+    try:
+        return bool(get_setting("managed_ads_enabled", True))
+    except Exception:
+        return True
+
+
 def _remove_ads_plans():
     raw=get_setting("remove_ads_plans_stars", {"3":50,"6":90,"12":150})
     if not isinstance(raw,dict): raw={"3":50,"6":90,"12":150}
@@ -1443,7 +1454,7 @@ def _ad_enabled_for(uid, bot_id=None):
         # Managed/small-bot ads are controlled by the existing Creator/Admin
         # master switch only. Do not let newer per-bot dashboard settings
         # silently disable the original ad-gate behavior.
-        if not bool(get_setting("managed_ads_enabled", True)): return True
+        if not _managed_ads_open(): return True
     if is_admin(uid) or is_quick_access(uid): return True
     if _remove_ads_active(uid,bot_id): return True
     try:
@@ -12823,7 +12834,7 @@ def _creator_admin_text(uid, chat_id, text):
         # This is a display page, not an input state. Always clear any stale
         # session first so the next message cannot be interpreted as old input.
         _creator_clear_session(uid)
-        cfg=_ad_inapp_settings(); _creator_send(chat_id,f"📊 <b>AD SETTINGS</b>\n\n🎯 Ads per user: <b>{_ad_required_count()}</b>\n🎬 Format: <b>{_ad_format_label()}</b>\n⏱️ Ad start delay: <b>{_ad_gate_seconds()}s</b>\n⌛ SDK timeout: <b>{_ad_timeout_seconds()}s</b>\n⏳ Cooldown: <b>{AD_COOLDOWN_SECONDS//60} minutes</b>\n\n🧩 In-App: <b>{cfg['frequency']} ads / {cfg['capping']}h</b>\n↔️ Interval: <b>{cfg['interval']}s</b>\n📄 Every page: <b>{'ON' if cfg['everyPage'] else 'OFF'}</b>\n📣 Managed Ads: <b>{'OPEN' if bool(get_setting('managed_ads_enabled',True)) else 'CLOSED'}</b>\n🔑 Monetag Zone: <code>{MONETAG_REWARDED_ZONE_ID}</code>\n\nUse <b>🔢 Ads Per User</b> or <b>⏱️ Ad Seconds</b> above to change values.",reply_markup=_creator_admin_keyboard()); return
+        cfg=_ad_inapp_settings(); _creator_send(chat_id,f"📊 <b>AD SETTINGS</b>\n\n🎯 Ads per user: <b>{_ad_required_count()}</b>\n🎬 Format: <b>{_ad_format_label()}</b>\n⏱️ Ad start delay: <b>{_ad_gate_seconds()}s</b>\n⌛ SDK timeout: <b>{_ad_timeout_seconds()}s</b>\n⏳ Cooldown: <b>{AD_COOLDOWN_SECONDS//60} minutes</b>\n\n🧩 In-App: <b>{cfg['frequency']} ads / {cfg['capping']}h</b>\n↔️ Interval: <b>{cfg['interval']}s</b>\n📄 Every page: <b>{'ON' if cfg['everyPage'] else 'OFF'}</b>\n📣 Managed Ads: <b>{'OPEN' if _managed_ads_open() else 'CLOSED'}</b>\n🔑 Monetag Zone: <code>{MONETAG_REWARDED_ZONE_ID}</code>\n\nUse <b>🔢 Ads Per User</b> or <b>⏱️ Ad Seconds</b> above to change values.",reply_markup=_creator_admin_keyboard()); return
     if text=="🚫 Remove Ads Prices":
         plans=_remove_ads_plans()
         _creator_set_session(uid,{"state":"admin_remove_ads_prices"})
