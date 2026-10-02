@@ -339,6 +339,10 @@ def creator_dashboard_home(doc):
       </main>
       <aside>
         <div class="glass card"><h2>Bot Status</h2><div class="row2"><div class="stat"><b>{'🟢' if doc.get('active',True) else '🔴'}</b><span>Runtime</span></div><div class="stat"><b>{len(doc.get('users') or [])}</b><span>Users</span></div></div><div class="notice">Premium until: <b>{html.escape(str(until))}</b></div></div>
+        <div class="glass card"><h2>Users</h2><div class="muted">Telegram users who have opened or interacted with this Downloader Bot.</div>
+          <div class="user-list">{''.join(f'<div class="stat" style="margin-top:9px"><b>👤 {html.escape(str(x))}</b><span>Telegram user ID</span></div>' for x in list(doc.get('users') or [])[-100:][::-1]) or '<div class="notice">No users recorded yet.</div>'}</div>
+          <div class="small" style="margin-top:10px">Showing the latest {min(100,len(doc.get('users') or []))} users.</div>
+        </div>
         <div class="glass card"><h2>Premium Controls</h2>
           <form method="post" action="{url_for('creator_dashboard_controls',bot_id=bid)}">
             <div class="lock"><span>🚫 Disable Ads</span><input type="checkbox" name="ads_disabled" {'checked' if premium and doc.get('ads_enabled') is False else ''} {'disabled' if not premium else ''}></div>
