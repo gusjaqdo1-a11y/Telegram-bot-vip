@@ -13838,12 +13838,14 @@ def verifycreate_command(m):
 def admin_open_ads(m):
     if not is_admin(m.from_user.id): return
     set_setting("main_ads_enabled",True)
+    set_setting("managed_ads_enabled",True)
     bot.send_message(m.chat.id,"🟢 <b>ADS OPEN</b>\n\n@Downloadvedioytibot will now use the 90-minute per-user ad gate.",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🔴 Close Ads")
 def admin_close_ads(m):
     if not is_admin(m.from_user.id): return
     set_setting("main_ads_enabled",False)
+    set_setting("managed_ads_enabled",False)
     bot.send_message(m.chat.id,"🔴 <b>ADS CLOSED</b>\n\nThe main downloader will no longer show ad gates.",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "🟢 Open Store songs")
