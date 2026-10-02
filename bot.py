@@ -12131,21 +12131,6 @@ def _creator_set_session(uid, data):
     uid=str(uid); creator_sessions_col.update_one({"_id":uid},{"$set":data},upsert=True)
 
 
-def _creator_flow_update(uid, chat_id, text, reply_markup=None):
-    uid=str(uid); sess=_creator_session(uid); mid=sess.get("flow_message_id")
-    if mid:
-        result,err=_creator_edit(chat_id,int(mid),text,reply_markup=reply_markup)
-        if not err: return int(mid)
-    result,err=_creator_send(chat_id,text,reply_markup=reply_markup)
-    try:
-        new_mid=int((result or {}).get("message_id"))
-        if new_mid:
-            _creator_set_session(uid,{**sess,"flow_message_id":new_mid})
-            return new_mid
-    except Exception: pass
-    return mid
-
-
 def _creator_clear_session(uid):
     creator_sessions_col.delete_one({"_id":str(uid)})
 
@@ -12174,17 +12159,14 @@ def _creator_start_create(uid, chat_id):
         _creator_send(chat_id,"🔒 <b>Bot Creation is Closed</b>\n\nExisting bots continue working normally.",reply_markup=_creator_keyboard(uid)); return
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
-    _creator_flow_update(
-        uid,chat_id,
-        "🤖 <b>CREATE YOUR OWN BOT</b>
-
-Choose the type of bot you want to create:",
+    _creator_send(
+        chat_id,
+        "🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",
         reply_markup={"inline_keyboard":[
             [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
             [{"text":"🎵 Music Downloader","callback_data":"ctype:music"}]
         ]}
     )
-
 
 
 def _creator_finish_request(uid, chat_id):
@@ -12272,76 +12254,71 @@ def _creator_handle_text(uid, chat_id, text):
             return
 
     if state=="type":
-        _creator_flow_update(uid,chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
+        _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="mode":
-        _creator_flow_update(uid,chat_id,"Choose <b>☁️ Managed by Creator Bot</b> or <b>🔑 Use My Bot Token</b> using the buttons above."); return
+        _creator_send(chat_id,"Choose <b>☁️ Managed by Creator Bot</b> or <b>🔑 Use My Bot Token</b> using the buttons above."); return
     if state=="token":
         token=str(text or "").strip()
-        if not re.fullmatch(r"d{5,15}:[A-Za-z0-9_-]{20,}",token):
-            _creator_flow_update(uid,chat_id,"❌ <b>Invalid Bot Token</b>
-
-Send the complete token from @BotFather."); return
+        if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{20,}",token):
+            _creator_send(chat_id,"❌ Invalid Bot Token format. Send the complete token from @BotFather."); return
         result,err=_creator_api_with_token(token,"getMe",{},timeout=12)
         if err or not result or not result.get("id"):
-            _creator_flow_update(uid,chat_id,"❌ <b>Token rejected</b>
-
-Telegram did not accept this Bot Token. Send a fresh token from @BotFather."); return
-        bot_id=str(result.get("id")); username=str(result.get("username") or "").lstrip("@")
+            _creator_send(chat_id,"❌ This Bot Token is invalid or Telegram rejected it. Send a fresh token from @BotFather."); return
+        bot_id=str(result.get("id"))
+        username=str(result.get("username") or "").lstrip("@")
         if not username:
-            _creator_flow_update(uid,chat_id,"❌ Telegram returned no bot username for this token."); return
+            _creator_send(chat_id,"❌ Telegram returned no bot username for this token."); return
         existing=managed_bots_col.find_one({"bot_id":bot_id})
         if existing and str(existing.get("owner_id") or "")!=uid:
-            _creator_flow_update(uid,chat_id,"❌ <b>This bot is already registered</b>
-
-That bot is connected to another Creator account."); return
-        btype=str(sess.get("bot_type") or "video").lower(); now=datetime.now(timezone.utc)
-        doc={"bot_id":bot_id,"owner_id":uid,"token_enc":_encrypt_managed_token(token),
-             "username":username,"name":str(result.get("first_name") or username or "Downloader Bot"),
-             "bot_type":btype if btype in {"video","music"} else "video","managed":False,
-             "active":True,"suspended":False,"premium_until":(existing or {}).get("premium_until"),
-             "wallet_linked":bool((existing or {}).get("wallet_linked",False)),
-             "created_at":(existing or {}).get("created_at",now),"updated_at":now,
-             "users":(existing or {}).get("users",[])}
+            _creator_send(chat_id,"❌ This bot is already registered to another Creator account."); return
+        btype=str(sess.get("bot_type") or "video").lower()
+        now=datetime.now(timezone.utc)
+        doc={
+            "bot_id":bot_id,
+            "owner_id":uid,
+            "token_enc":_encrypt_managed_token(token),
+            "username":username,
+            "name":str(result.get("first_name") or username or "Downloader Bot"),
+            "bot_type":btype if btype in {"video","music"} else "video",
+            "managed":False,
+            "active":True,
+            "suspended":False,
+            "premium_until":(existing or {}).get("premium_until"),
+            "wallet_linked":bool((existing or {}).get("wallet_linked",False)),
+            "created_at":(existing or {}).get("created_at",now),
+            "updated_at":now,
+            "users":(existing or {}).get("users",[]),
+        }
         managed_bots_col.update_one({"bot_id":bot_id},{"$set":doc},upsert=True)
         _creator_clear_session(uid)
         started=_managed_bot_start_instance(doc)
         if not started:
             managed_bots_col.update_one({"bot_id":bot_id},{"$set":{"active":False,"error":"Bot could not be started"}})
             _creator_send(chat_id,"❌ The token was valid, but the bot could not be started on the server. Check the token and try again.",reply_markup=_creator_keyboard(uid)); return
-        _creator_send(chat_id,f"🎉 <b>Bot Connected Successfully!</b>
-
-🤖 <b>{html.escape(str(doc.get('name') or username))}</b>
-🔗 @{html.escape(username)}
-🆔 <code>{bot_id}</code>
-
-Your token-based downloader bot is now running.
-
-📢 <b>Ads</b> follow the Creator Bot's Managed Ads switch.",reply_markup=_creator_keyboard(uid)); return
+        _creator_send(
+            chat_id,
+            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(str(doc.get('name') or username))}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bot_id}</code>\n\n"
+            "Your token-based downloader bot is now running.\n\n"
+            "📢 <b>Ads</b> follow the Creator Bot's Managed Ads switch.",
+            reply_markup=_creator_keyboard(uid)
+        )
+        return
     if state=="name":
         if not 1<=len(text)<=64:
-            _creator_flow_update(uid,chat_id,"❌ <b>Invalid name</b>
-
-Name must be 1–64 characters. Send it again."); return
-        _creator_set_session(uid,{**sess,"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
-        _creator_flow_update(uid,chat_id,"<b>Step 2 of 3</b>
-
-Send your bot username. It must end with <code>bot</code>.
-
-Example: <code>my_downloader_bot</code>"); return
+            _creator_send(chat_id,"❌ Name must be 1–64 characters. Send it again."); return
+        _creator_set_session(uid,{"state":"username","name":text,"updated_at":datetime.now(timezone.utc)})
+        _creator_send(chat_id,"<b>Step 2 of 3</b>\n\nSend your bot username. It must end with <code>bot</code>.\n\nExample: <code>my_downloader_bot</code>"); return
     if state=="username":
         username=text.lstrip("@").strip()
         if not re.fullmatch(r"[A-Za-z0-9_]{5,32}bot",username,re.I):
-            _creator_flow_update(uid,chat_id,"❌ <b>Invalid username</b>
-
-Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
+            _creator_send(chat_id,"❌ Username must be 5–32 characters, use letters/numbers/underscore, and end with <code>bot</code>. Try again."); return
+        # Store the requested values. Telegram itself performs the final username check.
         _creator_set_session(uid,{**sess,"state":"ready","username":username,"updated_at":datetime.now(timezone.utc)})
         _creator_finish_request(uid,chat_id); return
     if state=="ready":
         _creator_finish_request(uid,chat_id); return
     if state=="waiting_managed_bot":
-        _creator_flow_update(uid,chat_id,"⏳ <b>Waiting for Telegram</b>
-
-Tap the Telegram Create button above. If you cancelled it, press <b>Create My Bot</b> again."); return
+        _creator_send(chat_id,"⏳ Please tap the Telegram Create button above. If you cancelled it, press Create My Bot again."); return
 
     if _creator_admin(uid):
         _creator_send(chat_id,"Use the Creator Admin buttons below.",reply_markup=_creator_admin_keyboard())
@@ -12874,20 +12851,10 @@ def _creator_callback(call):
         if btype not in {"video","music"} or sess.get("state")!="type":
             _creator_answer(call.get("id"),"Creation session expired.",True); return
         _creator_set_session(uid,{**sess,"state":"mode","bot_type":btype,"updated_at":datetime.now(timezone.utc)})
-        _creator_flow_update(
-            uid,chat_id,
-            f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.
-
-"
-            "<b>Choose how this bot will run:</b>
-
-"
-            "☁️ <b>Managed by Creator Bot</b> — Telegram creates and manages the bot for you. "
-            "No BotFather token is needed; Creator Bot securely obtains and refreshes the managed token.
-
-"
-            "🔑 <b>Use My Bot Token</b> — create the bot with @BotFather and paste its token. "
-            "The bot then runs using your token.",
+        _creator_send(
+            chat_id,
+            f"<b>{'🎬 Video Downloader' if btype=='video' else '🎵 Music Downloader'}</b> selected.\n\n"
+            "<b>Choose how this bot will run:</b>",
             reply_markup={"inline_keyboard":[
                 [{"text":"☁️ Managed by Creator Bot","callback_data":"cmode:managed"}],
                 [{"text":"🔑 Use My Bot Token","callback_data":"cmode:token"}]
@@ -12900,31 +12867,16 @@ def _creator_callback(call):
             _creator_answer(call.get("id"),"Creation session expired.",True); return
         if mode=="managed":
             _creator_set_session(uid,{**sess,"state":"name","managed":True,"updated_at":datetime.now(timezone.utc)})
-            _creator_flow_update(uid,chat_id,
-                "<b>☁️ Managed by Creator Bot</b>
-
-"
-                "Telegram creates the bot and Creator Bot manages its token automatically. "
-                "You do not need to copy a token.
-
-"
-                "<b>Step 1 of 3</b>
-Send the name you want for your bot."
+            _creator_send(chat_id,
+                "<b>☁️ Managed Bot selected</b>\n\n"
+                "<b>Step 1 of 3</b>\nSend the name you want for your bot."
             )
         else:
             _creator_set_session(uid,{**sess,"state":"token","managed":False,"updated_at":datetime.now(timezone.utc)})
-            _creator_flow_update(uid,chat_id,
-                "🔑 <b>Use My Bot Token</b>
-
-"
-                "Create the bot with @BotFather first, then send its <b>full Bot Token</b> here.
-
-"
-                "Your bot will run using the token you provide; Creator Bot does not create that token for you.
-
-"
-                "Example format: <code>123456789:AA...</code>
-"
+            _creator_send(chat_id,
+                "🔑 <b>Token Bot selected</b>\n\n"
+                "Create the bot with @BotFather first, then send its <b>full Bot Token</b> here.\n\n"
+                "Example format: <code>123456789:AA...</code>\n"
                 "The token is stored encrypted when <code>MANAGED_TOKEN_ENCRYPTION_KEY</code> is configured."
             )
         return
