@@ -5700,6 +5700,43 @@ def _song_search_all(query, limit=30):
                 continue
             seen.add(key); merged.append(x)
             if len(merged)>=want: break
+    # If strict provider relevance filtering returns no usable songs, use the
+    # existing high-recall YouTube Music fallback before reporting "No songs found".
+    if not merged:
+        try:
+            fallback=_youtube_song_search(query,want)
+            for x in fallback:
+                key=str(x.get("id") or x.get("download") or "")
+                if not key or key in seen: continue
+                if not x.get("title") or _parse_duration_value(x.get("duration"))<=0: continue
+                seen.add(key); merged.append(x)
+        except Exception as e:
+            print("Final YouTube song fallback failed:",repr(e))
+    # Last resort: broad YouTube search without requiring artist metadata to contain
+    # the query. This handles YouTube layouts where artist/channel fields are absent.
+    if not merged:
+        try:
+            opts={"quiet":True,"no_warnings":True,"extract_flat":"in_playlist",
+                  "playlistend":max(20,want),"socket_timeout":6,"retries":1,
+                  "fragment_retries":1,"extractor_retries":1,"cachedir":False}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info=ydl.extract_info(f"ytsearch{max(20,want)}:{query} song official audio music",download=False) or {}
+            for item in info.get("entries") or []:
+                if not isinstance(item,dict): continue
+                vid=str(item.get("id") or "").strip()
+                if not vid or vid in seen: continue
+                title=_music_clean_text(item.get("title") or item.get("track") or item.get("fulltitle"))
+                artist=_music_clean_text(item.get("artist") or item.get("channel") or item.get("uploader") or item.get("creator"))
+                duration=_parse_duration_value(item.get("duration")) or _parse_duration_value(item.get("duration_string"))
+                if not title or duration<=0 or not _youtube_song_is_music(title,artist,duration,item): continue
+                webpage=item.get("webpage_url") or f"https://www.youtube.com/watch?v={vid}"
+                merged.append({"id":vid,"title":title,"artist":artist or "Unknown artist","duration":duration,
+                               "album":"","cover":item.get("thumbnail") or _youtube_artwork_url(vid),
+                               "download":webpage,"download_allowed":True,"license":"",
+                               "source":"youtube","webpage_url":webpage})
+                if len(merged)>=want: break
+        except Exception as e:
+            print("Broad YouTube song fallback failed:",repr(e))
     # Re-rank the merged set so exact artist/title matches come first.
     for x in merged:
         x["_score"]=_song_similarity(query,x.get("title",""),x.get("artist",""),x.get("album",""))
