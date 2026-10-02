@@ -13739,6 +13739,14 @@ def _creator_poll_loop():
                                 _creator_handle_text(uid,chat,normalized)
                             else:
                                 sess=_creator_session(uid); st=str(sess.get("state") or "")
+                                # Existing-token messages contain a live Telegram credential.
+                                # Delete the user's token message immediately before processing it,
+                                # so the token is not left visible in the Creator chat history.
+                                if st=="token":
+                                    try:
+                                        _creator_api("deleteMessage",{"chat_id":chat,"message_id":int(msg.get("message_id") or 0)})
+                                    except Exception as e:
+                                        print("Creator token message delete failed:",repr(e))
                                 value=_message_entities_to_html(msg) if st.startswith("admin_") else raw_text
                                 _creator_handle_text(uid,chat,value)
                 except Exception as e:
