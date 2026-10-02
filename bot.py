@@ -4841,7 +4841,7 @@ def download_media(chat_id, link, message_id, quality=None):
             msg=premium_gate_message(uid,"youtube",duration_check)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
             kb=InlineKeyboardMarkup(row_width=2)
             plans=get_premium_prices()
-            for months in ("1","3","9","12"):
+            for months in ("1","3","6","9","12"):
                 if months in plans:
                     kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
             kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
@@ -5029,7 +5029,7 @@ def download_media(chat_id, link, message_id, quality=None):
             if (duration_retry and duration_retry > youtube_free_limit_minutes()*60) or any(k in err_text.lower() for k in ("too long","duration limit","maximum duration","longer than","exceeds the maximum","video is too long")):
                 msg=premium_gate_message(uid,"youtube",duration_retry or youtube_free_limit_minutes()*60+1)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
                 plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
-                for months in ("1","3","9","12"):
+                for months in ("1","3","6","9","12"):
                     if months in plans:
                         kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
                 kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
@@ -10699,7 +10699,7 @@ def premium_plan_keyboard():
     prices = get_premium_prices()
     kb = InlineKeyboardMarkup(row_width=2)
     for months in ["1", "3", "6", "9", "12"]:
-        label = {"1":"1 Month", "3":"3 Months", "9":"9 Months", "12":"12 Months"}[months]
+        label = {"1":"1 Month", "3":"3 Months", "6":"6 Months", "9":"9 Months", "12":"12 Months"}[months]
         kb.add(InlineKeyboardButton(f"{label} — ${prices[months]:.2f}", callback_data=f"premium_buy:{months}"))
     return kb
 
@@ -10747,7 +10747,7 @@ def _send_premium_plan_message(bot_obj,chat_id,months,caption,reply_markup=None,
 
 def _premium_invoice_buttons(context="premium"):
     prices=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
-    for months in ("1","3","9","12"):
+    for months in ("1","3","6","9","12"):
         if months in prices: kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(prices[months]):.2f}",callback_data=f"premium_buy:{months}"))
     return kb
 
@@ -10971,7 +10971,7 @@ def _download_request_job(chat_id, link, quality, uid):
             if duration and duration > youtube_free_limit_minutes()*60:
                 kb=InlineKeyboardMarkup(row_width=2)
                 plans=get_premium_prices()
-                for months in ("1","3","9","12"):
+                for months in ("1","3","6","9","12"):
                     if months in plans:
                         kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
                 kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
@@ -12834,7 +12834,7 @@ def _creator_admin_text(uid, chat_id, text):
         _creator_send(chat_id,f"♻️ <b>Ads Reset</b>\n\nDeleted <b>{int(result.deleted_count)}</b> saved ad sessions/timers. Every affected user will be asked to open an ad again on the next protected action. Paid Remove Ads access was not changed.",reply_markup=_creator_admin_keyboard())
         return
     if text=="💎 Premium Prices":
-        prices=get_premium_prices(); _creator_send(chat_id,"💎 <b>Current Premium Prices</b>\n\n"+"\n".join(f"{m} month(s): ${prices[m]:.2f}" for m in ("1","3","9","12"))+"\n\nUse the main bot Premium Prices control to change them."); return
+        prices=get_premium_prices(); _creator_send(chat_id,"💎 <b>Current Premium Prices</b>\n\n"+"\n".join(f"{m} month(s): ${prices[m]:.2f}" for m in ("1","3","6","9","12"))+"\n\nUse the main bot Premium Prices control to change them."); return
     if text=="❌ Cancel Input":
         _creator_clear_session(uid)
         _creator_send(chat_id,"↩️ <b>Input cancelled.</b>\n\nYou are back in the Creator Admin Panel.",reply_markup=_creator_admin_keyboard()); return
@@ -13220,7 +13220,7 @@ def _creator_callback(call):
         if method=="wallet" and not users.get(uid,{}).get("creator_wallet_linked"):
             _creator_edit(chat_id,mid,"💳 <b>Creator Wallet is not connected</b>\n\nConnect your Creator Bot account to @Downloadvedioytibot first. This is one shared wallet for your Creator account, not a wallet attached to one bot.",reply_markup={"inline_keyboard":[[{"text":"🔗 Connect Wallet","callback_data":"creatorwallet:request"}],[{"text":"⬅️ Back","callback_data":f"cpickbot:{bid}"}]]}); return
         prices=get_premium_prices(); rate=max(1,int(get_setting("stars_per_usd",100) or 100)); rows=[]
-        for months in ("1","3","9","12"):
+        for months in ("1","3","6","9","12"):
             if method=="wallet": rows.append([{"text":f"💰 {months} Month — ${float(prices[months]):.2f}","callback_data":f"cprem:{bid}:{months}"}])
             else:
                 stars=max(1,int(round(float(prices[months])*rate))); rows.append([{"text":f"⭐ {months} Month — {stars} Stars","callback_data":f"cpremstars:{bid}:{months}"}])
@@ -13328,7 +13328,7 @@ def _managed_bot_start_instance(doc):
 
             def _premium_menu(m):
                 _ctx(); plans=get_premium_prices(); rows=[]
-                for months in ("1","3","9","12"):
+                for months in ("1","3","6","9","12"):
                     if months in plans:
                         rows.append([InlineKeyboardButton(f"💎 {months} Month — {float(plans[months]):.2f} USD",callback_data=f"mytprem:{bid}:{months}")])
                 rows.append([InlineKeyboardButton("⬅️ Close",callback_data=f"mbotinfo:{bid}")])
