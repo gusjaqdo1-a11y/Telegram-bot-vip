@@ -12554,13 +12554,6 @@ def _creator_handle_text(uid, chat_id, text):
         _creator_send(chat_id,"Choose <b>🎬 Video Downloader</b> or <b>🎵 Music Downloader</b> using the buttons above."); return
     if state=="token":
         token=text.strip()
-        # Remove the incoming BotFather token message immediately. Telegram
-        # allows bots to delete incoming private-chat messages; failure is
-        # deliberately non-fatal so token processing can continue safely.
-        try:
-            _creator_api("deleteMessage",{"chat_id":chat_id,"message_id":int(msg.get("message_id") or 0)},timeout=10)
-        except Exception:
-            pass
         if not re.fullmatch(r"\d{6,12}:[A-Za-z0-9_-]{20,}",token):
             _creator_send(chat_id,"❌ Invalid Telegram bot token format. Send the token copied from @BotFather."); return
         if token in {str(TOKEN or "").strip(),str(CREATOR_BOT_TOKEN or "").strip(),str(BOT2_TOKEN or "").strip()}:
@@ -13014,7 +13007,7 @@ def _creator_notify_managed_bot_removed(doc, reason="deleted_or_revoked"):
     # application record deletion. Keep the record so the owner can still see
     # an explicit disabled/unavailable Dashboard and the system can retain the
     # audit identity of the bot.
-    _managed_bot_remove_from_system(bid, delete_record=False)
+    _managed_bot_remove_from_system(bid, delete_record=False, disabled_reason=reason)
     if owner:
         if reason=="token_revoked":
             text=(f"⚠️ <b>Bot Removed</b>\n\n🤖 <b>{html.escape(name)}</b> (@{html.escape(username)})\n\n"
@@ -13270,7 +13263,7 @@ def _creator_callback(call):
 
 
 
-def _managed_bot_remove_from_system(bot_id, delete_record=True):
+def _managed_bot_remove_from_system(bot_id, delete_record=True, disabled_reason="telegram_unavailable"):
     bid=str(bot_id); doc=managed_bots_col.find_one({"bot_id":bid}) or {}
     mb=managed_bot_objects.pop(bid,None)
     if mb:
@@ -13307,7 +13300,7 @@ def _managed_bot_remove_from_system(bot_id, delete_record=True):
                 {"$set":{
                     "active":False,
                     "suspended":True,
-                    "disabled_reason":str(doc.get("disabled_reason") or "telegram_unavailable"),
+                    "disabled_reason":str(disabled_reason or "telegram_unavailable"),
                     "disabled_at":datetime.now(timezone.utc),
                     "updated_at":datetime.now(timezone.utc)
                 }}
