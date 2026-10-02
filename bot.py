@@ -13342,8 +13342,11 @@ def _managed_bot_start_instance(doc):
             def _music_search(m):
                 _ctx(); uid=str(m.from_user.id); q=_music_clean_text(m.text)
                 if not q or len(q)<2: return
-                if not _ad_enabled_for(uid,bid):
-                    if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
+                # Always enter the central ad-gate path for managed bots.
+                # The gate itself decides whether ads are open, removed, completed,
+                # or bypassed for an authorized user. This prevents newly connected
+                # token bots from accidentally skipping the gate.
+                if _send_ad_gate(mb,uid,m.chat.id,bid,"music_search",{"query":q},premium_url=_creator_bot_url()): return
                 action_stop=threading.Event(); start_action_heartbeat(m.chat.id,"typing",action_stop)
                 try:
                     _record_song_search(uid,q)
@@ -13370,9 +13373,8 @@ def _managed_bot_start_instance(doc):
                 if _send_cached_song(call.message.chat.id,song,mb):
                     mb.answer_callback_query(call.id,"⚡ Sent from 10-minute song cache")
                     return
-                if not _ad_enabled_for(str(call.from_user.id),bid):
-                    if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",{"song":song},premium_url=_creator_bot_url()):
-                        mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
+                if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",{"song":song},premium_url=_creator_bot_url()):
+                    mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
                 mb.answer_callback_query(call.id,"⬇️ Downloading...")
                 try:
                     status_msg=mb.send_message(call.message.chat.id,f"🎵 <b>{html.escape(str(song.get('title') or 'Song'))}</b>\n🎤 {html.escape(str(song.get('artist') or 'Unknown artist'))}\n\n⬇️ <b>Downloading...</b>",parse_mode="HTML")
@@ -13397,17 +13399,19 @@ def _managed_bot_start_instance(doc):
                             msg=f"▶️ <b>YouTube Free Limit Reached</b>\n\n⏱️ Video length: <b>{int(duration)//60}m {int(duration)%60:02d}s</b>\n🚫 Free limit: <b>{free_minutes} minutes</b>\n\nThis video is longer than the free limit for this small bot. Premium is not offered inside small bots. Use the main Downloader for Premium YouTube access."
                             mb.send_message(m.chat.id,msg,parse_mode="HTML",reply_markup=kb if main_url else None); return
                 except Exception as e: print("Managed YouTube premium probe error:",repr(e))
-                has_priority=_managed_premium_active_doc(_managed_bot_doc(bid) or {}) or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
-                if not has_priority and not _ad_enabled_for(uid,bid):
-                    if _send_ad_gate(mb,uid,m.chat.id,bid,"download",{"link":link,"quality":None},premium_url=_creator_bot_url()): return
+                # Keep Monetag gating independent for each small bot. A user's
+                # main-downloader Premium/Trial status must not silently disable
+                # Monetag ads in a managed bot. Remove Ads for this specific bot,
+                # admin bypass, completed gate and managed Premium are handled by
+                # _ad_enabled_for/_send_ad_gate.
+                if _send_ad_gate(mb,uid,m.chat.id,bid,"download",{"link":link,"quality":None},premium_url=_creator_bot_url()): return
                 ctx=contextvars.copy_context(); download_executor_for(uid).submit(ctx.run,download_media,m.chat.id,link,None,None)
             def _music_convert(call):
                 _ctx(); token=call.data.split(":",1)[1]; data=music_pending.get(token)
                 if not data or str(data.get("uid"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This MUSIC button expired.",show_alert=True); return
-                if not _ad_enabled_for(str(call.from_user.id),bid):
-                    payload={"song":{"download":data.get("link"),"title":data.get("source_title"),"artist":data.get("source_artist"),"cover":""}}
-                    if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",payload,premium_url=_creator_bot_url()):
-                        mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
+                payload={"song":{"download":data.get("link"),"title":data.get("source_title"),"artist":data.get("source_artist"),"cover":""}}
+                if _send_ad_gate(mb,str(call.from_user.id),call.message.chat.id,bid,"music_download",payload,premium_url=_creator_bot_url()):
+                    mb.answer_callback_query(call.id,"▶️ Watch the short ad to continue."); return
                 if data.get("in_progress"): mb.answer_callback_query(call.id,"🎵 Conversion is already running."); return
                 data["in_progress"]=True; mb.answer_callback_query(call.id,"🎵 Conversion started")
                 status=mb.send_message(call.message.chat.id,"🎵 Converting video to MP3...")
