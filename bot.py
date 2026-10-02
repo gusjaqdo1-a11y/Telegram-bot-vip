@@ -12219,7 +12219,6 @@ def _creator_start_create(uid, chat_id):
     if not _creator_verify_gate(uid,chat_id): return
     _creator_set_session(uid,{"state":"type","updated_at":datetime.now(timezone.utc)})
     _creator_flow_update(uid,chat_id,
-        chat_id,
         "🤖 <b>CREATE YOUR OWN BOT</b>\n\nChoose the type of bot you want to create:",
         reply_markup={"inline_keyboard":[
             [{"text":"🎬 Video Downloader","callback_data":"ctype:video"}],
@@ -12234,7 +12233,7 @@ def _creator_finish_request(uid, chat_id):
         _creator_start_create(uid,chat_id); return
     request_id=random.randint(1,2_000_000_000)
     _creator_set_session(uid,{**d,"state":"waiting_managed_bot","request_id":request_id,"updated_at":datetime.now(timezone.utc)})
-    _creator_send(chat_id,
+    _creator_flow_update(uid,chat_id,
         f"<b>Step 3 of 3</b>\n\nName: <b>{html.escape(name)}</b>\nUsername: <b>@{html.escape(username)}</b>\n\n"
         "Tap the button below. Telegram will open its official bot-creation screen.\n"
         "You do <b>not</b> need to open @BotFather or paste a token.",
@@ -12314,17 +12313,17 @@ def _creator_handle_text(uid, chat_id, text):
     if state=="token":
         token=str(text or "").strip()
         if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{20,}",token):
-            _creator_send(chat_id,"❌ Invalid Bot Token format. Send the complete token from @BotFather."); return
+            _creator_flow_update(uid,chat_id,"❌ <b>Invalid Bot Token</b>\n\nSend the complete token from @BotFather."); return
         result,err=_creator_api_with_token(token,"getMe",{},timeout=12)
         if err or not result or not result.get("id"):
-            _creator_send(chat_id,"❌ This Bot Token is invalid or Telegram rejected it. Send a fresh token from @BotFather."); return
+            _creator_flow_update(uid,chat_id,"❌ <b>Token rejected</b>\n\nTelegram did not accept this Bot Token. Send a fresh token from @BotFather."); return
         bot_id=str(result.get("id"))
         username=str(result.get("username") or "").lstrip("@")
         if not username:
-            _creator_send(chat_id,"❌ Telegram returned no bot username for this token."); return
+            _creator_flow_update(uid,chat_id,"❌ Telegram returned no bot username for this token."); return
         existing=managed_bots_col.find_one({"bot_id":bot_id})
         if existing and str(existing.get("owner_id") or "")!=uid:
-            _creator_send(chat_id,"❌ This bot is already registered to another Creator account."); return
+            _creator_flow_update(uid,chat_id,"❌ <b>This bot is already registered</b>\n\nThat bot is connected to another Creator account."); return
         btype=str(sess.get("bot_type") or "video").lower()
         now=datetime.now(timezone.utc)
         doc={
