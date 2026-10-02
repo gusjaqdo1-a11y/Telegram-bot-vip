@@ -13389,7 +13389,8 @@ def _managed_bot_start_instance(doc):
                         current_doc=_managed_bot_doc(bid) or {}
                         free_minutes=int(current_doc.get("youtube_max_minutes") or youtube_free_limit_minutes())
                         if duration and duration>free_minutes*60 and not youtube_is_short(link):
-                            main_url=_main_bot_url() if '_main_bot_url' in globals() else ""
+                            main_name=_main_bot_username()
+                            main_url=f"https://t.me/{main_name}" if main_name else ""
                             kb=InlineKeyboardMarkup()
                             if main_url:
                                 kb.add(InlineKeyboardButton("🚀 Open Main Downloader",url=main_url))
