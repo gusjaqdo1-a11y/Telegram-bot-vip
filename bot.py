@@ -12278,7 +12278,7 @@ def _creator_connect_token_worker(uid, chat_id, token, btype="video"):
             return
         _creator_clear_session(uid)
         _creator_send(chat_id,
-            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(str(doc.get("name") or username))}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bot_id}</code>\n\n"
+            f"🎉 <b>Bot Connected Successfully!</b>\n\n🤖 <b>{html.escape(str(doc.get('name') or username))}</b>\n🔗 @{html.escape(username)}\n🆔 <code>{bot_id}</code>\n\n"
             "Your token-based downloader bot is now running.\n\n"
             "📢 <b>Ads</b> follow the Creator Bot's Managed Ads switch.",
             reply_markup=_creator_keyboard(uid)
