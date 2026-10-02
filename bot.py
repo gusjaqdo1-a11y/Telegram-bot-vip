@@ -4877,7 +4877,13 @@ def download_media(chat_id, link, message_id, quality=None):
             try:
                 duration_retry,_=_youtube_duration_fast(link)
             except Exception: duration_retry=None
-            if (duration_retry and duration_retry > youtube_free_limit_minutes()*60) or any(k in err_text.lower() for k in ("too long","duration limit","maximum duration","longer than","exceeds the maximum","video is too long")):
+            limit_seconds=max(60,int(youtube_free_limit_minutes())*60)
+            over_limit=bool(duration_retry and duration_retry > limit_seconds)
+            if over_limit or any(k in err_text.lower() for k in (
+                "too long","duration limit","maximum duration","longer than",
+                "exceeds the maximum","video is too long","current access tier",
+                "configured download limit"
+            )):
                 msg=premium_gate_message(uid,"youtube",duration_retry or youtube_free_limit_minutes()*60+1)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
                 plans=get_premium_prices(); kb=InlineKeyboardMarkup(row_width=2)
                 for months in ("1","3","9","12"):
