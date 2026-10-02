@@ -289,13 +289,27 @@ def creator_dashboard_login(bot_id):
         pin=str(request.form.get("pin") or "").strip()
         remember=bool(request.form.get("remember"))
         expected=str(doc.get("dashboard_username") or doc.get("username") or "").strip().lstrip("@")
-        if hmac.compare_digest(username.lower(),expected.lower()) and _dash_pin_ok(doc.get("dashboard_pin_hash"),pin):
+        stored_hash=str(doc.get("dashboard_pin_hash") or "").strip()
+        pin_ok=_dash_pin_ok(stored_hash,pin)
+        # Legacy Creator records may still have the original PIN field.
+        # Accept it once and migrate it to the current hash format.
+        if not pin_ok:
+            legacy_pin=str(doc.get("dashboard_pin") or "").strip()
+            if legacy_pin and hmac.compare_digest(legacy_pin,pin):
+                pin_ok=True
+                try:
+                    _dash_bots.update_one({"_id":doc.get("_id")},{"$set":{"dashboard_pin_hash":_dash_pin_hash(pin)}})
+                except Exception as e:
+                    print("Dashboard PIN migration skipped:",repr(e))
+        username_ok=bool(username) and hmac.compare_digest(username.lower(),expected.lower())
+        if username_ok and pin_ok:
+            session.clear()
             session["creator_dashboard_bot"]=bid
             session.permanent=True
             session["creator_dashboard_saved_at"]=datetime.now(timezone.utc).isoformat()
-            response=redirect(url_for("creator_dashboard_home",bot_id=bid))
+            response=redirect(url_for("creator_dashboard_home",bot_id=bid),code=302)
             if remember:
-                response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax")
+                response.set_cookie("creator_dashboard_remember",_dash_remember_value(bid),max_age=31536000,httponly=True,secure=True,samesite="Lax",path="/")
             return response
         error="Invalid dashboard username or PIN."
     botname=str(doc.get("username") or "Downloader Bot").lstrip("@")
