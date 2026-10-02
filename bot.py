@@ -12064,6 +12064,7 @@ def _creator_keyboard(uid):
 def _creator_admin_keyboard():
     return {"keyboard":[
         [{"text":"🟢 Open Creation"},{"text":"🔴 Close Creation"}],
+        [{"text":"✏️ Create Start Message"}],
         [{"text":"🟢 Open Verify Create Bot"},{"text":"🔴 Close Verify Create Bot"}],
         [{"text":"🟢 Open Create Caption"},{"text":"🔴 Close Create Caption"}],
         [{"text":"✏️ Set Create Caption"}],
@@ -12494,7 +12495,7 @@ def _creator_premium(uid, chat_id, edit=None):
 
 
 _CREATOR_ADMIN_BUTTONS = {
-    "🟢 Open Creation", "🔴 Close Creation",
+    "🟢 Open Creation", "🔴 Close Creation", "✏️ Create Start Message",
     "🟢 Open Verify Create Bot", "🔴 Close Verify Create Bot",
     "🟢 Open Create Caption", "🔴 Close Create Caption", "✏️ Set Create Caption",
     "📤 Send To Create Bot", "🤖 See All Bots", "📊 Bot Stats",
