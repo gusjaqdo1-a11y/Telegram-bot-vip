@@ -4703,8 +4703,17 @@ def download_media(chat_id, link, message_id, quality=None):
                 else: _current_bot().send_message(chat_id,msg,parse_mode="HTML")
             except Exception: pass
             return
-        max_seconds=_download_limit_seconds(uid)
-        if not (not priority and youtube_full_free_enabled()) and duration_check > max_seconds:
+        # SET YOUTUBE LIMIT is the Free YouTube cap. Premium/Trial use the
+        # separate Premium duration cap configured by the administrator.
+        if not priority and youtube_full_free_enabled():
+            max_seconds=0
+        elif not priority and users.get(uid,{}).get("youtube_30m"):
+            max_seconds=_download_limit_seconds(uid)
+        elif not priority:
+            max_seconds=youtube_free_limit_minutes()*60
+        else:
+            max_seconds=_download_limit_seconds(uid)
+        if max_seconds > 0 and duration_check > max_seconds:
             allowed_minutes=max(1,int(max_seconds//60))
             actual_minutes=max(1,int((duration_check+59)//60))
             lang=str(users.get(uid,{}).get("language") or users.get(uid,{}).get("customer_ai_language") or "en")
