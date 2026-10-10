@@ -1464,7 +1464,7 @@ def _show_ad_premium_plans(bot_obj,call,token):
           "\n".join(f"• <b>{m} month(s)</b> — ${float(plans[m]):.2f}" for m in ("1","3","9","12") if m in plans)+
           "\n\nPayment is handled by <b>@Downloadvedioytibot</b> with Telegram Stars.")
     bot_obj.answer_callback_query(call.id)
-    try: bot_obj.edit_message_text(call.message.chat.id,call.message.message_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+    try: bot_obj.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
     except Exception as e: print("Ad premium menu edit failed:",repr(e))
 
 def _ad_gate_keyboard(token, premium_url=None):
@@ -1679,7 +1679,7 @@ def _ad_premium_back_callback(call):
     token=str(call.data).split(":",1)[1]; row=ad_gates_col.find_one({"token":token})
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     bot.answer_callback_query(call.id)
-    try: bot.edit_message_text(call.message.chat.id,call.message.message_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token))
+    try: bot.edit_message_text("To continue, watch a short ad or use Premium/Skip.",call.message.chat.id,call.message.message_id,reply_markup=_ad_gate_keyboard(token))
     except Exception as e: print("Ad premium back failed:",repr(e))
 
 @bot.callback_query_handler(func=lambda c: str(c.data or "").startswith("adpremplan:"))
@@ -1688,7 +1688,7 @@ def _ad_premium_plan_callback(call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): bot.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); bot.answer_callback_query(call.id,"Invoice ready")
-        bot.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        bot.edit_message_text(f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
     except Exception as e: print("Ad Premium invoice error:",repr(e)); bot.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adplan:"))
@@ -2471,6 +2471,7 @@ def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
+    kb.add("🚀 OPEN HIGH", "🛑 CLOSE HIGH")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
     kb.add("🚫 BAN USER MANUAL", "💳 WITHDRAWAL CHECK")
     kb.add("💰 UNBLOCK MONEY", "🔍 RAADI")
@@ -4304,7 +4305,8 @@ def _download_max_mb_label(uid):
 
 def _safe_send_file(chat_id, path, caption="", reply_markup=None, platform=None, link=None):
     size_mb = os.path.getsize(path) / (1024 * 1024)
-    max_mb = _download_max_mb(chat_id, platform=platform, link=link)
+    high_mode=bool(not _ACTIVE_MANAGED_META.get() and get_setting("main_high_mode_enabled",False))
+    max_mb = 0 if high_mode else _download_max_mb(chat_id, platform=platform, link=link)
     if max_mb > 0 and size_mb > max_mb:
         raise RuntimeError(f"Telegram upload limit exceeded: {size_mb:.1f} MB > {max_mb} MB. Choose a lower quality/smaller media.")
     send_bot=_current_bot()
@@ -4668,6 +4670,8 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
 
 def download_media(chat_id, link, message_id, quality=None):
     platform=detect_platform(link)
+    # OPEN HIGH is scoped to the main downloader; managed bots keep their own policy.
+    high_mode=bool(not _ACTIVE_MANAGED_META.get() and get_setting("main_high_mode_enabled",False))
     if platform=="unknown":
         supported=", ".join(premium_platform_names())
         text=f"❌ Unsupported or invalid link.\n\n🌐 Supported Premium/Trial platforms ({len(premium_platform_names())}): {html.escape(supported)}"
@@ -4680,8 +4684,9 @@ def download_media(chat_id, link, message_id, quality=None):
     quick=is_quick_access(uid)
     trial=_is_trial_active(uid)
     premium=is_premium(uid)
-    priority=quick or premium or trial
-    max_seconds=_download_limit_seconds(uid)
+    priority=high_mode or quick or premium or trial
+    # Skip bot-side duration caps in high mode; Telegram/source limits still apply.
+    max_seconds=0 if high_mode else _download_limit_seconds(uid)
     rapid_data_prefetched=None
     if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
         # Check the exact duration first. If it exceeds the Free limit, stop
@@ -4702,7 +4707,7 @@ def download_media(chat_id, link, message_id, quality=None):
             except Exception as e: print("Premium duration gate send failed:",repr(e))
             return
         max_seconds=youtube_free_limit_minutes()*60
-    quality=quality or (users.get(uid,{}).get("premium_quality") if priority else "720") or ("1080" if quick else "720")
+    quality=quality or (users.get(uid,{}).get("premium_quality") if priority and not high_mode else None) or ("1080" if (quick or high_mode) else "720")
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     # Do not send/edit a visible "Preparing..." message. Telegram's native
     # upload action is shown immediately and is refreshed until the real media
@@ -4730,7 +4735,7 @@ def download_media(chat_id, link, message_id, quality=None):
                 if rapid_duration and max_seconds and rapid_duration>max_seconds:
                     raise RuntimeError("YouTube video is too long for the current access tier.")
                 rv,ra=_rapid_choose_pair(rapid_data,quality)
-                max_bytes=max(0,int(_download_max_mb(uid,platform="youtube",link=link) or 0))*1024*1024
+                max_bytes=(0 if high_mode else max(0,int(_download_max_mb(uid,platform="youtube",link=link) or 0))*1024*1024)
                 video_path=os.path.join(tmp,"rapid_video")
                 _rapid_download_file(rv["url"],video_path,max_bytes=max_bytes)
                 final_video=video_path
@@ -4777,7 +4782,7 @@ def download_media(chat_id, link, message_id, quality=None):
         # Pinterest gets another extractor instead of stopping at yt-dlp.
         if not media and _cobalt_enabled():
             try:
-                cobalt_mb=_download_max_mb(uid,platform=platform,link=link)
+                cobalt_mb=0 if high_mode else _download_max_mb(uid,platform=platform,link=link)
                 media=_cobalt_process(link,tmp,quality=quality,max_mb=cobalt_mb); provider="cobalt"
             except Exception as e: print(f"Cobalt {platform} fallback:",repr(e))
         if not media:
@@ -4787,9 +4792,9 @@ def download_media(chat_id, link, message_id, quality=None):
                 "retries":2 if quick else 2,"fragment_retries":3 if quick else 3,"extractor_retries":2,
                 "socket_timeout":12 if quick else 18,
                 "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
-                "concurrent_fragment_downloads":48 if is_quick_access(uid) else (32 if premium or _is_trial_active(uid) else 20),
-                "http_chunk_size": 24 * 1024 * 1024 if is_quick_access(uid) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
-                "buffersize": 16 * 1024 * 1024 if is_quick_access(uid) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
+                "concurrent_fragment_downloads":48 if (is_quick_access(uid) or high_mode) else (32 if premium or _is_trial_active(uid) else 20),
+                "http_chunk_size": 24 * 1024 * 1024 if (is_quick_access(uid) or high_mode) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
+                "buffersize": 16 * 1024 * 1024 if (is_quick_access(uid) or high_mode) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
                 "ratelimit": None,
                 **cookie_args
             }
@@ -5863,6 +5868,11 @@ def _song_auto_search_should_handle(m):
     # Auto search is ON by default whenever the song system is open. The admin
     # OFF button stores False and therefore disables it explicitly.
     if not text or text.startswith("/") or not _song_search_is_open() or not bool(get_setting("song_auto_search_enabled",True)): return False
+    # Admin reply-keyboard labels must reach their dedicated handlers, not song search.
+    try:
+        if is_admin(m.from_user.id): return False
+    except Exception:
+        pass
     # A URL is always a download request, never a song-search query. This also
     # handles prose around a link, e.g. "Look at this video... 👀https://pin.it/...".
     if extract_url(text): return False
@@ -9464,6 +9474,22 @@ def withdrawal_check_process(m):
         bot.send_message(m.chat.id, msg_text)
     except: pass
 
+@bot.message_handler(func=lambda m: m.text == "🚀 OPEN HIGH")
+def admin_open_high_mode(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("main_high_mode_enabled", True)
+    bot.send_message(m.chat.id,
+        "🚀 <b>OPEN HIGH ENABLED</b>\n\nMain Downloader skips bot-side ads, verification, Premium/platform and duration gates, and uses the high-concurrency download path. Telegram/source restrictions still apply.",
+        parse_mode="HTML", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.text == "🛑 CLOSE HIGH")
+def admin_close_high_mode(m):
+    if not is_admin(m.from_user.id): return
+    set_setting("main_high_mode_enabled", False)
+    bot.send_message(m.chat.id,
+        "🛑 <b>OPEN HIGH DISABLED</b>\n\nMain Downloader has returned to its normal access checks and download limits.",
+        parse_mode="HTML", reply_markup=admin_menu())
+
 @bot.message_handler(func=lambda m: m.text == "📊 STATS")
 def stats_handler(m):
     if not is_admin(m.from_user.id):
@@ -10779,7 +10805,9 @@ def _download_request_job(chat_id, link, quality, uid):
     """
     try:
         platform=detect_platform(link)
-        has_priority=is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
+        # OPEN HIGH starts resolving links immediately without bot-side access gates.
+        high_mode=bool(get_setting("main_high_mode_enabled",False))
+        has_priority=high_mode or is_admin(uid) or is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)
         if bool(get_setting("verify_before_send_enabled",False)) and not has_priority and not user_is_verified(uid):
             verify_pending[int(uid)]={"link":link,"queued":True,"time":time.time()}
             kb=InlineKeyboardMarkup()
@@ -10808,9 +10836,9 @@ def _download_request_job(chat_id, link, quality, uid):
             kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
             return
-        if not has_priority and not _ad_enabled_for(uid,"main"):
+        if not high_mode and not has_priority and not _ad_enabled_for(uid,"main"):
             if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"): return
-        download_media(chat_id,link,None,quality)
+        download_media(chat_id,link,None,quality or ("1080" if high_mode else None))
     except Exception as e:
         print("Download request worker failed:",repr(e))
         try: bot.send_message(chat_id,"❌ Download failed. Please try again.")
@@ -13478,7 +13506,7 @@ def _ad_premium_managed_cb(mb, call):
         text=("💎 <b>PREMIUM</b>\n\nChoose a Premium period.\n\n"+
               "\n".join(f"• <b>{m} month(s)</b> — ${float(plans[m]):.2f}" for m in ("1","3","9","12") if m in plans)+
               "\n\nPayment is handled by <b>@Downloadvedioytibot</b> with Telegram Stars.")
-        mb.edit_message_text(call.message.chat.id,call.message.message_id,text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
+        mb.edit_message_text(text,call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(rows))
     except Exception as e:
         print("Managed ad premium callback failed:",repr(e))
         try: mb.answer_callback_query(call.id,"Could not open Premium. Please try again.",show_alert=True)
@@ -13489,14 +13517,14 @@ def _ad_premium_plan_managed_cb(mb,call):
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     try:
         link,stars=_create_ad_premium_invoice(token,str(call.from_user.id),str(row.get("bot_id") or "main"),months); mb.answer_callback_query(call.id,"Invoice ready")
-        mb.edit_message_text(call.message.chat.id,call.message.message_id,f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
+        mb.edit_message_text(f"💎 <b>Premium — {months} month(s)</b>\n\n⭐ Price: <b>{stars} Telegram Stars</b>\n\nPayment is processed by <b>@Downloadvedioytibot</b>.",call.message.chat.id,call.message.message_id,parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ PAY NOW",url=link)],[InlineKeyboardButton("⬅️ Back",callback_data=f"adpremium:{token}")]]))
     except Exception as e: print("Managed ad Premium invoice error:",repr(e)); mb.answer_callback_query(call.id,"Could not create invoice link.",show_alert=True)
 
 def _ad_premium_back_managed_cb(mb,call):
     token=str(call.data).split(":",1)[1] if ":" in str(call.data) else ""; row=ad_gates_col.find_one({"token":token})
     if not row or str(row.get("user_id"))!=str(call.from_user.id): mb.answer_callback_query(call.id,"This ad session is invalid.",show_alert=True); return
     mb.answer_callback_query(call.id)
-    try: mb.edit_message_text(call.message.chat.id,call.message.message_id,"To continue, watch a short ad or use Premium/Skip.",reply_markup=_ad_gate_keyboard(token))
+    try: mb.edit_message_text("To continue, watch a short ad or use Premium/Skip.",call.message.chat.id,call.message.message_id,reply_markup=_ad_gate_keyboard(token))
     except Exception as e: print("Managed ad premium back failed:",repr(e))
 
 
