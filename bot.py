@@ -1012,7 +1012,8 @@ def _youtube_duration_fast(link, rapid_data=None):
     # Last resort only. Keep this probe short so normal downloads are not held
     # up unnecessarily when the API already returned the media metadata.
     try:
-        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":5,"retries":1,"extractor_retries":1,"cachedir":False}
+        # Use Railway cookies for authenticated metadata probes too.
+        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":8,"retries":2,"extractor_retries":2,"cachedir":False,"http_headers":{"User-Agent":"Mozilla/5.0 Chrome/131 Safari/537.36"},**_ytdlp_cookie_args()}
         extra=_youtube_extractor_args()
         if extra: opts["extractor_args"]=extra
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -4622,7 +4623,7 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
     """yt-dlp fallback downloader used after the configured API providers."""
     common=dict(base_opts); common["outtmpl"]=os.path.join(tmp_dir,"%(id)s.%(ext)s"); common["merge_output_format"]="mp4"
     common.pop("max_filesize",None); common["overwrites"]=False; common["continuedl"]=True; common["ignoreerrors"]=False; common["noplaylist"]=(False if platform=="tiktok" else True)
-    common["retries"]=10; common["fragment_retries"]=10; common["extractor_retries"]=5; common["sleep_interval_requests"]=0
+    common["retries"]=4; common["fragment_retries"]=4; common["extractor_retries"]=3; common["sleep_interval_requests"]=0
     attempts=[]
     if platform=="youtube":
         # Keep the first path fast. Only try one alternate client after a real
@@ -4692,25 +4693,38 @@ def download_media(chat_id, link, message_id, quality=None):
     is_free_short=bool(platform=="youtube" and youtube_is_short(link) and not _ACTIVE_MANAGED_META.get())
     max_seconds=0 if (high_mode or is_free_short) else _download_limit_seconds(uid)
     rapid_data_prefetched=None
-    if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
-        # Check the exact duration first. If it exceeds the Free limit, stop
-        # here and show Premium instead of allowing the generic downloader
-        # failure message to appear. RapidAPI is preferred for this probe.
+    if platform=="youtube" and not high_mode and not is_free_short:
+        # Check duration before download; metadata fallback uses Railway cookies.
         duration_check,rapid_data_prefetched=_youtube_duration_fast(link)
-        if duration_check and duration_check > youtube_free_limit_minutes()*60:
-            msg=premium_gate_message(uid,"youtube",duration_check)+"\n\n<b>Premium stays active for the selected period, so you do not need to open it again. YouTube downloads are unlimited while Premium is active.</b>"
-            kb=InlineKeyboardMarkup(row_width=2)
-            plans=get_premium_prices()
-            for months in ("1","3","9","12"):
-                if months in plans:
-                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
-            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+        if not duration_check:
+            msg="⚠️ <b>Could not verify YouTube video duration.</b>\n\nNo download was started. Check Railway YouTube cookies and try again."
             try:
-                if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb)
-                else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
-            except Exception as e: print("Premium duration gate send failed:",repr(e))
+                if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML")
+                else: _current_bot().send_message(chat_id,msg,parse_mode="HTML")
+            except Exception: pass
             return
-        max_seconds=youtube_free_limit_minutes()*60
+        max_seconds=_download_limit_seconds(uid)
+        if not (not priority and youtube_full_free_enabled()) and duration_check > max_seconds:
+            allowed_minutes=max(1,int(max_seconds//60))
+            actual_minutes=max(1,int((duration_check+59)//60))
+            lang=str(users.get(uid,{}).get("language") or users.get(uid,{}).get("customer_ai_language") or "en")
+            if not priority:
+                msg=premium_gate_message(uid,"youtube",duration_check)
+            elif lang=="so":
+                msg=f"⏱️ <b>Xadka video-ga ayaa dhaafay</b>\n\nVideo-gu waa <b>{actual_minutes} daqiiqo</b>; xadka admin-ku dejiyay waa <b>{allowed_minutes} daqiiqo</b>.\nLa xiriir admin-ka si xadka loo kordhiyo."
+            else:
+                msg=f"⏱️ <b>Video duration limit exceeded</b>\n\nThis video is <b>{actual_minutes} minutes</b>; your admin-configured tier limit is <b>{allowed_minutes} minutes</b>.\nPlease contact the administrator to raise the limit."
+            kb=InlineKeyboardMarkup(row_width=2)
+            if not priority:
+                plans=get_premium_prices()
+                for months in ("1","3","9","12"):
+                    if months in plans: kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
+                kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+            try:
+                if message_id: _current_bot().edit_message_text(msg,chat_id,message_id,parse_mode="HTML",reply_markup=kb if not priority else None)
+                else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb if not priority else None)
+            except Exception as e: print("YouTube duration gate send failed:",repr(e))
+            return
     quality=quality or (users.get(uid,{}).get("premium_quality") if priority and not high_mode else None) or ("1080" if (quick or high_mode) else "720")
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
     # Do not send/edit a visible "Preparing..." message. Telegram's native
@@ -10821,19 +10835,7 @@ def _download_request_job(chat_id, link, quality, uid):
             kb.add(InlineKeyboardButton("🤖 Verify via Bot",url=f"https://t.me/Verifyd_bot?start=verify_{uid}"))
             bot.send_message(chat_id,"🔐 <b>Verification Required</b>\n\nPlease verify that you are not a robot before your download can be sent.",reply_markup=kb,parse_mode="HTML")
             return
-        if not has_priority and platform=="youtube" and not youtube_is_short(link) and not youtube_full_free_enabled() and not users.get(str(uid),{}).get("youtube_30m",False):
-            duration=None
-            try: duration=_youtube_duration_seconds(link)
-            except Exception: duration=None
-            if duration and duration > youtube_free_limit_minutes()*60:
-                kb=InlineKeyboardMarkup(row_width=2)
-                plans=get_premium_prices()
-                for months in ("1","3","9","12"):
-                    if months in plans:
-                        kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
-                kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
-                bot.send_message(chat_id,premium_gate_message(uid,"youtube",duration)+"\n\n<b>Premium stays active for the selected period. YouTube downloads are unlimited while Premium is active.</b>",reply_markup=kb,parse_mode="HTML")
-                return
+        # The authoritative duration check runs once inside download_media.
         if premium_required_for_platform(platform,uid,link) and not has_priority:
             duration=None
             if platform=="youtube":
