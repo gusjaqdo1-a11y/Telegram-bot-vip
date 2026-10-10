@@ -4629,7 +4629,10 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
         # extraction failure instead of walking a long 8-client ladder.
         for client in (None,"mweb"):
             for yfmt in _youtube_direct_formats(quality):
-                o=dict(common); o["format"]=yfmt; o["match_filter"]=_youtube_duration_filter(max_duration)
+                o=dict(common); o["format"]=yfmt
+                # A zero limit means no duration filter (used for free Shorts).
+                if max_duration and max_duration > 0:
+                    o["match_filter"]=_youtube_duration_filter(max_duration)
                 if client:
                     o["extractor_args"]={"youtube":{"player_client":[client]}}
                 else:
@@ -4685,8 +4688,9 @@ def download_media(chat_id, link, message_id, quality=None):
     trial=_is_trial_active(uid)
     premium=is_premium(uid)
     priority=high_mode or quick or premium or trial
-    # Skip bot-side duration caps in high mode; Telegram/source limits still apply.
-    max_seconds=0 if high_mode else _download_limit_seconds(uid)
+    # Shorts are always free and have no bot-side duration/file-size ceiling.
+    is_free_short=bool(platform=="youtube" and youtube_is_short(link) and not _ACTIVE_MANAGED_META.get())
+    max_seconds=0 if (high_mode or is_free_short) else _download_limit_seconds(uid)
     rapid_data_prefetched=None
     if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
         # Check the exact duration first. If it exceeds the Free limit, stop
@@ -4735,7 +4739,7 @@ def download_media(chat_id, link, message_id, quality=None):
                 if rapid_duration and max_seconds and rapid_duration>max_seconds:
                     raise RuntimeError("YouTube video is too long for the current access tier.")
                 rv,ra=_rapid_choose_pair(rapid_data,quality)
-                max_bytes=(0 if high_mode else max(0,int(_download_max_mb(uid,platform="youtube",link=link) or 0))*1024*1024)
+                max_bytes=(0 if (high_mode or is_free_short) else max(0,int(_download_max_mb(uid,platform="youtube",link=link) or 0))*1024*1024)
                 video_path=os.path.join(tmp,"rapid_video")
                 _rapid_download_file(rv["url"],video_path,max_bytes=max_bytes)
                 final_video=video_path
@@ -4787,14 +4791,16 @@ def download_media(chat_id, link, message_id, quality=None):
             except Exception as e: print(f"Cobalt {platform} fallback:",repr(e))
         if not media:
             cookie_args=_ytdlp_cookie_args() if platform=="youtube" else {}
+            if platform=="youtube" and not cookie_args:
+                print("YouTube cookies unavailable: configure YOUTUBE_COOKIES with a Netscape cookies.txt value or YTDLP_COOKIES_FILE with a mounted file path.")
             opts={
                 "quiet":True,"no_warnings":True,"noplaylist":True,
                 "retries":2 if quick else 2,"fragment_retries":3 if quick else 3,"extractor_retries":2,
                 "socket_timeout":12 if quick else 18,
                 "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
-                "concurrent_fragment_downloads":48 if (is_quick_access(uid) or high_mode) else (32 if premium or _is_trial_active(uid) else 20),
-                "http_chunk_size": 24 * 1024 * 1024 if (is_quick_access(uid) or high_mode) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
-                "buffersize": 16 * 1024 * 1024 if (is_quick_access(uid) or high_mode) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
+                "concurrent_fragment_downloads":48 if (is_quick_access(uid) or high_mode or is_free_short) else (32 if premium or _is_trial_active(uid) else 20),
+                "http_chunk_size": 24 * 1024 * 1024 if (is_quick_access(uid) or high_mode or is_free_short) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
+                "buffersize": 16 * 1024 * 1024 if (is_quick_access(uid) or high_mode or is_free_short) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
                 "ratelimit": None,
                 **cookie_args
             }
