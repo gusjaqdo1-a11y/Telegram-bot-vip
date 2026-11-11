@@ -1010,44 +1010,29 @@ def _youtube_artwork_url(video_id):
     return ""
 
 def _youtube_duration_fast(link, rapid_data=None):
-    """Get YouTube duration without waiting on a full yt-dlp extraction.
+    """Read YouTube duration using yt-dlp and the Railway cookies only.
 
-    RapidAPI is checked first because it is the configured primary YouTube
-    resolver. yt-dlp is only the metadata fallback when RapidAPI is unavailable.
+    YouTube must not depend on RapidAPI or another external downloader API.
     """
     if not link or detect_platform(link) != "youtube":
-        return None, rapid_data
-    data=rapid_data
-    if data is None and RAPIDAPI_YT_KEY:
-        try:
-            vid=_extract_youtube_video_id(link)
-            if vid:
-                data=_rapidapi_youtube_details(vid)
-                d=_rapid_duration(data)
-                if d:
-                    return d, data
-        except Exception as e:
-            print("Fast YouTube duration RapidAPI probe failed:",repr(e))
-    if data is not None:
-        try:
-            d=_rapid_duration(data)
-            if d:
-                return d, data
-        except Exception: pass
-    # Last resort only. Keep this probe short so normal downloads are not held
-    # up unnecessarily when the API already returned the media metadata.
+        return None, None
     try:
-        # Use Railway cookies for authenticated metadata probes too.
-        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,"socket_timeout":8,"retries":2,"extractor_retries":2,"cachedir":False,"http_headers":{"User-Agent":"Mozilla/5.0 Chrome/131 Safari/537.36"},**_ytdlp_cookie_args()}
+        cookie_args=_ytdlp_cookie_args()
+        if not cookie_args:
+            print("YouTube duration check: Railway cookies are not configured or invalid.")
+        opts={"quiet":True,"no_warnings":True,"skip_download":True,"noplaylist":True,
+              "socket_timeout":12,"retries":2,"extractor_retries":2,"cachedir":False,
+              "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+              **cookie_args}
         extra=_youtube_extractor_args()
         if extra: opts["extractor_args"]=extra
         with yt_dlp.YoutubeDL(opts) as ydl:
             info=ydl.extract_info(link,download=False) or {}
-        d=int(info.get("duration") or 0)
-        return (d or None), data
+        duration=int(info.get("duration") or 0)
+        return (duration or None), None
     except Exception as e:
-        print("Fast YouTube duration yt-dlp fallback failed:",repr(e))
-        return None, data
+        print("YouTube cookie-based duration probe failed:",repr(e))
+        return None, None
 
 def premium_required_for_platform(platform, uid, link=None):
     """Return whether this exact link requires Premium/Trial access."""
@@ -4763,11 +4748,9 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
             return
     quality=quality or (users.get(uid,{}).get("premium_quality") if priority and not high_mode else None) or ("1080" if (quick or high_mode) else "720")
     tmp=os.path.join("downloads",uuid.uuid4().hex); os.makedirs(tmp,exist_ok=True)
-    # Do not send/edit a visible "Preparing..." message. Telegram's native
-    # upload action is shown immediately and is refreshed until the real media
-    # is sent. This keeps the chat clean and makes fast providers feel instant.
+    # Keep one live status message and update it through each download stage.
     if message_id:
-        try: _current_bot().delete_message(chat_id,message_id)
+        try: _current_bot().edit_message_text("⬇️ <b>Downloading...</b>",chat_id,message_id,parse_mode="HTML")
         except Exception: pass
     action_stop=threading.Event()
     action_thread=start_action_heartbeat(chat_id,"upload_video",action_stop)
@@ -4776,43 +4759,10 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
         provider="yt-dlp"
         if platform == "pinterest":
             link = _resolve_pinterest_link(link)
-        # YouTube: use RapidAPI as the primary resolver when configured. This avoids
-        # waiting for yt-dlp's YouTube extractor and bypasses the common
-        # "Sign in to confirm you're not a bot" search/download failure. yt-dlp
-        # remains a fallback when RapidAPI is unavailable or returns no media.
-        if not media and platform == "youtube" and RAPIDAPI_YT_KEY:
-            try:
-                vid=_extract_youtube_video_id(link)
-                if not vid: raise RuntimeError("Could not extract YouTube video ID.")
-                rapid_data=rapid_data_prefetched or _rapidapi_youtube_details(vid)
-                rapid_duration=_rapid_duration(rapid_data)
-                if rapid_duration and max_seconds and rapid_duration>max_seconds:
-                    raise RuntimeError("YouTube video is too long for the current access tier.")
-                rv,ra=_rapid_choose_pair(rapid_data,quality)
-                max_bytes=(0 if (high_mode or is_free_short) else max(0,int(_download_max_mb(uid,platform="youtube",link=link) or 0))*1024*1024)
-                video_path=os.path.join(tmp,"rapid_video")
-                _rapid_download_file(rv["url"],video_path,max_bytes=max_bytes)
-                final_video=video_path
-                if ra and _ffmpeg_bin():
-                    audio_path=os.path.join(tmp,"rapid_audio")
-                    _rapid_download_file(ra["url"],audio_path,max_bytes=max_bytes)
-                    merged=os.path.join(tmp,"rapid_merged.mp4")
-                    ff=_ffmpeg_bin()
-                    cmd=[ff,"-y","-i",video_path,"-i",audio_path,"-c:v","copy","-c:a","aac","-movflags","+faststart",merged]
-                    proc=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,timeout=180)
-                    if proc.returncode==0 and os.path.isfile(merged): final_video=merged
-                    else: print("RapidAPI YouTube merge failed; using video-only file.")
-                # Give the file a Telegram-friendly extension.
-                named=os.path.join(tmp,f"youtube_{vid}.mp4")
-                if final_video!=named:
-                    try: os.replace(final_video,named); final_video=named
-                    except Exception: pass
-                if os.path.isfile(final_video):
-                    media=[final_video]; provider="rapidapi-youtube"
-            except Exception as e:
-                print("RapidAPI YouTube primary failed; falling back:",repr(e))
+        # YouTube is intentionally downloaded only by yt-dlp with Railway cookies.
+        # Do not call RapidAPI, SaveAPI, or Cobalt for YouTube links.
         # Fast paid/universal resolver. Only runs when the owner configured a key.
-        if not media and platform in SAVEAPI_SUPPORTED_PLATFORMS and _saveapi_enabled():
+        if not media and platform != "youtube" and platform in SAVEAPI_SUPPORTED_PLATFORMS and _saveapi_enabled():
             try:
                 media=_saveapi_download(link,tmp,uid=uid,platform=platform,prefer="video"); provider="saveapi"
             except Exception as e:
@@ -4834,7 +4784,7 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
         # Cobalt is also useful for Pinterest: current Cobalt builds explicitly
         # support Pinterest photos, GIFs and videos. Keep it as a fallback so
         # Pinterest gets another extractor instead of stopping at yt-dlp.
-        if not media and _cobalt_enabled():
+        if not media and platform != "youtube" and _cobalt_enabled():
             try:
                 cobalt_mb=0 if high_mode else _download_max_mb(uid,platform=platform,link=link)
                 media=_cobalt_process(link,tmp,quality=quality,max_mb=cobalt_mb); provider="cobalt"
@@ -4893,6 +4843,9 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
                 source_artist=_music_artist_from_info(info)
         except Exception: pass
         sent=0
+        if message_id:
+            try: _current_bot().edit_message_text("⚡️ <b>Sending...</b>",chat_id,message_id,parse_mode="HTML")
+            except Exception: pass
         for path in media[:50 if platform=="tiktok" else 20]:
             # A managed Video Downloader never returns standalone audio files.
             if _is_audio_file(path) and str((_ACTIVE_MANAGED_META.get() or {}).get("bot_type") or "video") == "video":
@@ -10852,7 +10805,7 @@ PLATFORM_PATTERNS.update({
 })
 PREMIUM_EXTRA_PLATFORMS = ["Reddit", "Threads", "Likee", "Vimeo", "Dailymotion", "SoundCloud", "Twitch", "Tumblr", "Streamable", "OK.ru"]
 
-def _download_request_job(chat_id, link, quality, uid):
+def _download_request_job(chat_id, link, quality, uid, status_message_id=None):
     """Run access checks and media extraction in the download worker.
 
     This keeps the Telegram message handler responsive: link detection and queueing
@@ -10869,7 +10822,11 @@ def _download_request_job(chat_id, link, quality, uid):
             kb=InlineKeyboardMarkup()
             kb.add(InlineKeyboardButton("📩 Verify via DM",callback_data="via_telegram"))
             kb.add(InlineKeyboardButton("🤖 Verify via Bot",url=f"https://t.me/Verifyd_bot?start=verify_{uid}"))
-            bot.send_message(chat_id,"🔐 <b>Verification Required</b>\n\nPlease verify that you are not a robot before your download can be sent.",reply_markup=kb,parse_mode="HTML")
+            gate_text="🔐 <b>Verification Required</b>\n\nPlease verify that you are not a robot before your download can be sent."
+            if status_message_id:
+                bot.edit_message_text(gate_text,chat_id,status_message_id,reply_markup=kb,parse_mode="HTML")
+            else:
+                bot.send_message(chat_id,gate_text,reply_markup=kb,parse_mode="HTML")
             return
         # The authoritative duration check runs once inside download_media.
         if premium_required_for_platform(platform,uid,link) and not has_priority:
@@ -10878,15 +10835,20 @@ def _download_request_job(chat_id, link, quality, uid):
                 try: duration=_youtube_duration_seconds(link)
                 except Exception: duration=None
             kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
-            bot.send_message(chat_id,premium_gate_message(uid,platform,duration),reply_markup=kb,parse_mode="HTML")
+            gate_text=premium_gate_message(uid,platform,duration)
+            if status_message_id:
+                bot.edit_message_text(gate_text,chat_id,status_message_id,reply_markup=kb,parse_mode="HTML")
+            else:
+                bot.send_message(chat_id,gate_text,reply_markup=kb,parse_mode="HTML")
             return
         if not high_mode and not has_priority and not _ad_enabled_for(uid,"main"):
             if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"): return
-        download_media(chat_id,link,None,quality or ("1080" if high_mode else None),user_id=uid)
+        download_media(chat_id,link,status_message_id,quality or ("1080" if high_mode else None),user_id=uid)
     except Exception as e:
         print("Download request worker failed:",repr(e))
-        try: bot.send_message(chat_id,"❌ Download failed. Please try again.")
-        except Exception: pass
+        if status_message_id:
+            try: bot.edit_message_text("⚠️ <b>Download-ku hadda ma dhammaan.</b> Fadlan link-ga mar kale dir.",chat_id,status_message_id,parse_mode="HTML")
+            except Exception: pass
 
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
 def handle_links(message):
@@ -10928,13 +10890,15 @@ def handle_links(message):
         quality = users.get(uid, {}).get("premium_quality") or "1080"
 
     try:
-        # No visible preparation message. download_media immediately starts
-        # Telegram's native upload action (Sending a video / Sending a photo).
+        # Acknowledge immediately; the same message is edited during the job.
+        status=bot.send_message(message.chat.id,"🔥 <b>Processing...</b>",parse_mode="HTML")
         download_executor_for(uid).submit(
             _download_request_job, message.chat.id, link,
-            quality if (is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)) else None, uid
+            quality if (is_quick_access(uid) or is_premium(uid) or _is_trial_active(uid)) else None,
+            uid, status.message_id
         )
-    except Exception: pass
+    except Exception as e:
+        print("Could not queue download:",repr(e))
 
 @bot.callback_query_handler(func=lambda call: call.data == "multi_checkjoin")
 def multi_checkjoin(call):
