@@ -4655,23 +4655,20 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
     """yt-dlp fallback downloader used after the configured API providers."""
     common=dict(base_opts); common["outtmpl"]=os.path.join(tmp_dir,"%(id)s.%(ext)s"); common["merge_output_format"]="mp4"
     common.pop("max_filesize",None); common["overwrites"]=False; common["continuedl"]=True; common["ignoreerrors"]=False; common["noplaylist"]=(False if platform=="tiktok" else True)
-    common["retries"]=4; common["fragment_retries"]=4; common["extractor_retries"]=3; common["sleep_interval_requests"]=0
+    # Avoid long retry storms that leave users waiting on a permanent-looking
+    # "Downloading..." status. Keep network retries low and use the Railway
+    # cookie session on the configured YouTube player client.
+    common["retries"]=2; common["fragment_retries"]=2; common["extractor_retries"]=1; common["sleep_interval_requests"]=0
     attempts=[]
     if platform=="youtube":
-        # Keep the first path fast. Only try one alternate client after a real
-        # extraction failure instead of walking a long 8-client ladder.
-        for client in (None,"mweb"):
-            for yfmt in _youtube_direct_formats(quality):
-                o=dict(common); o["format"]=yfmt
-                # A zero limit means no duration filter (used for free Shorts).
-                if max_duration and max_duration > 0:
-                    o["match_filter"]=_youtube_duration_filter(max_duration)
-                if client:
-                    o["extractor_args"]={"youtube":{"player_client":[client]}}
-                else:
-                    extra_args=_youtube_extractor_args()
-                    if extra_args: o["extractor_args"]=extra_args
-                attempts.append(o)
+        for yfmt in _youtube_direct_formats(quality):
+            o=dict(common); o["format"]=yfmt
+            if max_duration and max_duration > 0:
+                o["match_filter"]=_youtube_duration_filter(max_duration)
+            extra_args=_youtube_extractor_args()
+            if extra_args:
+                o["extractor_args"]=extra_args
+            attempts.append(o)
     else:
         # Different extractors expose different media shapes. Try a small,
         # deliberate format ladder so image posts, audio-only services and
@@ -4770,7 +4767,7 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
         try: _current_bot().edit_message_text("⬇️ <b>Downloading...</b>",chat_id,message_id,parse_mode="HTML")
         except Exception: pass
     action_stop=threading.Event()
-    action_thread=start_action_heartbeat(chat_id,"upload_video",action_stop)
+    action_thread=start_action_heartbeat(chat_id,"typing",action_stop)
     try:
         media=[]
         provider="yt-dlp"
@@ -4815,9 +4812,9 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
                 "retries":2 if quick else 2,"fragment_retries":3 if quick else 3,"extractor_retries":2,
                 "socket_timeout":12 if quick else 18,
                 "http_headers":{"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
-                "concurrent_fragment_downloads":48 if (is_quick_access(uid) or high_mode or is_free_short) else (32 if premium or _is_trial_active(uid) else 20),
-                "http_chunk_size": 24 * 1024 * 1024 if (is_quick_access(uid) or high_mode or is_free_short) else (16 * 1024 * 1024 if premium or _is_trial_active(uid) else 12 * 1024 * 1024),
-                "buffersize": 16 * 1024 * 1024 if (is_quick_access(uid) or high_mode or is_free_short) else (8 * 1024 * 1024 if premium or _is_trial_active(uid) else 6 * 1024 * 1024),
+                "concurrent_fragment_downloads":4 if platform=="youtube" else (8 if (is_quick_access(uid) or high_mode or is_free_short) else (6 if premium or _is_trial_active(uid) else 4)),
+                "http_chunk_size":1024*1024 if platform=="youtube" else (4*1024*1024 if (is_quick_access(uid) or high_mode or is_free_short) else (2*1024*1024 if premium or _is_trial_active(uid) else 1024*1024)),
+                "buffersize":2*1024*1024 if platform=="youtube" else (4*1024*1024 if (is_quick_access(uid) or high_mode or is_free_short) else (2*1024*1024 if premium or _is_trial_active(uid) else 1024*1024)),
                 "ratelimit": None,
                 **cookie_args
             }
