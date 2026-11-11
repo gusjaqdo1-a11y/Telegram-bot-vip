@@ -10822,7 +10822,7 @@ def _download_request_job(chat_id, link, quality, uid, status_message_id=None):
                 bot.send_message(chat_id,gate_text,reply_markup=kb,parse_mode="HTML")
             return
         # The authoritative duration check runs once inside download_media.
-        if premium_required_for_platform(platform,uid,link) and not has_priority:
+        if platform != "youtube" and premium_required_for_platform(platform,uid,link) and not has_priority:
             duration=None
             if platform=="youtube":
                 try: duration=_youtube_duration_seconds(link)
