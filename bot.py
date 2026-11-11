@@ -1314,6 +1314,8 @@ premium_logs_col = db1["premium_logs"]
 activity_col = db1["activity_logs"]
 ratings_col = db1["bot_ratings"]
 rating_campaigns_col = db1["rating_campaigns"]
+broadcast_campaigns_col = db1["broadcast_campaigns"]
+broadcast_messages_col = db1["broadcast_messages"]
 referral_commissions_col = db1["referral_commissions"]
 balance_ledger_col = db1["balance_ledger"]
 conversion_holds_col = db1["conversion_holds"]
@@ -2479,6 +2481,7 @@ def user_menu(show_admin=False):
 def admin_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📊 STATS", "📢 BROADCAST")
+    kb.add("🗑️ DELETE LAST BROADCAST")
     kb.add("⚡ QUICK ACCESS", "👥 SEE LIST")
     kb.add("🚀 OPEN HIGH", "🛑 CLOSE HIGH")
     kb.add("➕ ADD BALANCE", "➖ REMOVE MONEY")
@@ -4387,6 +4390,36 @@ def broadcast_users(send_one, user_ids=None):
                 failed+=1
     return sent,failed
 
+def _broadcast_campaign_start(admin_id, kind):
+    campaign_id=uuid.uuid4().hex
+    broadcast_campaigns_col.insert_one({"_id":campaign_id,"admin_id":str(admin_id),"kind":str(kind),"created_at":datetime.now(timezone.utc),"sent":0})
+    return campaign_id
+
+def _broadcast_record_message(campaign_id, chat_id, copied_message):
+    message_id=getattr(copied_message,"message_id",None)
+    if message_id is None:
+        return
+    broadcast_messages_col.insert_one({"campaign_id":campaign_id,"chat_id":int(chat_id),"message_id":int(message_id)})
+
+def _broadcast_campaign_finish(campaign_id, sent, failed):
+    broadcast_campaigns_col.update_one({"_id":campaign_id},{"$set":{"sent":int(sent),"failed":int(failed),"finished_at":datetime.now(timezone.utc)}})
+
+def _delete_last_broadcast_campaigns(count):
+    campaigns=list(broadcast_campaigns_col.find({}).sort("created_at",-1).limit(int(count)))
+    deleted=failed=0
+    for campaign in campaigns:
+        rows=broadcast_messages_col.find({"campaign_id":campaign["_id"]})
+        for row in rows:
+            try:
+                bot.delete_message(int(row["chat_id"]),int(row["message_id"]))
+                deleted+=1
+            except Exception as e:
+                failed+=1
+                print("Broadcast message delete failed:",repr(e))
+        broadcast_messages_col.delete_many({"campaign_id":campaign["_id"]})
+        broadcast_campaigns_col.delete_one({"_id":campaign["_id"]})
+    return len(campaigns),deleted,failed
+
 def send_action(chat_id, action):
     try:
         _current_bot().send_chat_action(chat_id, action)
@@ -4726,8 +4759,6 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
             lang=str(users.get(uid,{}).get("language") or users.get(uid,{}).get("customer_ai_language") or "en")
             if not priority:
                 msg=premium_gate_message(uid,"youtube",duration_check)
-            elif lang=="so":
-                msg=f"⏱️ <b>Xadka video-ga ayaa dhaafay</b>\n\nVideo-gu waa <b>{actual_minutes} daqiiqo</b>; xadka admin-ku dejiyay waa <b>{allowed_minutes} daqiiqo</b>.\nLa xiriir admin-ka si xadka loo kordhiyo."
             else:
                 msg=f"⏱️ <b>Video duration limit exceeded</b>\n\nThis video is <b>{actual_minutes} minutes</b>; your admin-configured tier limit is <b>{allowed_minutes} minutes</b>.\nPlease contact the administrator to raise the limit."
             kb=InlineKeyboardMarkup(row_width=2)
@@ -4911,6 +4942,9 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
             except Exception: pass
     finally:
         action_stop.set()
+        if message_id and locals().get("sent",0)>0:
+            try: _current_bot().delete_message(chat_id,message_id)
+            except Exception: pass
         active_cache = any(str(x.get("cache_dir")) == str(tmp) for x in music_pending.values())
         if not active_cache:
             shutil.rmtree(tmp,ignore_errors=True)
@@ -9920,18 +9954,45 @@ def broadcast_start(m):
 def broadcast_send(m):
     if not is_admin(m.from_user.id):
         return
-    # copyMessage preserves Telegram custom-emoji entities instead of flattening
-    # them into ordinary keyboard emoji. It also preserves the original rich text.
+    # copyMessage preserves Telegram custom-emoji entities and rich text.
+    campaign_id=_broadcast_campaign_start(m.from_user.id,"text")
     sent=failed=0
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid), m.chat.id, m.message_id)
+            copied=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            _broadcast_record_message(campaign_id,int(uid),copied)
             sent+=1
         except Exception:
             failed+=1
+    _broadcast_campaign_finish(campaign_id,sent,failed)
     try:
         bot.send_message(m.chat.id, f"✅ Broadcast sent to <b>{sent}</b> users\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
     except Exception: pass
+
+@bot.message_handler(func=lambda m: m.text == "🗑️ DELETE LAST BROADCAST")
+def delete_last_broadcast_start(m):
+    if not is_admin(m.from_user.id):
+        return
+    prompt=bot.send_message(m.chat.id,"🗑️ How many of the most recent broadcasts do you want to delete?\n\nSend a number, for example: 1, 2, or 3.")
+    bot.register_next_step_handler(prompt,delete_last_broadcast_process)
+
+def delete_last_broadcast_process(m):
+    if not is_admin(m.from_user.id):
+        return
+    try:
+        count=int(str(m.text or "").strip())
+        if count<1 or count>100:
+            raise ValueError("out of range")
+    except Exception:
+        bot.send_message(m.chat.id,"Please send a whole number from 1 to 100.")
+        return
+    available=broadcast_campaigns_col.count_documents({})
+    if available<1:
+        bot.send_message(m.chat.id,"There are no saved broadcasts to delete.")
+        return
+    requested=min(count,available)
+    campaigns,deleted,failed=_delete_last_broadcast_campaigns(requested)
+    bot.send_message(m.chat.id,f"🗑️ <b>Broadcast deletion completed</b>\n\nCampaigns selected: <b>{campaigns}</b>\nMessages deleted: <b>{deleted}</b>\nCould not delete: <b>{failed}</b>\n\nTelegram may prevent deletion of messages older than 48 hours.",parse_mode="HTML",reply_markup=admin_menu())
 
 @bot.message_handler(func=lambda m: m.text == "📢 BROADCAST MEDIA")
 def broadcast_media_start(m):
@@ -9948,13 +10009,17 @@ def broadcast_media_process(m):
         bot.send_message(m.chat.id, "❌ Please send a valid Video or Photo.")
         return
         
-    # copy_message preserves the original caption entities, including Telegram custom emojis.
+    # Keep every delivered message ID so the admin can remove recent campaigns.
+    campaign_id=_broadcast_campaign_start(m.from_user.id,"media")
     sent=failed=0
     for uid in list(users.keys()):
         try:
-            bot.copy_message(int(uid),m.chat.id,m.message_id); sent+=1
+            copied=bot.copy_message(int(uid),m.chat.id,m.message_id)
+            _broadcast_record_message(campaign_id,int(uid),copied)
+            sent+=1
         except Exception:
             failed+=1
+    _broadcast_campaign_finish(campaign_id,sent,failed)
     bot.send_message(m.chat.id, f"✅ Media broadcast sent to <b>{sent}</b> users.\n❌ Failed: <b>{failed}</b>",parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == "SEND PAY")
@@ -10845,7 +10910,7 @@ def _download_request_job(chat_id, link, quality, uid, status_message_id=None):
     except Exception as e:
         print("Download request worker failed:",repr(e))
         if status_message_id:
-            try: bot.edit_message_text("⚠️ <b>Download-ku hadda ma dhammaan.</b> Fadlan link-ga mar kale dir.",chat_id,status_message_id,parse_mode="HTML")
+            try: bot.edit_message_text("⚠️ <b>Download could not be completed. Please try again.</b>",chat_id,status_message_id,parse_mode="HTML")
             except Exception: pass
 
 @bot.message_handler(func=lambda m: m.text and "http" in m.text)
