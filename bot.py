@@ -4767,7 +4767,7 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
         try: _current_bot().edit_message_text("⬇️ <b>Downloading...</b>",chat_id,message_id,parse_mode="HTML")
         except Exception: pass
     action_stop=threading.Event()
-    action_thread=start_action_heartbeat(chat_id,"typing",action_stop)
+    action_thread=start_action_heartbeat(chat_id,"upload_video",action_stop)
     try:
         media=[]
         provider="yt-dlp"
