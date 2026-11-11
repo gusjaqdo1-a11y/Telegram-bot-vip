@@ -1047,8 +1047,6 @@ def premium_required_for_platform(platform, uid, link=None):
     if platform == "youtube":
         if link and youtube_is_short(link):
             return False
-        if youtube_full_free_enabled():
-            return False
         duration=_youtube_duration_seconds(link) if link else None
         # Unknown duration is allowed to reach the downloader; RapidAPI/yt-dlp
         # metadata probing inside the worker is the final safety check.
@@ -4717,11 +4715,8 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
             return
         # SET YOUTUBE LIMIT is the Free YouTube cap. Premium/Trial use the
         # separate Premium duration cap configured by the administrator.
-        if not priority and youtube_full_free_enabled():
-            max_seconds=0
-        elif not priority and users.get(uid,{}).get("youtube_30m"):
-            max_seconds=_download_limit_seconds(uid)
-        elif not priority:
+        if not priority:
+            # The admin-configured Free YouTube cap is always enforced.
             max_seconds=youtube_free_limit_minutes()*60
         else:
             max_seconds=_download_limit_seconds(uid)
@@ -4885,7 +4880,7 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
     except Exception as e:
         print(f"Download error [{platform}] {link}: {e!r}")
         err_text=str(e)
-        if platform=="youtube" and not priority and not youtube_is_short(link) and not youtube_full_free_enabled():
+        if platform=="youtube" and not priority and not youtube_is_short(link):
             # Never expose the generic failure for a video that is over the configured free duration.
             duration_retry=None
             try:
@@ -4909,12 +4904,10 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
                     else: _current_bot().send_message(chat_id,msg,parse_mode="HTML",reply_markup=kb)
                 except Exception: pass
                 return
-        msg="❌ Download failed. Please try again."
-        try:
-            if message_id: _current_bot().edit_message_text(msg,chat_id,message_id)
-            else: _current_bot().send_message(chat_id,msg)
-        except Exception:
-            try: _current_bot().send_message(chat_id,msg)
+        # Keep technical exceptions in Railway logs; do not expose raw errors
+        # or a generic failure stack to users.
+        if message_id:
+            try: _current_bot().edit_message_text("⚠️ <b>Download-ku hadda ma dhammaan.</b> Fadlan mar kale isku day dhowaan.",chat_id,message_id,parse_mode="HTML")
             except Exception: pass
     finally:
         action_stop.set()
@@ -10834,7 +10827,12 @@ def _download_request_job(chat_id, link, quality, uid, status_message_id=None):
             if platform=="youtube":
                 try: duration=_youtube_duration_seconds(link)
                 except Exception: duration=None
-            kb=InlineKeyboardMarkup().add(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
+            plans=get_premium_prices()
+            kb=InlineKeyboardMarkup(row_width=2)
+            for months in ("1","3","9","12"):
+                if months in plans:
+                    kb.add(InlineKeyboardButton(f"💎 {months} Month — ${float(plans[months]):.2f}",callback_data=f"premium_buy:{months}"))
+            kb.row(InlineKeyboardButton("💎 OPEN PREMIUM",callback_data="premium_menu"))
             gate_text=premium_gate_message(uid,platform,duration)
             if status_message_id:
                 bot.edit_message_text(gate_text,chat_id,status_message_id,reply_markup=kb,parse_mode="HTML")
