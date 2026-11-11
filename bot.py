@@ -284,6 +284,31 @@ class _BotRouter:
         return _ACTIVE_BOT.get() or _main_bot
     def __getattr__(self, name):
         return getattr(self._target(), name)
+    def register_next_step_handler(self, message, callback, *args, **kwargs):
+        """Let download links pass through any active conversation step.
+
+        The pending form/admin step remains active after a link is downloaded,
+        so a user can continue the original flow without losing their place.
+        """
+        target = self._target()
+        if target is not _main_bot:
+            return target.register_next_step_handler(message, callback, *args, **kwargs)
+
+        def _link_aware_step(next_message):
+            incoming = str(getattr(next_message, "text", "") or "")
+            link = extract_url(incoming) if "http" in incoming.lower() else None
+            if link:
+                # Re-arm the same step before dispatching the download.
+                target.register_next_step_handler(next_message, _link_aware_step)
+                active_token = _ACTIVE_BOT.set(target)
+                try:
+                    handle_links(next_message)
+                finally:
+                    _ACTIVE_BOT.reset(active_token)
+                return
+            return callback(next_message, *args, **kwargs)
+
+        return target.register_next_step_handler(message, _link_aware_step)
     def infinity_polling(self, *args, **kwargs):
         return _main_bot.infinity_polling(*args, **kwargs)
     def polling(self, *args, **kwargs):
@@ -964,7 +989,7 @@ def platform_display_name(platform):
 def youtube_full_free_enabled():
     return bool(get_setting("youtube_full_free", YOUTUBE_FULL_FREE_DEFAULT))
 
-YOUTUBE_FREE_MAX_MINUTES = int(os.getenv("YOUTUBE_FREE_MAX_MINUTES", "15"))
+YOUTUBE_FREE_MAX_MINUTES = int(os.getenv("YOUTUBE_FREE_MAX_MINUTES", str(FREE_MAX_MINUTES_DEFAULT)))
 
 def youtube_free_limit_minutes():
     try:
@@ -1052,7 +1077,7 @@ def premium_gate_message(uid, platform, duration_seconds=None):
     count=len(premium_platform_names())
     lang=str(users.get(str(uid),{}).get("language") or users.get(str(uid),{}).get("customer_ai_language") or "en")
     if platform == "youtube" and duration_seconds and duration_seconds > youtube_free_limit_minutes()*60:
-        mins=max(13, int(round(duration_seconds/60.0)))
+        mins=max(1, int((int(duration_seconds)+59)//60))
         if lang=="so":
             return ("💎 <b>Premium ayaa loo baahan yahay</b>\n\n"
                     f"YouTube video-kan waa qiyaastii <b>{mins} daqiiqo</b>. Free users waxaa loo oggol yahay YouTube ilaa <b>{youtube_free_limit_minutes()} daqiiqo</b>.\n\n"
@@ -4672,7 +4697,7 @@ def _run_ytdlp_download(link, tmp_dir, platform, fmt, base_opts, max_duration, u
                 continue
     raise last_error or RuntimeError("yt-dlp download failed")
 
-def download_media(chat_id, link, message_id, quality=None):
+def download_media(chat_id, link, message_id, quality=None, user_id=None):
     platform=detect_platform(link)
     # OPEN HIGH is scoped to the main downloader; managed bots keep their own policy.
     high_mode=bool(not _ACTIVE_MANAGED_META.get() and get_setting("main_high_mode_enabled",False))
@@ -4684,7 +4709,9 @@ def download_media(chat_id, link, message_id, quality=None):
             else: _current_bot().send_message(chat_id,text,parse_mode="HTML")
         except Exception: pass
         return
-    uid=str(chat_id)
+    # In private chats chat_id == user_id, but in groups they are different.
+    # Always apply account entitlements to the actual Telegram sender when known.
+    uid=str(user_id if user_id is not None else chat_id)
     quick=is_quick_access(uid)
     trial=_is_trial_active(uid)
     premium=is_premium(uid)
@@ -10855,7 +10882,7 @@ def _download_request_job(chat_id, link, quality, uid):
             return
         if not high_mode and not has_priority and not _ad_enabled_for(uid,"main"):
             if _send_ad_gate(bot,uid,chat_id,"main","download",{"link":link,"quality":quality},premium_url="https://t.me/Downloadvedioytibot"): return
-        download_media(chat_id,link,None,quality or ("1080" if high_mode else None))
+        download_media(chat_id,link,None,quality or ("1080" if high_mode else None),user_id=uid)
     except Exception as e:
         print("Download request worker failed:",repr(e))
         try: bot.send_message(chat_id,"❌ Download failed. Please try again.")
