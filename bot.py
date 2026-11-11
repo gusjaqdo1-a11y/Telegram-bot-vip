@@ -1058,20 +1058,11 @@ def premium_required_for_platform(platform, uid, link=None):
 def premium_gate_message(uid, platform, duration_seconds=None):
     name=html.escape(platform_display_name(platform))
     count=len(premium_platform_names())
-    lang=str(users.get(str(uid),{}).get("language") or users.get(str(uid),{}).get("customer_ai_language") or "en")
     if platform == "youtube" and duration_seconds and duration_seconds > youtube_free_limit_minutes()*60:
         mins=max(1, int((int(duration_seconds)+59)//60))
-        if lang=="so":
-            return ("💎 <b>Premium ayaa loo baahan yahay</b>\n\n"
-                    f"YouTube video-kan waa qiyaastii <b>{mins} daqiiqo</b>. Free users waxaa loo oggol yahay YouTube ilaa <b>{youtube_free_limit_minutes()} daqiiqo</b>.\n\n"
-                    "Si aad u dajiso video-kan, fur Premium/Trial.\n⚡ Download degdeg ah • 🎥 Quality sare • ▶️ YouTube access")
         return ("💎 <b>Premium Required</b>\n\n"
                 f"This YouTube video is about <b>{mins} minutes</b>. Free users can download YouTube videos up to <b>{youtube_free_limit_minutes()} minutes</b>.\n\n"
                 "Open Premium/Trial to download this video.\n⚡ Faster downloads • 🎥 Higher quality • ▶️ YouTube access")
-    if lang=="so":
-        return (f"💎 <b>Premium ayaa loo baahan yahay</b>\n\n"
-                f"<b>{name}</b> wuxuu u baahan yahay Premium/Trial.\n\n"
-                f"🌐 Premium/Trial: <b>{count} platforms</b>\n⚡ Priority & faster downloads\n🎥 Quality sare\nFur Premium si aad u isticmaasho.")
     return (f"💎 <b>Premium Required</b>\n\n"
             f"<b>{name}</b> requires Premium/Trial access.\n\n"
             f"🌐 Premium/Trial includes <b>{count} platforms</b>\n⚡ Priority & faster downloads\n🎥 Higher quality\n\nOpen Premium to continue.")
@@ -4938,7 +4929,7 @@ def download_media(chat_id, link, message_id, quality=None, user_id=None):
         # Keep technical exceptions in Railway logs; do not expose raw errors
         # or a generic failure stack to users.
         if message_id:
-            try: _current_bot().edit_message_text("⚠️ <b>Download-ku hadda ma dhammaan.</b> Fadlan mar kale isku day dhowaan.",chat_id,message_id,parse_mode="HTML")
+            try: _current_bot().edit_message_text("⚠️ <b>Download could not be completed. Please try again.</b>",chat_id,message_id,parse_mode="HTML")
             except Exception: pass
     finally:
         action_stop.set()
