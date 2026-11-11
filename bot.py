@@ -9972,10 +9972,10 @@ def delete_last_broadcast_process(m):
         return
     try:
         count=int(str(m.text or "").strip())
-        if count<1 or count>100:
+        if count<1:
             raise ValueError("out of range")
     except Exception:
-        bot.send_message(m.chat.id,"Please send a whole number from 1 to 100.")
+        bot.send_message(m.chat.id,"Please send a positive whole number.")
         return
     available=broadcast_campaigns_col.count_documents({})
     if available<1:
